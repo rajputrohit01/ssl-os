@@ -141,7 +141,8 @@ function modal(html){ $('modalBox').innerHTML = html; $('modal').classList.remov
 function closeModal(){ $('modal').classList.add('hide'); $('modalBox').innerHTML=''; }
 $('modal').addEventListener('click', e => { if(e.target.id==='modal') closeModal(); });
 const opt = (arr, val, lab, sel, blank) => (blank!==undefined ? `<option value="">${esc(blank)}</option>` : '') + arr.map(x => `<option value="${esc(x[val])}" ${x[val]===sel?'selected':''}>${esc(typeof lab==='function'?lab(x):x[lab])}</option>`).join('');
-const matOpts = (sel, blank) => opt(S.materials.filter(m=>m.is_active), 'id', 'code', sel, blank);
+const clientCode = id => (S.clients.find(c=>c.id===id)||{}).code || '';
+const matOpts = (sel, blank, clientId) => opt(S.materials.filter(m=>m.is_active && (!clientId || m.client_id===clientId)), 'id', m => clientId ? m.code : `${m.code} · ${clientCode(m.client_id)}`, sel, blank);
 const contrOpts = () => opt(S.contractors.filter(c=>c.location_id===S.loc.id && c.is_active), 'id', 'vendor_name');
 const partyOpts = (clientId, sel) => opt(S.parties.filter(p=>p.client_id===clientId), 'sap_code', p => `${p.party_name} · ${p.sap_code}${p.location_id?' (our warehouse)':''}`, sel, 'Select Ship-To');
 const chip = (txt, kind='') => `<span class="chip ${kind}">${esc(txt)}</span>`;
@@ -334,12 +335,13 @@ function rakeNew(m){
     $('rkIssues').innerHTML = issues.length ? `<div class="issues"><b>Cannot save yet:</b><br>${issues.map(esc).join('<br>')}<br><span class="muted">Fix the source documents with the customer, or correct a mis-read field above.</span></div>` : `<div class="okbox">RR and wagon sheet tie: ${F.wagons.length} wagons, ${F.wagons.reduce((s,w)=>s+w.bags,0)} bags, ${n3(F.wagons.reduce((s,w)=>s+w.mt,0))} MT.</div>`;
   };
   const drawWagons = () => {
-    const known = new Set(S.materials.map(x => x.code.toUpperCase()));
+    const cid = $('rkClient').value; const known = new Set(S.materials.filter(x => x.client_id===cid).map(x => x.code.toUpperCase()));
     $('rkWagons').innerHTML = table([{h:'Sr',k:'sr'},{h:'Wagon no',k:'wagon_no'},{h:'Type',k:'wagon_type'},{h:'Bags',k:'bags',n:1},{h:'MT',f:w=>n3(w.mt),n:1},
-      {h:'Declared material',f:w=>known.has((w.material||'').toUpperCase()) ? esc(w.material) : chip(w.material+' — not in master','bad')},{h:'Destination',k:'destination'}], F.wagons);
+      {h:'Declared material',f:w=>known.has((w.material||'').toUpperCase()) ? esc(w.material) : chip(w.material+(cid?' — not in this customer\'s materials':' — choose the customer first'),'bad')},{h:'Destination',k:'destination'}], F.wagons);
   };
   $('rkPdf').onchange = async e => { try{ F.rrFile = e.target.files[0]; const r = await parseRR(F.rrFile); Object.entries(r).forEach(([k,v]) => { if($('h_'+k) && v!=null) $('h_'+k).value = v; }); toast('RR read — please verify the fields'); check(); }catch(err){ toast('Could not read RR: '+err.message,'err',7000); } };
   $('rkSheet').onchange = async e => { try{ F.sheetFile = e.target.files[0]; F.wagons = await parseWagonSheet(F.sheetFile); drawWagons(); check(); }catch(err){ toast(err.message,'err',7000); } };
+  $('rkClient').onchange = () => { if(F.wagons.length) drawWagons(); check(); };
   $('rkSib').onchange = async e => { try{ F.sibling = (await parseWagonSheet(e.target.files[0])).map(w => w.wagon_no); check(); }catch(err){ toast(err.message,'err'); } };
   m.querySelectorAll('#rkHead input').forEach(i => i.onchange = check);
   $('rkBack').onclick = () => go();
@@ -414,7 +416,7 @@ async function rakeDetail(m, id){
   body.querySelectorAll('[data-open]').forEach(b => b.onclick = () => {
     const w = W(b.dataset.open);
     modal(`<h2>Open gate · ${esc(w.wagon_no)}</h2><p class="muted">Declared on wagon sheet: <b>${esc(mat(w.declared_material_id))}</b>. Record what is actually inside — stock is booked as found.</p>
-      <div class="grid"><div><label>Material found</label><select id="goMat">${matOpts(w.declared_material_id)}</select></div>
+      <div class="grid"><div><label>Material found</label><select id="goMat">${matOpts(w.declared_material_id, undefined, rk.client_id)}</select></div>
       <div><label>Damage seen</label><select id="goDmg"><option value="">No damage</option><option value="wet">Wet</option><option value="cut_torn">Cut / Torn</option><option value="major">Major visible damage</option></select></div></div>
       <div class="field"><label>Damage note</label><input id="goNote"></div>
       <div id="goDmgPh" class="hide"><button class="lime sm" id="goCap">📷 Damage photo / video</button> <span class="muted" id="goCapN">${dmgPh[w.id]||0} taken</span></div>
@@ -495,7 +497,7 @@ VIEWS.opening = async m => {
   const rows = await q('wh_opening_stock', b => b.eq('location_id', S.loc.id));
   const st = {ready:'ok', pending_approval:'warn', rejected:'bad', posted:'ok'};
   m.innerHTML = `<h1>Opening stock · ${esc(S.loc.code)}</h1><p class="muted">Enter the physical count and the customer's SAP stock for each material. A mismatch needs a reason and approval. Sign-off posts the physical count into the Opening Batch and makes the warehouse live.</p>
-  <div class="card"><div class="grid"><div><label>Material</label><select id="opM">${matOpts()}</select></div><div><label>Physical count MT</label><input id="opP" type="number" step="0.001"></div>
+  <div class="card"><div class="grid"><div><label>Material</label><select id="opM">${matOpts(null, undefined, S.loc.client_id)}</select></div><div><label>Physical count MT</label><input id="opP" type="number" step="0.001"></div>
   <div><label>Customer SAP stock MT</label><input id="opS" type="number" step="0.001"></div><div><label>Reason if different</label><input id="opR"></div></div><button class="primary" id="opGo">Save line</button></div>
   <div class="card">${table([{h:'Material',f:r=>esc(mat(r.material_id))},{h:'Physical MT',n:1,f:r=>n3(r.physical_mt)},{h:'SAP MT',n:1,f:r=>n3(r.sap_mt)},{h:'Reason',k:'mismatch_reason'},{h:'Status',f:r=>chip(r.status.replace('_',' '),st[r.status])},
     {h:'',f:r=>r.status==='pending_approval' && can('wh_opening_mismatch_approve') ? `<button class="lime sm" data-ap="${r.id}">Approve</button> <button class="ghost sm" data-rj="${r.id}">Reject</button>` : ''}], rows, 'No lines yet.')}
@@ -517,7 +519,7 @@ VIEWS.grn = async m => {
     <div><label>Truck no</label><input id="gT" list="ownTrucks" placeholder="WB23E2769"><datalist id="ownTrucks">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
     <div><label>Driver</label><input id="gD"></div><div><label>Challan / invoice no</label><input id="gC"></div>
     <div><label>Invoice date</label><input id="gI" type="date" value="${today()}"></div><div><label>Batch</label><input id="gB" disabled value="${batchOf(today())}"></div>
-    <div><label>Material</label><select id="gM">${matOpts()}</select></div><div><label>Challan MT</label><input id="gQ" type="number" step="0.001"></div>
+    <div><label>Material</label><select id="gM">${matOpts(null, undefined, S.loc.client_id)}</select></div><div><label>Challan MT</label><input id="gQ" type="number" step="0.001"></div>
     <div><label>Received good MT</label><input id="gR" type="number" step="0.001"></div><div><label>Damaged MT</label><input id="gX" type="number" step="0.001" value="0"></div>
     <div><label>Labor contractor</label><select id="gL">${contrOpts()}</select></div>
     <div id="gOptW" class="hide"><label>Own-truck shortage</label><select id="gO"><option value="">Choose…</option><option value="endorse">Endorse on challan (customer deducts)</option><option value="adjust">Receive & settle by Adjustment Dispatch</option></select></div>
@@ -864,7 +866,7 @@ const MASTERS = {
   'Plants': {t:'sys_plants', cols:['code','name','client_id'], form:[['code','Plant code'],['name','Plant name'],['client_id','Customer','client']]},
   'Vendors': {t:'sys_vendors', cols:['vendor_code','vendor_name','busy_name','is_active'], form:[['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
   'Own trucks': {t:'sys_trucks', cols:['registration_no','is_active'], form:[['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
-  'Materials': {t:'wh_materials', cols:['code','name','is_active'], form:[['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']]},
+  'Materials': {t:'wh_materials', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']], note:'Every material belongs to one customer. The same short name can exist for two customers.'},
   'Locations': {t:'wh_locations', cols:['code','name','kind','station_code','return_intimation','is_live'], form:[['code','Code'],['name','Name'],['kind','Kind','sel',['warehouse','siding']],['client_id','Customer (warehouse only)','client'],['station_code','Station code (siding)'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r},
   'SAP product mapping': {t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
   'Parties (Ship-To / Sold-To)': {t:'wh_party_map', cols:['client_id','sap_code','party_name','location_id'], form:[['client_id','Customer','client'],['sap_code','SAP party code'],['party_name','Party name'],['location_id','If this is our own warehouse','loc']]},
