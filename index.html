@@ -1,0 +1,914 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="theme-color" content="#0B3D2E" />
+<title>SSL Warehouse</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --ink:#0B1F17; --deep:#0B3D2E; --moss:#1B5E43; --lime:#8BC34A;
+    --sand:#EFE9DC; --paper:#F7F4EC; --line:#D9D2C2; --slate:#5B6B63;
+    --alert:#B23A2E; --amber:#C7862B; --ok:#1B7A4B; --r:12px; --tap:48px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0}
+  body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;background:var(--paper);color:var(--ink);font-size:15px;line-height:1.4}
+  .topbar{position:sticky;top:0;z-index:20;background:var(--deep);color:var(--sand);display:flex;align-items:center;gap:12px;padding:10px 16px;flex-wrap:wrap}
+  .brand{font-weight:800;letter-spacing:.16em;font-size:14px;text-transform:uppercase;white-space:nowrap}
+  .brand b{color:var(--lime)}
+  .topbar select{width:auto;height:36px;font-size:14px;background:#fff;min-width:180px;max-width:100%}
+  .who{margin-left:auto;font-size:12px;opacity:.85;text-align:right;line-height:1.2}
+  .who a{color:var(--lime);cursor:pointer}
+  .tabs{display:flex;gap:4px;overflow-x:auto;background:#fff;border-bottom:1px solid var(--line);padding:0 12px;position:sticky;top:56px;z-index:15}
+  .tabs button{width:auto;height:44px;background:none;border:0;border-bottom:3px solid transparent;border-radius:0;font-size:14px;font-weight:700;color:var(--slate);padding:0 12px;white-space:nowrap}
+  .tabs button.on{color:var(--deep);border-bottom-color:var(--lime)}
+  .tabs .sep{width:1px;background:var(--line);margin:10px 6px}
+  .wrap{max-width:1180px;margin:0 auto;padding:16px 16px 80px}
+  h1{font-size:14px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);margin:4px 0 12px;font-weight:800}
+  h2{font-size:15px;margin:0 0 10px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:14px}
+  label{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--slate);margin:0 0 5px;font-weight:700}
+  input,select,textarea{width:100%;height:var(--tap);font-size:15px;padding:0 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font-family:inherit}
+  textarea{height:auto;min-height:120px;padding:10px 12px}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--moss);background:#fff}
+  input[type=checkbox]{width:20px;height:20px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+  .field{margin-bottom:12px}
+  button{height:var(--tap);border:0;border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;padding:0 16px;font-family:inherit}
+  .primary{background:var(--deep);color:#fff} .primary:disabled{background:#A9B4AE}
+  .lime{background:var(--lime);color:var(--ink)}
+  .ghost{background:#fff;color:var(--deep);border:1.5px solid var(--line)}
+  .danger{background:var(--alert);color:#fff}
+  .sm{height:34px;font-size:13px;padding:0 10px;border-radius:8px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row>*{flex:0 0 auto}
+  .grow{flex:1 1 auto}
+  table{width:100%;border-collapse:collapse;font-size:14px}
+  th{text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--slate);border-bottom:2px solid var(--line);padding:8px 6px;white-space:nowrap}
+  td{border-bottom:1px solid #eee7d8;padding:8px 6px;vertical-align:middle}
+  td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+  .tbl{overflow-x:auto}
+  .chip{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;font-weight:700;background:var(--sand);color:var(--ink);white-space:nowrap}
+  .chip.ok{background:#DCEFD9;color:var(--ok)} .chip.warn{background:#F6E6CC;color:#8a5a14} .chip.bad{background:#F4D7D3;color:var(--alert)} .chip.info{background:#DDE9F3;color:#20507a}
+  .plate{font-family:Consolas,monospace;font-weight:800;white-space:nowrap;display:inline-block;background:var(--lime);color:var(--ink);padding:3px 8px;border-radius:6px;letter-spacing:.04em}
+  .muted{color:var(--slate);font-size:13px}
+  .issues{background:#FBEDEA;border:1px solid #EFC2BB;color:var(--alert);border-radius:10px;padding:10px 14px;margin:10px 0}
+  .okbox{background:#E8F4E4;border:1px solid #C3DFBA;color:var(--ok);border-radius:10px;padding:10px 14px;margin:10px 0}
+  .kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:14px}
+  .kpi div{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
+  .kpi span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--slate)}
+  .toast{position:fixed;left:16px;right:16px;bottom:20px;max-width:560px;margin:0 auto;z-index:60;padding:12px 16px;border-radius:12px;color:#fff;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.25);transform:translateY(160%);transition:transform .3s}
+  .toast.show{transform:translateY(0)} .toast.ok{background:var(--ok)} .toast.err{background:var(--alert)} .toast.warn{background:var(--amber)}
+  .modal{position:fixed;inset:0;background:rgba(11,31,23,.5);z-index:40;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 12px}
+  .modal .box{background:#fff;border-radius:14px;max-width:760px;width:100%;padding:18px}
+  .hide{display:none!important}
+  .center{min-height:100vh;display:flex;flex-direction:column;justify-content:center;padding:28px;max-width:420px;margin:0 auto}
+  .logo{font-weight:800;letter-spacing:.2em;font-size:26px;text-transform:uppercase;text-align:center;margin-bottom:6px}
+  .logo b{color:var(--moss)}
+  .tag{text-align:center;color:var(--slate);font-size:13px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:30px}
+  .empty{text-align:center;color:var(--slate);padding:22px 10px;font-size:14px}
+  .spin{width:18px;height:18px;border:3px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;display:inline-block;animation:s .7s linear infinite;vertical-align:-4px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  pre.msg{white-space:pre-wrap;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:13px;max-height:260px;overflow:auto}
+  @media (max-width:640px){.who{display:none}.tabs{position:static}.topbar{position:static}}
+</style>
+</head>
+<body>
+
+<div id="login" class="center">
+  <div class="logo">SS <b>LOGISTICS</b></div>
+  <div class="tag">Warehouse · Siding</div>
+  <button class="primary" id="googleBtn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px"><svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>Sign in with Google</button>
+  <div class="muted" style="text-align:center;margin:18px 0 12px">or sign in with email and password</div>
+  <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" placeholder="you@gmail.com"></div>
+  <div class="field"><label for="pass">Password</label><input id="pass" type="password" autocomplete="current-password"></div>
+  <button class="ghost" id="loginBtn" style="width:100%">Sign in</button>
+  <p class="muted" style="text-align:center;margin-top:16px" id="loginMsg"></p>
+</div>
+
+<div id="app" class="hide">
+  <div class="topbar">
+    <div class="brand">SS<b>L</b> · Warehouse</div>
+    <select id="locSel" aria-label="Location"></select>
+    <div class="who"><span id="uEmail"></span><br><span id="uRole" style="color:var(--lime)"></span> · <a id="logout">Sign out</a></div>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div class="wrap" id="main"></div>
+</div>
+
+<div id="modal" class="modal hide"><div class="box" id="modalBox"></div></div>
+<div id="toast" class="toast"></div>
+<input type="file" id="camInput" class="hide">
+
+<script>
+/* ============ CONFIG ============ */
+const SB_URL = "https://szdpbmnvauulwhiigaay.supabase.co";
+const SB_KEY = "sb_publishable_1ld0IHjdYfmvHa6n2H6jJg_miQGSbsP";
+const sb = supabase.createClient(SB_URL, SB_KEY);
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+/* ============ STATE + HELPERS ============ */
+const S = { me:null, loc:null, tab:null, clients:[], materials:[], contractors:[], parties:[], trucks:[], vendors:[] };
+const $ = id => document.getElementById(id);
+const esc = v => v==null ? '' : String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const n3 = v => v==null||v==='' ? '' : Number(v).toFixed(3);
+const inr = v => v==null ? '' : '₹' + Number(v).toLocaleString('en-IN', {maximumFractionDigits:2});
+const dt = v => v ? new Date(v).toLocaleString('en-IN', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '';
+const d8 = v => v ? new Date(v).toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'}) : '';
+const can = g => S.me && S.me.grants.includes(g);
+const mat = id => (S.materials.find(m => m.id===id)||{}).code || '—';
+const today = () => new Date().toISOString().slice(0,10);
+function batchOf(dateStr){ // WW-YY, week counted from 1 January (same rule as the database)
+  const d = new Date(dateStr + 'T00:00:00Z'); const start = Date.UTC(d.getUTCFullYear(),0,1);
+  const doy = Math.floor((d - start)/86400000) + 1; const ww = Math.floor((doy-1)/7) + 1;
+  return String(ww).padStart(2,'0') + '-' + String(d.getUTCFullYear()).slice(2);
+}
+function toast(msg, kind='ok', ms=3500){ const t=$('toast'); t.textContent=msg; t.className='toast show '+kind; clearTimeout(t._t); t._t=setTimeout(()=>t.className='toast '+kind, ms); }
+async function rpc(fn, args={}){ const {data, error} = await sb.rpc(fn, args); if(error) throw new Error(error.message); return data; }
+async function q(table, build = x => x){ const {data, error} = await build(sb.from(table).select('*')); if(error) throw new Error(error.message); return data || []; }
+async function act(btn, fn, okMsg){
+  const label = btn ? btn.innerHTML : ''; if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
+  try { const r = await fn(); if(okMsg) toast(typeof okMsg === 'function' ? okMsg(r) : okMsg); return r; }
+  catch(e){ toast(e.message, 'err', 7000); throw e; }
+  finally { if(btn){ btn.disabled = false; btn.innerHTML = label; } }
+}
+function modal(html){ $('modalBox').innerHTML = html; $('modal').classList.remove('hide'); }
+function closeModal(){ $('modal').classList.add('hide'); $('modalBox').innerHTML=''; }
+$('modal').addEventListener('click', e => { if(e.target.id==='modal') closeModal(); });
+const opt = (arr, val, lab, sel, blank) => (blank!==undefined ? `<option value="">${esc(blank)}</option>` : '') + arr.map(x => `<option value="${esc(x[val])}" ${x[val]===sel?'selected':''}>${esc(typeof lab==='function'?lab(x):x[lab])}</option>`).join('');
+const matOpts = (sel, blank) => opt(S.materials.filter(m=>m.is_active), 'id', 'code', sel, blank);
+const contrOpts = () => opt(S.contractors.filter(c=>c.location_id===S.loc.id && c.is_active), 'id', 'vendor_name');
+const partyOpts = (clientId, sel) => opt(S.parties.filter(p=>p.client_id===clientId), 'sap_code', p => `${p.party_name} · ${p.sap_code}${p.location_id?' (our warehouse)':''}`, sel, 'Select Ship-To');
+const chip = (txt, kind='') => `<span class="chip ${kind}">${esc(txt)}</span>`;
+function table(cols, rows, empty='Nothing here yet.'){
+  if(!rows.length) return `<div class="empty">${esc(empty)}</div>`;
+  return `<div class="tbl"><table><thead><tr>${cols.map(c=>`<th class="${c.n?'n':''}">${esc(c.h)}</th>`).join('')}</tr></thead><tbody>${
+    rows.map(r=>`<tr>${cols.map(c=>`<td class="${c.n?'n':''}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function csv(rows, name){
+  if(!rows.length){ toast('Nothing to download','warn'); return; }
+  const keys = Object.keys(rows[0]); const line = r => keys.map(k => `"${String(r[k]??'').replace(/"/g,'""')}"`).join(',');
+  const blob = new Blob([[keys.join(','), ...rows.map(line)].join('\n')], {type:'text/csv'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name + '.csv'; a.click();
+}
+
+/* ============ PHOTO / VIDEO EVIDENCE (in-app camera, stamped) ============ */
+function geo(){ return new Promise(res => { if(!navigator.geolocation) return res({}); navigator.geolocation.getCurrentPosition(p => res({lat:+p.coords.latitude.toFixed(6), lng:+p.coords.longitude.toFixed(6)}), () => res({}), {timeout:6000, maximumAge:60000}); }); }
+async function stampImage(file, lines){
+  const img = await createImageBitmap(file); const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = img.width*scale; c.height = img.height*scale;
+  const x = c.getContext('2d'); x.drawImage(img, 0, 0, c.width, c.height);
+  const fs = Math.max(16, Math.round(c.width/45)); x.font = `bold ${fs}px sans-serif`;
+  const h = (fs+8)*lines.length + 10; x.fillStyle = 'rgba(0,0,0,.6)'; x.fillRect(0, c.height-h, c.width, h);
+  x.fillStyle = '#fff'; lines.forEach((l,i) => x.fillText(l, 12, c.height - h + (fs+8)*(i+1)));
+  return await new Promise(r => c.toBlob(r, 'image/jpeg', .82));
+}
+function capture(entityType, entityId, label, allowVideo=false){
+  return new Promise((resolve, reject) => {
+    const inp = $('camInput'); inp.value=''; inp.accept = allowVideo ? 'image/*,video/*' : 'image/*';
+    inp.setAttribute('capture', 'environment');
+    inp.onchange = async () => {
+      const f = inp.files[0]; if(!f) return reject(new Error('No photo taken'));
+      try{
+        const g = await geo(); const now = new Date(); const isVideo = f.type.startsWith('video');
+        const stamp = [label, now.toLocaleString('en-IN'), g.lat ? `GPS ${g.lat}, ${g.lng}` : 'GPS not available'];
+        const body = isVideo ? f : await stampImage(f, stamp);
+        const path = `${entityType}/${entityId}/${now.getTime()}.${isVideo ? (f.name.split('.').pop()||'mp4') : 'jpg'}`;
+        const up = await sb.storage.from('wh-evidence').upload(path, body, {contentType: isVideo ? f.type : 'image/jpeg'});
+        if(up.error) throw new Error(up.error.message);
+        const {error} = await sb.from('wh_evidence').insert({entity_type:entityType, entity_id:entityId, kind:isVideo?'video':'photo', storage_path:path, taken_at:now.toISOString(), lat:g.lat||null, lng:g.lng||null, uploaded_by:S.me.user_id});
+        if(error) throw new Error(error.message);
+        toast((isVideo?'Video':'Photo') + ' saved'); resolve(path);
+      }catch(e){ toast(e.message,'err',6000); reject(e); }
+    };
+    inp.click();
+  });
+}
+async function evidenceCount(type, ids){
+  if(!ids.length) return {};
+  const rows = await q('wh_evidence', b => b.select('entity_id').eq('entity_type', type).in('entity_id', ids));
+  return rows.reduce((m,r) => (m[r.entity_id]=(m[r.entity_id]||0)+1, m), {});
+}
+
+/* ============ AUTH + BOOT ============ */
+$('loginBtn').onclick = async () => {
+  const email=$('email').value.trim(), password=$('pass').value;
+  if(!email||!password){ $('loginMsg').textContent='Enter email and password.'; return; }
+  $('loginBtn').innerHTML='<span class="spin" style="border-top-color:var(--deep);border-color:var(--line)"></span>';
+  const {error} = await sb.auth.signInWithPassword({email,password});
+  $('loginBtn').textContent='Sign in';
+  if(error){ $('loginMsg').textContent=error.message; return; }
+  start();
+};
+$('googleBtn').onclick = async () => {
+  if(location.protocol === 'file:'){ $('loginMsg').textContent = 'Google sign-in works once this page is hosted on its web address.'; return; }
+  const {error} = await sb.auth.signInWithOAuth({provider:'google', options:{redirectTo: location.origin + location.pathname, queryParams:{prompt:'select_account'}}});
+  if(error) $('loginMsg').textContent = /provider is not enabled|Unsupported provider/i.test(error.message) ? 'Google sign-in is not switched on yet. Use email and password for now.' : error.message;
+};
+// show the Google button only once Google sign-in is switched on in Supabase
+$('googleBtn').classList.add('hide');
+fetch(SB_URL + '/auth/v1/settings', {headers:{apikey:SB_KEY}}).then(r => r.json()).then(st => { if(st && st.external && st.external.google) $('googleBtn').classList.remove('hide'); }).catch(() => {});
+sb.auth.onAuthStateChange((event) => { if(event === 'SIGNED_IN' && $('app').classList.contains('hide')) start(); });
+$('logout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
+
+async function loadMasters(){
+  [S.clients, S.materials, S.contractors, S.parties, S.vendors] = await Promise.all([
+    q('sys_clients', b => b.eq('is_active', true).order('name')),
+    q('wh_materials', b => b.order('code')),
+    q('wh_contractor_names'),
+    q('wh_party_map', b => b.order('party_name')),
+    q('sys_vendors', b => b.eq('is_active', true).order('vendor_name')),
+  ]);
+  S.trucks = await q('sys_trucks', b => b.eq('is_active', true).order('registration_no'));
+}
+async function start(){
+  const {data:{user}} = await sb.auth.getUser(); if(!user) return;
+  try{ S.me = await rpc('wh_me'); await loadMasters(); }
+  catch(e){ toast('Could not load: '+e.message,'err',8000); return; }
+  $('uEmail').textContent = user.email; $('uRole').textContent = (S.me.role||'').replace('_',' ');
+  if(!S.me.active){ $('loginMsg').textContent = 'Your login works, but your user is not activated yet. Ask the admin to activate you.'; return; }
+  $('login').classList.add('hide'); $('app').classList.remove('hide');
+  const locs = S.me.locations;
+  $('locSel').innerHTML = locs.length ? locs.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)} (${l.kind})</option>`).join('') : '<option value="">No location assigned</option>';
+  const saved = (() => { try { return localStorage.getItem('wh_loc'); } catch(e){ return null; } })();
+  S.loc = locs.find(l => l.id===saved) || locs[0] || null; if(S.loc) $('locSel').value = S.loc.id;
+  $('locSel').onchange = () => { S.loc = locs.find(l => l.id===$('locSel').value); try{ localStorage.setItem('wh_loc', S.loc.id); }catch(e){} S.tab=null; renderTabs(); };
+  renderTabs();
+}
+sb.auth.getSession().then(({data}) => { if(data.session) start(); });
+
+/* ============ NAVIGATION ============ */
+function tabList(){
+  const t = []; const L = S.loc;
+  if(L && L.kind==='siding'){ t.push(['rakes','Rakes'],['dispatch','Dispatch'],['stock','Stock']); }
+  if(L && L.kind==='warehouse'){
+    if(!L.is_live) t.push(['opening','Opening stock']);
+    t.push(['grn','Receive (GRN)'],['dispatch','Dispatch'],['returns','Returns'],['stock','Stock'],['damage','Damage'],['count','Stock count'],['adjust','Adjustment']);
+  }
+  t.push(['|']);
+  if(S.me.office || can('wh_adjustment_approve') || can('wh_damage_transfer_approve') || can('wh_variance_approve') || can('wh_labor_bill_approve') || can('wh_opening_mismatch_approve')) t.push(['approvals','Approvals']);
+  if(can('wh_sap_operator')) t.push(['billing','SAP billing'],['sapgrn','SAP GRN']);
+  if(L) t.push(['recoveries','Recoveries'],['labor','Labor']);
+  t.push(['messages','Messages'],['reports','Reports']);
+  if(can('wh_master_admin')) t.push(['masters','Masters']);
+  if(S.me.admin) t.push(['users','Users']);
+  return t;
+}
+function renderTabs(){
+  const t = tabList(); if(!S.tab || !t.find(x=>x[0]===S.tab)) S.tab = (t.find(x=>x[0]!=='|')||[])[0];
+  $('tabs').innerHTML = t.map(([k,l]) => k==='|' ? '<span class="sep"></span>' : `<button class="${k===S.tab?'on':''}" data-t="${k}">${l}</button>`).join('');
+  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { S.tab = b.dataset.t; renderTabs(); });
+  go();
+}
+async function go(){
+  const m = $('main'); m.innerHTML = '<div class="empty"><span class="spin" style="border-top-color:var(--deep);border-color:var(--line)"></span></div>';
+  try { await (VIEWS[S.tab] || (async()=>{ m.innerHTML='<div class="empty">Select a location.</div>'; }))(m); }
+  catch(e){ m.innerHTML = `<div class="issues">${esc(e.message)}</div>`; }
+}
+const VIEWS = {};
+
+/* ============ RAKES (siding) ============ */
+VIEWS.rakes = async m => {
+  const rakes = await q('wh_rakes', b => b.eq('siding_id', S.loc.id).order('created_at', {ascending:false}).limit(50));
+  const st = {expected:'info', placed_partial:'warn', placed:'ok', released:'', closed:'ok'};
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Rakes at ${esc(S.loc.code)}</h1><button class="primary" id="newRake">+ New rake from RR</button></div>
+  <div class="card">${table([
+    {h:'Rake', f:r=>`<a href="#" data-rk="${r.id}"><b>${esc(r.rake_no)}</b></a>`},
+    {h:'Customer', f:r=>esc((S.clients.find(c=>c.id===r.client_id)||{}).name)},
+    {h:'RR / FNR', f:r=>`${esc(r.rr_no)} / ${esc(r.fnr)}`}, {h:'RR date', f:r=>d8(r.rr_date)}, {h:'Batch', k:'batch'},
+    {h:'Wagons', k:'rr_wagon_count', n:1}, {h:'MT', f:r=>n3(r.rr_mt), n:1}, {h:'Status', f:r=>chip(r.status.replace('_',' '), st[r.status])}], rakes, 'No rakes yet. Start with the RR PDF and wagon sheet.')}</div>`;
+  $('newRake').onclick = () => rakeNew(m);
+  m.querySelectorAll('[data-rk]').forEach(a => a.onclick = e => { e.preventDefault(); rakeDetail(m, a.dataset.rk); });
+};
+
+async function parseRR(file){
+  const doc = await pdfjsLib.getDocument({data: new Uint8Array(await file.arrayBuffer())}).promise;
+  let t=''; for(let i=1;i<=doc.numPages;i++){ const p = await doc.getPage(i); t += (await p.getTextContent()).items.map(x=>x.str).join(' ') + '\n'; }
+  const g = re => { const m = t.match(re); return m ? m[1] : null; };
+  const iso = s => s ? s.split('-').reverse().join('-') : null;
+  return { rr_no:g(/RR No:\s*(\d+)/), rr_date:iso(g(/RR Date:\s*([\d-]+)/)), fnr:g(/FNR:\s*(\d+)/), from_station:g(/Station From:\s*([A-Z]+)/),
+           to_station:g(/Station To:\s*([A-Z]+)/), railway_invoice_no:g(/TAX Invoice Number:\s*(\d+)/), invoice_date:iso(g(/Invoice Date:\s*([\d-]+)/)),
+           rr_wagon_count:+g(/Wagons:\s*(\d+)/)||null, rr_mt:+g(/Total Weight:\s*([\d.]+)/)||null, rr_bags:+g(/Total:\s*(\d+)/)||null };
+}
+async function parseWagonSheet(file){
+  const wb = XLSX.read(await file.arrayBuffer()); const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null, raw:true});
+  const hi = rows.findIndex(r => r.some(c => typeof c==='string' && /wagon\s*no/i.test(c)));
+  if(hi<0) throw new Error('Could not find the "Wagon No." header row in the wagon sheet');
+  const h = rows[hi].map(c => (c==null?'':String(c)).trim().toLowerCase()); const col = re => h.findIndex(x => re.test(x));
+  const c = {sr:col(/^sr/), wagon:col(/wagon\s*no/), type:col(/wagon\s*type/), bags:col(/bags/), mt:col(/^mt$|tonn|weight/), brand:col(/brand|material|grade/), dest:col(/destination/)};
+  const out = [];
+  for(const r of rows.slice(hi+1)){
+    const wn = r[c.wagon]; if(!wn || !/[A-Z]{2,4}\d{8,}/i.test(String(wn))) continue;
+    out.push({sr:+r[c.sr]||out.length+1, wagon_no:String(wn).trim().toUpperCase(), wagon_type:c.type>=0?r[c.type]:null, bags:+r[c.bags], mt:+r[c.mt], material:c.brand>=0?String(r[c.brand]).trim():'', destination:c.dest>=0?r[c.dest]:null});
+  }
+  return out;
+}
+
+function rakeNew(m){
+  const F = {client_id:'', wagons:[], sibling:[], rrFile:null, sheetFile:null};
+  m.innerHTML = `<h1>New rake · ${esc(S.loc.code)}</h1>
+  <div class="card"><div class="grid">
+    <div><label>Customer</label><select id="rkClient">${opt(S.clients,'id','name','', 'Select customer')}</select></div>
+    <div><label>RR PDF (from email)</label><input type="file" id="rkPdf" accept="application/pdf"></div>
+    <div><label>Wagon details sheet</label><input type="file" id="rkSheet" accept=".xlsx,.xls,.csv"></div>
+    <div><label>Other destination's sheet (optional, for duplicate check)</label><input type="file" id="rkSib" accept=".xlsx,.xls,.csv"></div>
+  </div></div>
+  <div class="card"><h2>RR header — verify before saving</h2><div class="grid" id="rkHead">
+    ${['rr_no:RR No','fnr:FNR','rr_date:RR date:date','railway_invoice_no:Railway invoice no','invoice_date:Invoice date:date','from_station:From station','to_station:To station','rr_wagon_count:Wagons (RR):number','rr_bags:Bags (RR):number','rr_mt:MT (RR):number'].map(s=>{const[k,l,t]=s.split(':');return `<div><label>${l}</label><input id="h_${k}" type="${t||'text'}" step="any"></div>`;}).join('')}
+  </div><p class="muted" id="rkBatch"></p></div>
+  <div class="card"><h2>Wagons (from wagon sheet)</h2><div id="rkWagons"><div class="empty">Upload the wagon sheet.</div></div></div>
+  <div id="rkIssues"></div>
+  <div class="row"><button class="primary" id="rkSave">Save rake</button><button class="ghost" id="rkBack">Back</button></div>`;
+  const head = () => { const o={}; m.querySelectorAll('#rkHead input').forEach(i => { const k=i.id.slice(2); o[k] = i.type==='number' ? (i.value===''?null:+i.value) : i.value.trim(); }); return o; };
+  const payload = () => ({...head(), client_id:$('rkClient').value, siding_id:S.loc.id, wagons:F.wagons, sibling_wagons:F.sibling});
+  const check = async () => {
+    const p = payload(); $('rkBatch').textContent = p.invoice_date ? `Batch will be ${batchOf(p.invoice_date)} (from invoice date)` : '';
+    if(!F.wagons.length || !p.rr_wagon_count) return;
+    const issues = await rpc('wh_rake_check', {p});
+    $('rkIssues').innerHTML = issues.length ? `<div class="issues"><b>Cannot save yet:</b><br>${issues.map(esc).join('<br>')}<br><span class="muted">Fix the source documents with the customer, or correct a mis-read field above.</span></div>` : `<div class="okbox">RR and wagon sheet tie: ${F.wagons.length} wagons, ${F.wagons.reduce((s,w)=>s+w.bags,0)} bags, ${n3(F.wagons.reduce((s,w)=>s+w.mt,0))} MT.</div>`;
+  };
+  const drawWagons = () => {
+    const known = new Set(S.materials.map(x => x.code.toUpperCase()));
+    $('rkWagons').innerHTML = table([{h:'Sr',k:'sr'},{h:'Wagon no',k:'wagon_no'},{h:'Type',k:'wagon_type'},{h:'Bags',k:'bags',n:1},{h:'MT',f:w=>n3(w.mt),n:1},
+      {h:'Declared material',f:w=>known.has((w.material||'').toUpperCase()) ? esc(w.material) : chip(w.material+' — not in master','bad')},{h:'Destination',k:'destination'}], F.wagons);
+  };
+  $('rkPdf').onchange = async e => { try{ F.rrFile = e.target.files[0]; const r = await parseRR(F.rrFile); Object.entries(r).forEach(([k,v]) => { if($('h_'+k) && v!=null) $('h_'+k).value = v; }); toast('RR read — please verify the fields'); check(); }catch(err){ toast('Could not read RR: '+err.message,'err',7000); } };
+  $('rkSheet').onchange = async e => { try{ F.sheetFile = e.target.files[0]; F.wagons = await parseWagonSheet(F.sheetFile); drawWagons(); check(); }catch(err){ toast(err.message,'err',7000); } };
+  $('rkSib').onchange = async e => { try{ F.sibling = (await parseWagonSheet(e.target.files[0])).map(w => w.wagon_no); check(); }catch(err){ toast(err.message,'err'); } };
+  m.querySelectorAll('#rkHead input').forEach(i => i.onchange = check);
+  $('rkBack').onclick = () => go();
+  $('rkSave').onclick = e => act(e.target, async () => {
+    const p = payload(); if(!p.client_id) throw new Error('Select the customer');
+    const stamp = Date.now();
+    if(F.rrFile){ const path = `rr/${S.loc.code}/${stamp}-${F.rrFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.rrFile); if(!u.error) p.rr_file_path = path; }
+    if(F.sheetFile){ const path = `rr/${S.loc.code}/${stamp}-${F.sheetFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.sheetFile); if(!u.error) p.sheet_file_path = path; }
+    const id = await rpc('wh_rake_register', {p}); rakeDetail(m, id);
+  }, 'Rake saved');
+}
+
+async function rakeDetail(m, id){
+  const [rk] = await q('wh_rakes', b => b.eq('id', id));
+  const wagons = await q('wh_wagons', b => b.eq('rake_id', id).order('sheet_sr'));
+  const lots = await q('wh_platform_lots', b => b.eq('rake_id', id).order('lot_code'));
+  const bal = await q('wh_stock_balance', b => b.eq('location_id', rk.siding_id).eq('batch', rk.batch));
+  const balOf = lot => (bal.find(x => x.lot_id===lot)||{}).qty_mt || 0;
+  const photos = await evidenceCount('wagon_gate', wagons.map(w=>w.id));
+  const dmgPh = await evidenceCount('wagon_damage', wagons.map(w=>w.id));
+  const msgs = await q('wh_messages', b => b.eq('rake_id', id).order('created_at'));
+  const client = (S.clients.find(c=>c.id===rk.client_id)||{}).name;
+  const opened = wagons.filter(w=>w.gate_opened_at).length, emptied = wagons.filter(w=>w.emptied_at).length, missing = wagons.filter(w=>w.status==='missing').length;
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(rk.rake_no)} · ${esc(client)}</h1><button class="ghost sm" id="rkBack">All rakes</button></div>
+  <div class="kpi"><div><span>RR / FNR</span><b style="font-size:16px">${esc(rk.rr_no)} / ${esc(rk.fnr)}</b></div><div><span>Batch</span><b>${esc(rk.batch)}</b></div>
+   <div><span>Status</span><b style="font-size:18px">${esc(rk.status.replace('_',' '))}</b></div><div><span>Gates opened</span><b>${opened}/${wagons.length}</b></div>
+   <div><span>Wagons empty</span><b>${emptied}/${wagons.length}</b></div><div><span>Missing</span><b style="color:${missing?'var(--alert)':'inherit'}">${missing}</b></div></div>
+  <div id="rkBody"></div>`;
+  $('rkBack').onclick = () => go();
+  const body = $('rkBody');
+  if(rk.status==='expected'){
+    body.innerHTML = `<div class="card"><h2>Rake placement</h2><p class="muted">Untick wagons that were not placed. Enter each wagon's physical position in the rake.</p>
+      <div class="field" style="max-width:260px"><label>Placed at</label><input type="datetime-local" id="plAt" value="${new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16)}"></div>
+      ${table([{h:'Placed',f:w=>`<input type="checkbox" data-pl="${w.id}" checked>`},{h:'Sr',k:'sheet_sr'},{h:'Wagon',k:'wagon_no'},{h:'Declared',f:w=>esc(mat(w.declared_material_id))},{h:'Position',f:w=>`<input type="number" data-pos="${w.id}" value="${w.sheet_sr}" style="width:90px;height:36px">`}], wagons)}
+      <button class="primary" id="plGo" style="margin-top:10px">Record placement</button></div>`;
+    $('plGo').onclick = e => act(e.target, async () => {
+      const arr = wagons.filter(w => body.querySelector(`[data-pl="${w.id}"]`).checked).map(w => ({wagon_id:w.id, position:+body.querySelector(`[data-pos="${w.id}"]`).value}));
+      const r = await rpc('wh_rake_place', {p_rake:id, p_arrivals:arr, p_arrived_at:new Date($('plAt').value).toISOString()});
+      rakeDetail(m, id); return r;
+    }, r => r==='placed_partial' ? 'Placed with missing wagons — email drafted in Messages' : 'Rake placed');
+    return;
+  }
+  const flagTxt = {wet:'Wet', cut_torn:'Cut/Torn', major:'Major'};
+  body.innerHTML = `<div class="card"><h2>Wagons</h2>${table([
+    {h:'Pos',k:'position'},{h:'Wagon',f:w=>`<b>${esc(w.wagon_no)}</b><br><span class="muted">${esc(w.wagon_type||'')}</span>`},
+    {h:'Declared',f:w=>esc(mat(w.declared_material_id))},
+    {h:'Found',f:w=>w.found_material_id ? (w.found_material_id!==w.declared_material_id ? chip(mat(w.found_material_id)+' ≠ declared','bad') : esc(mat(w.found_material_id))) : ''},
+    {h:'Status',f:w=> w.status==='missing' ? chip('missing','bad') : w.emptied_at ? chip('empty','ok') : w.gate_opened_at ? chip('gate open','info') : chip(w.status.replace('_',' '))},
+    {h:'Damage',f:w=>w.damage_flag ? chip(flagTxt[w.damage_flag],'warn') : ''},
+    {h:'In wagon MT',n:1,f:w=>w.gate_opened_at && !w.emptied_at ? n3(balOf(w.id)) : w.shortage_mt!=null ? `<span class="muted">short ${n3(w.shortage_mt)}</span>` : ''},
+    {h:'Photos',f:w=>`<a href="#" data-ev="${w.id}">${photos[w.id]||0}${dmgPh[w.id]?' + '+dmgPh[w.id]+' dmg':''}</a>`},
+    {h:'',f:w=>{
+      if(w.status==='missing') return `<button class="ghost sm" data-late="${w.id}">Arrived late</button>`;
+      if(!w.gate_opened_at) return `<button class="lime sm" data-photo="${w.id}" data-wn="${esc(w.wagon_no)}">📷 Gate photo</button> <button class="primary sm" data-open="${w.id}" ${photos[w.id]?'':'disabled title="Take the gate-open photo first"'}>Open gate</button>`;
+      if(!w.emptied_at) return `<button class="ghost sm" data-plat="${w.id}">To platform</button> <button class="ghost sm" data-empty="${w.id}">Mark empty</button>`;
+      return '';
+    }}], wagons)}</div>
+  <div class="card"><h2>Platform lots</h2>${table([{h:'Lot',f:l=>`<b>${esc(l.lot_code)}</b>`},{h:'On platform MT',n:1,f:l=>l.closed_at?'':n3(balOf(l.id))},
+     {h:'Status',f:l=>l.closed_at ? chip('lifted · short '+n3(l.shortage_mt), 'ok') : chip('on platform','info')},
+     {h:'',f:l=>l.closed_at?'':`<button class="ghost sm" data-close="${l.id}">Lot fully lifted</button>`}], lots, 'No material unloaded to platform.')}</div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2>Customer emails</h2><div class="row">
+     <button class="ghost sm" id="dmgMail">Draft damage email</button><button class="ghost sm" id="misMail">Draft mismatch email</button></div></div>
+     ${table([{h:'Kind',f:x=>chip(x.kind.replace(/_/g,' '))},{h:'Subject',k:'subject'},{h:'Status',f:x=>x.status==='sent'?chip('sent '+(x.sent_via||''),'ok'):chip('draft','warn')},{h:'',f:x=>`<button class="ghost sm" data-msg="${x.id}">Open</button>`}], msgs, 'No emails yet.')}</div>`;
+  const W = id2 => wagons.find(w=>w.id===id2);
+  body.querySelectorAll('[data-ev]').forEach(a => a.onclick = e => { e.preventDefault(); showEvidenceAll(a.dataset.ev); });
+  body.querySelectorAll('[data-photo]').forEach(b => b.onclick = async () => { await capture('wagon_gate', b.dataset.photo, `Wagon ${b.dataset.wn} · gate open · ${rk.rake_no}`); rakeDetail(m, id); });
+  body.querySelectorAll('[data-late]').forEach(b => b.onclick = () => {
+    modal(`<h2>Late arrival · ${esc(W(b.dataset.late).wagon_no)}</h2><div class="grid"><div><label>Placed at</label><input type="datetime-local" id="laAt"></div><div><label>Position</label><input type="number" id="laPos"></div></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="laGo">Record</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('laGo').onclick = e => act(e.target, async () => { await rpc('wh_wagon_late_arrival', {p_wagon:b.dataset.late, p_arrived_at:new Date($('laAt').value||Date.now()).toISOString(), p_position:+$('laPos').value||null}); closeModal(); rakeDetail(m, id); }, 'Recorded — late-arrival email drafted');
+  });
+  body.querySelectorAll('[data-open]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.open);
+    modal(`<h2>Open gate · ${esc(w.wagon_no)}</h2><p class="muted">Declared on wagon sheet: <b>${esc(mat(w.declared_material_id))}</b>. Record what is actually inside — stock is booked as found.</p>
+      <div class="grid"><div><label>Material found</label><select id="goMat">${matOpts(w.declared_material_id)}</select></div>
+      <div><label>Damage seen</label><select id="goDmg"><option value="">No damage</option><option value="wet">Wet</option><option value="cut_torn">Cut / Torn</option><option value="major">Major visible damage</option></select></div></div>
+      <div class="field"><label>Damage note</label><input id="goNote"></div>
+      <div id="goDmgPh" class="hide"><button class="lime sm" id="goCap">📷 Damage photo / video</button> <span class="muted" id="goCapN">${dmgPh[w.id]||0} taken</span></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="goGo">Confirm gate open</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('goDmg').onchange = () => $('goDmgPh').classList.toggle('hide', !$('goDmg').value);
+    $('goCap').onclick = async () => { await capture('wagon_damage', w.id, `Wagon ${w.wagon_no} · damage · ${rk.rake_no}`, true); $('goCapN').textContent = (+$('goCapN').textContent.split(' ')[0]+1) + ' taken'; };
+    $('goGo').onclick = e => act(e.target, async () => { await rpc('wh_wagon_gate_open', {p_wagon:w.id, p_found_material:$('goMat').value, p_damage_flag:$('goDmg').value||null, p_damage_note:$('goNote').value||null}); closeModal(); rakeDetail(m, id); }, 'Gate opened — loading slips can now be issued from this wagon');
+  });
+  body.querySelectorAll('[data-plat]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.plat);
+    modal(`<h2>Unload to platform · ${esc(w.wagon_no)}</h2><div class="grid"><div><label>Platform</label><input id="ptP" value="P1"></div><div><label>Quantity MT</label><input id="ptQ" type="number" step="0.001" value="${n3(balOf(w.id))}"></div>
+      <div><label>Labor contractor</label><select id="ptC">${contrOpts()}</select></div></div><p class="muted">Lot will be <b id="ptL">P1–${esc(w.wagon_no)}</b></p>
+      <div class="row"><button class="primary" id="ptGo">Unload to platform</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('ptP').oninput = () => $('ptL').textContent = $('ptP').value.toUpperCase() + '–' + w.wagon_no;
+    $('ptGo').onclick = e => act(e.target, async () => { await rpc('wh_wagon_to_platform', {p_wagon:w.id, p_platform:$('ptP').value, p_qty:+$('ptQ').value, p_contractor:$('ptC').value}); closeModal(); rakeDetail(m, id); }, 'Platform lot updated');
+  });
+  body.querySelectorAll('[data-empty]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.empty); const left = balOf(w.id);
+    if(!confirm(`Mark ${w.wagon_no} empty? ${n3(left)} MT still booked in the wagon will be recorded as rake shortage.`)) return;
+    act(b, async () => { const r = await rpc('wh_wagon_mark_empty', {p_wagon:w.id}); rakeDetail(m, id); return r; }, r => r==='closed' ? 'Rake closed — closure email drafted' : r==='released' ? 'All wagons empty — rake released' : 'Wagon marked empty');
+  });
+  body.querySelectorAll('[data-close]').forEach(b => b.onclick = () => {
+    const l = lots.find(x=>x.id===b.dataset.close);
+    if(!confirm(`Lot ${l.lot_code} fully lifted? ${n3(balOf(l.id))} MT still booked will be recorded as shortage.`)) return;
+    act(b, async () => { const r = await rpc('wh_lot_close', {p_lot:l.id}); rakeDetail(m, id); return r; }, r => r==='closed' ? 'Rake operation closed — closure email drafted' : 'Lot closed');
+  });
+  $('dmgMail').onclick = e => act(e.target, async () => { await rpc('wh_rake_damage_email', {p_rake:id}); rakeDetail(m, id); }, 'Damage email drafted');
+  $('misMail').onclick = e => act(e.target, async () => { await rpc('wh_rake_mismatch_email', {p_rake:id}); rakeDetail(m, id); }, 'Mismatch email drafted');
+  body.querySelectorAll('[data-msg]').forEach(b => b.onclick = () => openMessage(msgs.find(x=>x.id===b.dataset.msg), () => rakeDetail(m, id)));
+}
+async function showEvidenceAll(entityId){
+  const rows = await q('wh_evidence', b => b.eq('entity_id', entityId).order('taken_at'));
+  const urls = await Promise.all(rows.map(async r => (await sb.storage.from('wh-evidence').createSignedUrl(r.storage_path, 600)).data?.signedUrl));
+  modal(`<h2>Evidence</h2>${rows.map((r,i) => `<div class="muted">${esc(r.entity_type.replace('_',' '))} · ${dt(r.taken_at)}${r.lat?` · ${r.lat}, ${r.lng}`:''}</div>` + (r.kind==='video' ? `<video src="${urls[i]}" controls style="width:100%;margin-bottom:10px"></video>` : `<img src="${urls[i]}" style="width:100%;margin-bottom:10px;border-radius:8px">`)).join('') || '<div class="empty">No photos yet</div>'}<button class="ghost" onclick="closeModal()">Close</button>`);
+}
+
+/* ============ MESSAGES ============ */
+function openMessage(x, after){
+  const wa = 'https://wa.me/?text=' + encodeURIComponent(x.subject + '\n\n' + x.body);
+  modal(`<h2>${esc(x.subject)}</h2>
+    <div class="field"><label>To</label><input id="msgTo" value="${esc(x.to_address||'')}" ${x.status==='sent'?'disabled':''}></div>
+    <pre class="msg">${esc(x.body)}</pre>
+    <div class="row">${x.status==='draft' ? `<button class="primary sm" id="msgMail">Open in email</button><a class="ghost sm" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px" href="${wa}" target="_blank" rel="noopener">WhatsApp</a>
+      <button class="ghost sm" id="msgCopy">Copy text</button><button class="lime sm" id="msgSent">Mark sent</button><select id="msgVia" style="width:auto;height:34px"><option value="email">by email</option><option value="whatsapp">by WhatsApp</option><option value="sms">by SMS</option></select>` : chip('sent '+(x.sent_via||'')+' '+dt(x.sent_at),'ok')}
+      <button class="ghost sm" onclick="closeModal()">Close</button></div>
+    <p class="muted">Photos for damage emails are in the system under the rake; attach them from the wagon's photo link if the customer needs them in the email.</p>`);
+  if(x.status!=='draft') return;
+  const saveTo = async () => { const to = $('msgTo').value.trim(); if(to !== (x.to_address||'')){ const {error} = await sb.from('wh_messages').update({to_address:to}).eq('id', x.id); if(error) throw new Error(error.message); x.to_address = to; } };
+  $('msgMail').onclick = async () => { await saveTo(); location.href = `mailto:${encodeURIComponent(x.to_address||'')}?subject=${encodeURIComponent(x.subject)}&body=${encodeURIComponent(x.body)}`; };
+  $('msgCopy').onclick = async () => { await navigator.clipboard.writeText(x.subject + '\n\n' + x.body); toast('Copied'); };
+  $('msgSent').onclick = e => act(e.target, async () => { await saveTo(); await rpc('wh_mark_message_sent', {p_message:x.id, p_via:$('msgVia').value}); closeModal(); after && after(); }, 'Marked sent');
+}
+VIEWS.messages = async m => {
+  const rows = await q('wh_messages', b => b.order('created_at', {ascending:false}).limit(200));
+  const draw = f => {
+    const list = rows.filter(r => f==='all' || r.status===f);
+    m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Customer messages</h1><select id="mf" style="width:auto"><option value="draft">Drafts to send</option><option value="sent">Sent</option><option value="all">All</option></select></div>
+    <div class="card">${table([{h:'Created',f:r=>dt(r.created_at)},{h:'Kind',f:r=>chip(r.kind.replace(/_/g,' '))},{h:'Customer',f:r=>esc((S.clients.find(c=>c.id===r.client_id)||{}).name)},{h:'Subject',k:'subject'},{h:'To',k:'to_address'},
+      {h:'Status',f:r=>r.status==='sent'?chip('sent','ok'):chip('draft','warn')},{h:'',f:r=>`<button class="ghost sm" data-m="${r.id}">Open</button>`}], list, 'No messages.')}</div>`;
+    $('mf').value = f; $('mf').onchange = () => draw($('mf').value);
+    m.querySelectorAll('[data-m]').forEach(b => b.onclick = () => openMessage(rows.find(r=>r.id===b.dataset.m), () => go()));
+  };
+  draw('draft');
+};
+
+/* ============ STOCK ============ */
+VIEWS.stock = async m => {
+  const rows = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).order('material').order('batch'));
+  const tot = s => rows.filter(r=>r.storage===s).reduce((a,r)=>a+ +r.qty_mt,0);
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Stock · ${esc(S.loc.code)}</h1><button class="ghost sm" id="stCsv">Download CSV</button></div>
+  <div class="kpi">${S.loc.kind==='warehouse' ? `<div><span>Fresh MT</span><b>${n3(tot('fresh'))}</b></div><div><span>Damaged MT</span><b style="color:var(--alert)">${n3(tot('damaged'))}</b></div>` : `<div><span>In wagons MT</span><b>${n3(tot('wagon'))}</b></div><div><span>On platform MT</span><b>${n3(tot('platform'))}</b></div>`}</div>
+  <div class="card">${table([{h:'Location',f:r=>chip(r.storage, r.storage==='damaged'?'bad':r.storage==='fresh'?'ok':'info')},{h:'Customer',f:r=>esc((S.clients.find(c=>c.id===r.client_id)||{}).code)},{h:'Material',k:'material'},{h:'Batch',k:'batch'},{h:'Wagon / lot',k:'lot_label'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Bags',n:1,k:'bags'}], rows, 'No stock.')}</div>`;
+  $('stCsv').onclick = () => csv(rows.map(r=>({location:r.location_code, storage:r.storage, material:r.material, batch:r.batch, lot:r.lot_label||'', mt:r.qty_mt, bags:r.bags})), 'stock-'+S.loc.code);
+};
+
+/* ============ OPENING STOCK ============ */
+VIEWS.opening = async m => {
+  const rows = await q('wh_opening_stock', b => b.eq('location_id', S.loc.id));
+  const st = {ready:'ok', pending_approval:'warn', rejected:'bad', posted:'ok'};
+  m.innerHTML = `<h1>Opening stock · ${esc(S.loc.code)}</h1><p class="muted">Enter the physical count and the customer's SAP stock for each material. A mismatch needs a reason and approval. Sign-off posts the physical count into the Opening Batch and makes the warehouse live.</p>
+  <div class="card"><div class="grid"><div><label>Material</label><select id="opM">${matOpts()}</select></div><div><label>Physical count MT</label><input id="opP" type="number" step="0.001"></div>
+  <div><label>Customer SAP stock MT</label><input id="opS" type="number" step="0.001"></div><div><label>Reason if different</label><input id="opR"></div></div><button class="primary" id="opGo">Save line</button></div>
+  <div class="card">${table([{h:'Material',f:r=>esc(mat(r.material_id))},{h:'Physical MT',n:1,f:r=>n3(r.physical_mt)},{h:'SAP MT',n:1,f:r=>n3(r.sap_mt)},{h:'Reason',k:'mismatch_reason'},{h:'Status',f:r=>chip(r.status.replace('_',' '),st[r.status])},
+    {h:'',f:r=>r.status==='pending_approval' && can('wh_opening_mismatch_approve') ? `<button class="lime sm" data-ap="${r.id}">Approve</button> <button class="ghost sm" data-rj="${r.id}">Reject</button>` : ''}], rows, 'No lines yet.')}
+  ${can('wh_opening_signoff') ? '<button class="primary" id="opSign" style="margin-top:12px">Sign off & go live</button>' : '<p class="muted">Sign-off needs the opening sign-off permission (today: warehouse in-charge).</p>'}</div>`;
+  $('opGo').onclick = e => act(e.target, async () => { const r = await rpc('wh_opening_enter', {p_location:S.loc.id, p_material:$('opM').value, p_physical:+$('opP').value, p_sap:+$('opS').value, p_reason:$('opR').value||null}); go(); return r; }, r => r==='ready' ? 'Saved' : 'Saved — mismatch sent for approval');
+  m.querySelectorAll('[data-ap],[data-rj]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_opening_decide', {p_line:b.dataset.ap||b.dataset.rj, p_approve:!!b.dataset.ap, p_note:null}); go(); }, 'Done'));
+  if($('opSign')) $('opSign').onclick = e => { if(confirm('Post the opening stock and make this warehouse live? This cannot be undone.')) act(e.target, async () => { const n = await rpc('wh_opening_signoff', {p_location:S.loc.id}); S.me = await rpc('wh_me'); S.loc = S.me.locations.find(l=>l.id===S.loc.id); S.tab='stock'; renderTabs(); return n; }, n => `${n} lines posted — warehouse is live`); };
+};
+
+/* ============ GRN ============ */
+VIEWS.grn = async m => {
+  const inbound = await q('wh_inbound_transfers', b => b.eq('to_location_id', S.loc.id).order('dispatched_at'));
+  const recent = await q('wh_grns', b => b.eq('location_id', S.loc.id).order('created_at', {ascending:false}).limit(30));
+  const recs = await q('wh_recoveries', b => b.in('grn_id', recent.map(g=>g.id).length ? recent.map(g=>g.id) : ['00000000-0000-0000-0000-000000000000']));
+  m.innerHTML = `<h1>Receive at ${esc(S.loc.code)}</h1>
+  <div class="card"><h2>Trucks from the siding (challans addressed here)</h2>${table([{h:'Challan',k:'challan_no'},{h:'Truck',f:r=>`<span class="plate">${esc(r.truck_no)}</span> ${chip(r.truck_kind)}`},{h:'Material',f:r=>esc(mat(r.material_id))},{h:'Batch',k:'batch'},{h:'Challan MT',n:1,f:r=>n3(r.qty_mt)},{h:'Dispatched',f:r=>dt(r.dispatched_at)},{h:'',f:r=>`<button class="primary sm" data-rx="${r.challan_line_id}">Receive</button>`}], inbound, 'No siding trucks on the way.')}</div>
+  <div class="card"><h2>Primary receipt (plant / market / own truck)</h2><div class="grid">
+    <div><label>Truck kind</label><select id="gK"><option value="market">Market truck</option><option value="own">SSL own truck</option></select></div>
+    <div><label>Truck no</label><input id="gT" list="ownTrucks" placeholder="WB23E2769"><datalist id="ownTrucks">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
+    <div><label>Driver</label><input id="gD"></div><div><label>Challan / invoice no</label><input id="gC"></div>
+    <div><label>Invoice date</label><input id="gI" type="date" value="${today()}"></div><div><label>Batch</label><input id="gB" disabled value="${batchOf(today())}"></div>
+    <div><label>Material</label><select id="gM">${matOpts()}</select></div><div><label>Challan MT</label><input id="gQ" type="number" step="0.001"></div>
+    <div><label>Received good MT</label><input id="gR" type="number" step="0.001"></div><div><label>Damaged MT</label><input id="gX" type="number" step="0.001" value="0"></div>
+    <div><label>Labor contractor</label><select id="gL">${contrOpts()}</select></div>
+    <div id="gOptW" class="hide"><label>Own-truck shortage</label><select id="gO"><option value="">Choose…</option><option value="endorse">Endorse on challan (customer deducts)</option><option value="adjust">Receive & settle by Adjustment Dispatch</option></select></div>
+  </div><p class="muted" id="gShort"></p><button class="primary" id="gGo">Post GRN</button></div>
+  <div class="card"><h2>Recent GRNs</h2>${table([{h:'GRN',k:'grn_no'},{h:'Truck',f:g=>`<span class="plate">${esc(g.truck_no)}</span>`},{h:'Material',f:g=>esc(mat(g.material_id))},{h:'Batch',k:'batch'},{h:'Challan',n:1,f:g=>n3(g.challan_mt)},{h:'Good',n:1,f:g=>n3(g.received_mt)},{h:'Damaged',n:1,f:g=>n3(g.damaged_mt)},{h:'Short',n:1,f:g=>+g.shortage_mt?`<b style="color:var(--alert)">${n3(g.shortage_mt)}</b>`:''},
+    {h:'Recovery',f:g=>{const r=recs.find(x=>x.grn_id===g.id); return r ? chip(`${r.kind} ${r.status.replace('_',' ')}${r.amount?' '+inr(r.amount):''}`, r.status==='pending'?'bad':'') : '';}},{h:'SAP GRN',f:g=>g.sap_grn_no?esc(g.sap_grn_no):chip('pending','warn')}], recent, 'No GRNs yet.')}</div>`;
+  const upd = () => { const s = (+$('gQ').value||0) - (+$('gR').value||0) - (+$('gX').value||0); $('gShort').textContent = s>0 ? `Shortage ${n3(s)} MT` : ''; $('gOptW').classList.toggle('hide', !(s>0 && $('gK').value==='own')); $('gB').value = $('gI').value ? batchOf($('gI').value) : ''; };
+  ['gQ','gR','gX','gK','gI'].forEach(i => $(i).oninput = upd);
+  $('gGo').onclick = e => act(e.target, async () => {
+    const own = $('gK').value==='own'; const tr = S.trucks.find(t=>t.registration_no===$('gT').value.trim().toUpperCase());
+    if(own && !tr) throw new Error('Own truck not found in the truck master');
+    await rpc('wh_grn_post', {p:{location_id:S.loc.id, inbound:'primary', truck_kind:$('gK').value, truck_no:$('gT').value, truck_id:own?tr.id:null, driver_name:$('gD').value, challan_no:$('gC').value, invoice_date:$('gI').value, material_id:$('gM').value, challan_mt:+$('gQ').value, received_mt:+$('gR').value, damaged_mt:+$('gX').value||0, contractor_id:$('gL').value, own_truck_option:$('gO').value||null}});
+    go();
+  }, 'GRN posted — add the SAP GRN number once done in SAP');
+  m.querySelectorAll('[data-rx]').forEach(b => b.onclick = () => {
+    const r = inbound.find(x=>x.challan_line_id===b.dataset.rx);
+    modal(`<h2>Receive ${esc(r.challan_no)} · <span class="plate">${esc(r.truck_no)}</span></h2><p class="muted">${esc(mat(r.material_id))} · batch ${esc(r.batch)} · challan ${n3(r.qty_mt)} MT. Record exactly what was received — there is no tolerance.</p>
+      <div class="grid"><div><label>Received good MT</label><input id="rxR" type="number" step="0.001" value="${n3(r.qty_mt)}"></div><div><label>Damaged MT</label><input id="rxX" type="number" step="0.001" value="0"></div><div><label>Labor contractor</label><select id="rxL">${contrOpts()}</select></div></div>
+      <p class="muted" id="rxS"></p><div class="row"><button class="primary" id="rxGo">Post GRN</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    const u = () => { const s = r.qty_mt - (+$('rxR').value||0) - (+$('rxX').value||0); $('rxS').innerHTML = s>0.0005 ? `<b style="color:var(--alert)">Shortage ${n3(s)} MT</b> — recovered from ${r.truck_kind==='own'?'the driver (cash or trip advance)':'the vendor'} at the warehouse recovery rate.` : ''; };
+    $('rxR').oninput = u; $('rxX').oninput = u;
+    $('rxGo').onclick = e => act(e.target, async () => { await rpc('wh_grn_post', {p:{location_id:S.loc.id, inbound:'siding_transfer', source_challan_line_id:r.challan_line_id, received_mt:+$('rxR').value, damaged_mt:+$('rxX').value||0, contractor_id:$('rxL').value}}); closeModal(); go(); }, 'GRN posted');
+  });
+};
+
+/* ============ DISPATCH ============ */
+VIEWS.dispatch = async m => {
+  const open = await q('wh_dispatches', b => b.eq('location_id', S.loc.id).eq('dispatch_type','physical').eq('status','loading').order('created_at', {ascending:false}));
+  const done = await q('wh_challans', b => b.eq('location_id', S.loc.id).order('created_at', {ascending:false}).limit(40));
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Dispatch · ${esc(S.loc.code)}</h1><button class="primary" id="dNew">+ New truck</button></div>
+  <div class="card"><h2>Trucks loading</h2>${table([{h:'Dispatch',k:'dispatch_no'},{h:'Truck',f:d=>`<span class="plate">${esc(d.truck_no)}</span> ${chip(d.truck_kind)}`},{h:'Customer',f:d=>esc((S.clients.find(c=>c.id===d.client_id)||{}).name)},{h:'Started',f:d=>dt(d.created_at)},{h:'',f:d=>`<button class="primary sm" data-d="${d.id}">Open</button>`}], open, 'No trucks loading.')}</div>
+  <div class="card"><h2>Recent challans</h2>${table([{h:'Challan',k:'challan_no'},{h:'Ship-To',k:'ship_to_code'},{h:'Material',f:c=>esc(mat(c.material_id))},{h:'MT',n:1,f:c=>n3(c.qty_mt)},{h:'Bags',n:1,k:'bags'},{h:'Date',f:c=>dt(c.created_at)},{h:'',f:c=>`<button class="ghost sm" data-pr="${c.id}">Print</button>`}], done, 'No challans yet.')}</div>`;
+  m.querySelectorAll('[data-d]').forEach(b => b.onclick = () => dispatchDetail(m, b.dataset.d));
+  m.querySelectorAll('[data-pr]').forEach(b => b.onclick = () => printChallans([b.dataset.pr]));
+  $('dNew').onclick = () => {
+    const sid = S.loc.kind==='siding';
+    modal(`<h2>New truck at ${esc(S.loc.code)}</h2><div class="grid">
+      ${sid ? `<div><label>Customer (rake material)</label><select id="nC">${opt(S.clients,'id','name','', 'Select customer')}</select></div>` : ''}
+      <div><label>Truck kind</label><select id="nK"><option value="market">Market</option><option value="vendor">Vendor</option><option value="own">SSL own</option><option value="dealer">Dealer's own</option></select></div>
+      <div><label>Truck no</label><input id="nT" list="ownTrucks2"><datalist id="ownTrucks2">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
+      <div id="nVW" class="hide"><label>Vendor</label><select id="nV">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
+      <div><label>Driver</label><input id="nD"></div></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="nGo">Start loading</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('nK').onchange = () => $('nVW').classList.toggle('hide', $('nK').value!=='vendor');
+    $('nGo').onclick = e => act(e.target, async () => {
+      const own = $('nK').value==='own'; const tr = S.trucks.find(t=>t.registration_no===$('nT').value.trim().toUpperCase());
+      if(own && !tr) throw new Error('Own truck not found in the truck master');
+      const id = await rpc('wh_dispatch_create', {p_location:S.loc.id, p_client:sid?$('nC').value||null:null, p_truck_no:$('nT').value, p_truck_kind:$('nK').value, p_truck:own?tr.id:null, p_vendor:$('nK').value==='vendor'?$('nV').value||null:null, p_driver:$('nD').value||null});
+      closeModal(); dispatchDetail(m, id);
+    });
+  };
+};
+
+async function dispatchDetail(m, id){
+  const [d] = await q('wh_dispatches', b => b.eq('id', id));
+  const slips = await q('wh_loading_slips', b => b.eq('dispatch_id', id).neq('status','cancelled').order('created_at'));
+  const sid = S.loc.kind==='siding';
+  let sources = [];
+  if(sid){
+    const wagons = await q('wh_wagons', b => b.not('gate_opened_at','is',null).is('emptied_at', null));
+    const lots = await q('wh_platform_lots', b => b.is('closed_at', null));
+    const bal = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).eq('client_id', d.client_id));
+    bal.forEach(x => { const w = wagons.find(v=>v.id===x.lot_id); const l = lots.find(v=>v.id===x.lot_id);
+      if(w && x.storage==='wagon') sources.push({key:'wagon:'+w.id, label:`Wagon ${w.wagon_no} · ${x.material} · ${x.batch} · ${n3(x.qty_mt)} MT`});
+      if(l && x.storage==='platform') sources.push({key:'lot:'+l.id, label:`Lot ${l.lot_code} · ${x.material} · ${x.batch} · ${n3(x.qty_mt)} MT`}); });
+  } else {
+    const bal = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).eq('storage','fresh').order('material').order('batch'));
+    bal.forEach(x => sources.push({key:`godown:${x.material_id}:${x.batch}`, label:`Godown · ${x.material} · batch ${x.batch} · ${n3(x.qty_mt)} MT in stock`}));
+    const grns = await q('wh_grns', b => b.eq('location_id', S.loc.id).is('labor_bill_id', null).gte('created_at', new Date(Date.now()-3*86400000).toISOString()).order('created_at',{ascending:false}));
+    grns.forEach(g => sources.push({key:'paltai:'+g.id, label:`Paltai from ${g.truck_no} (${g.grn_no}) · ${mat(g.material_id)} · ${g.batch} · ${n3(g.received_mt)} MT received`}));
+  }
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(d.dispatch_no)} · <span class="plate">${esc(d.truck_no)}</span> ${chip(d.truck_kind)}</h1><button class="ghost sm" id="dBack">Back</button></div>
+  <div class="card"><h2>Loading slips (one slip = one batch)</h2>${table([{h:'Slip',k:'slip_no'},{h:'Source',f:s=>chip(s.source.replace('_',' '))},{h:'Material',f:s=>esc(mat(s.material_id))},{h:'Batch',k:'batch'},{h:'Ship-To',k:'ship_to_code'},{h:'MT',n:1,f:s=>n3(s.qty_mt)},{h:'Status',f:s=>chip(s.status, s.status==='loaded'?'ok':'info')},
+    {h:'',f:s=>s.status==='open'?`<button class="ghost sm" data-ps="${s.id}">Print</button> <button class="ghost sm" data-cx="${s.id}">Cancel</button>`:''}], slips, 'No slips yet.')}</div>
+  ${d.status==='loading' ? `<div class="card"><h2>Add loading slip</h2><div class="grid">
+    <div style="grid-column:1/-1"><label>Load from</label><select id="sSrc">${sources.length ? sources.map(s=>`<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('') : '<option value="">No stock available</option>'}</select></div>
+    <div><label>Quantity MT</label><input id="sQ" type="number" step="0.001"></div>
+    <div><label>Ship-To</label><select id="sT">${partyOpts(d.client_id)}</select></div><div><label>Sold-To (optional)</label><input id="sSo"></div>
+    <div><label>Labor contractor</label><select id="sL">${contrOpts()}</select></div></div>
+    <div class="row"><button class="lime" id="sGo">Add slip</button><button class="primary" id="dConf" ${slips.some(s=>s.status==='open')?'':'disabled'}>Truck loaded → generate challans</button></div>
+    <p class="muted">If one batch is short, add a second slip from another batch. The in-charge is accountable if the batch loaded differs from the slip.</p></div>` : `<div class="okbox">Dispatched ${dt(d.dispatched_at)}</div>`}`;
+  $('dBack').onclick = () => go();
+  m.querySelectorAll('[data-cx]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_slip_cancel', {p_slip:b.dataset.cx}); dispatchDetail(m, id); }, 'Slip cancelled'));
+  m.querySelectorAll('[data-ps]').forEach(b => b.onclick = () => printSlip(slips.find(s=>s.id===b.dataset.ps), d));
+  if(d.status!=='loading') return;
+  $('sGo').onclick = e => act(e.target, async () => {
+    const [kind, a, bch] = $('sSrc').value.split(':'); if(!kind) throw new Error('Nothing to load from');
+    const p = {dispatch_id:id, source: kind==='lot'?'platform_lot':kind, qty_mt:+$('sQ').value, ship_to_code:$('sT').value, sold_to_code:$('sSo').value, contractor_id:$('sL').value};
+    if(kind==='wagon') p.wagon_id = a; if(kind==='lot') p.lot_id = a; if(kind==='paltai') p.source_grn_id = a; if(kind==='godown'){ p.material_id = a; p.batch = bch; }
+    await rpc('wh_slip_create', {p}); dispatchDetail(m, id);
+  }, 'Slip added');
+  $('dConf').onclick = e => act(e.target, async () => { const n = await rpc('wh_dispatch_confirm', {p_dispatch:id}); const ch = await q('wh_challans', b => b.eq('dispatch_id', id)); printChallans(ch.map(c=>c.id)); dispatchDetail(m, id); return n; }, n => `${n} challan(s) generated`);
+}
+
+function printWin(html){ const w = window.open('', '_blank'); w.document.write(`<html><head><title>Print</title><style>body{font-family:Segoe UI,Arial;padding:24px;color:#111}h2{margin:0 0 4px}table{width:100%;border-collapse:collapse;margin-top:12px}td,th{border:1px solid #999;padding:6px;text-align:left}.n{text-align:right}.pg{page-break-after:always;margin-bottom:40px}</style></head><body>${html}<script>window.print()<\/script></body></html>`); w.document.close(); }
+function printSlip(s, d){
+  printWin(`<div class="pg"><h2>LOADING SLIP ${esc(s.slip_no)}</h2><div>${esc(S.loc.code)} · ${new Date().toLocaleString('en-IN')}</div>
+  <table><tr><th>Truck</th><td>${esc(d.truck_no)}</td><th>Driver</th><td>${esc(d.driver_name||'')}</td></tr><tr><th>Material</th><td>${esc(mat(s.material_id))}</td><th>Batch</th><td><b>${esc(s.batch)}</b></td></tr>
+  <tr><th>Quantity</th><td colspan="3"><b>${n3(s.qty_mt)} MT</b></td></tr><tr><th>Ship-To</th><td colspan="3">${esc(s.ship_to_code)}</td></tr></table>
+  <p style="margin-top:40px">Labor signature ____________________ &nbsp;&nbsp; Staff signature ____________________</p></div>`);
+}
+async function printChallans(ids){
+  const ch = await q('wh_challans', b => b.in('id', ids)); const lines = await q('wh_challan_lines', b => b.in('challan_id', ids));
+  const disp = await q('wh_dispatches', b => b.in('id', [...new Set(ch.map(c=>c.dispatch_id))]));
+  printWin(ch.map(c => { const d = disp.find(x=>x.id===c.dispatch_id)||{}; const p = S.parties.find(x=>x.client_id===c.client_id && x.sap_code===c.ship_to_code)||{};
+    return `<div class="pg"><h2>${c.challan_no.startsWith('ADC')?'ADJUSTMENT CHALLAN (no physical movement)':'DELIVERY CHALLAN'} ${esc(c.challan_no)}</h2><div>${esc(S.loc.code)} · ${new Date(c.created_at).toLocaleString('en-IN')}</div>
+    <table><tr><th>Customer</th><td>${esc((S.clients.find(x=>x.id===c.client_id)||{}).name)}</td><th>Truck</th><td>${esc(d.truck_no||'—')}</td></tr>
+    <tr><th>Ship-To</th><td>${esc(p.party_name||'')} (${esc(c.ship_to_code)})</td><th>Sold-To</th><td>${esc(c.sold_to_code||'')}</td></tr><tr><th>Material</th><td colspan="3"><b>${esc(mat(c.material_id))}</b></td></tr></table>
+    <table><tr><th>Batch</th><th class="n">MT</th><th class="n">Bags</th></tr>${lines.filter(l=>l.challan_id===c.id).map(l=>`<tr><td>${esc(l.batch)}</td><td class="n">${n3(l.qty_mt)}</td><td class="n">${l.bags??''}</td></tr>`).join('')}
+    <tr><th>Total</th><th class="n">${n3(c.qty_mt)} MT</th><th class="n">${c.bags??''} Bags</th></tr></table><p style="margin-top:40px">Driver ____________________ &nbsp;&nbsp; For SS Logistics ____________________</p></div>`; }).join(''));
+}
+
+/* ============ RETURNS ============ */
+VIEWS.returns = async m => {
+  const rows = await q('wh_returns', b => b.eq('location_id', S.loc.id).order('created_at', {ascending:false}).limit(50));
+  const ph = await evidenceCount('return', rows.map(r=>r.id));
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Returns · ${esc(S.loc.code)} ${chip(S.loc.return_intimation==='hard'?'Hard stop: inform before unloading':'Soft: unload, inform after', S.loc.return_intimation==='hard'?'bad':'warn')}</h1><button class="primary" id="rNew">+ Return truck</button></div>
+  <div class="card">${table([{h:'Return',k:'return_no'},{h:'Truck',f:r=>`<span class="plate">${esc(r.truck_no)}</span>`},{h:'Informed',f:r=>r.intimated_at?chip(r.intimation_mode+' '+dt(r.intimated_at),'ok'):chip('not yet','bad')},{h:'Photos',f:r=>`<a href="#" data-ev="${r.id}">${ph[r.id]||0}</a>`},
+    {h:'Status',f:r=>r.status==='received'?chip(r.intimated_at?'received':'received · flagged', r.intimated_at?'ok':'bad'):chip('at gate','warn')},
+    {h:'',f:r=>`${!r.intimated_at?`<button class="ghost sm" data-in="${r.id}">Inform customer</button>`:''} ${r.status!=='received'?`<button class="lime sm" data-ph="${r.id}">📷</button> <button class="primary sm" data-rc="${r.id}">Unload</button>`:''}`}], rows, 'No returns.')}</div>`;
+  m.querySelectorAll('[data-ev]').forEach(a => a.onclick = e => { e.preventDefault(); showEvidenceAll(a.dataset.ev); });
+  m.querySelectorAll('[data-ph]').forEach(b => b.onclick = async () => { await capture('return', b.dataset.ph, 'Return ' + rows.find(r=>r.id===b.dataset.ph).return_no); go(); });
+  m.querySelectorAll('[data-rc]').forEach(b => b.onclick = () => act(b, async () => { const r = await rpc('wh_return_receive', {p_return:b.dataset.rc}); go(); return r; }, r => 'Return ' + r));
+  m.querySelectorAll('[data-in]').forEach(b => b.onclick = () => {
+    modal(`<h2>Inform the customer</h2><div class="grid"><div><label>How</label><select id="iM"><option value="email">Email (draft created)</option><option value="whatsapp">WhatsApp</option><option value="sms">SMS</option></select></div><div><label>Who / when (WhatsApp, SMS)</label><input id="iR" placeholder="e.g. Sales officer Mr Das, 10:40"></div></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="iGo">Record</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('iGo').onclick = e => act(e.target, async () => { const msg = await rpc('wh_return_intimate', {p_return:b.dataset.in, p_mode:$('iM').value, p_ref:$('iR').value||null}); closeModal(); go(); return msg; }, msg => msg ? 'Email drafted — send it from Messages' : 'Recorded');
+  });
+  $('rNew').onclick = async () => {
+    modal(`<h2>Return truck</h2><div class="grid"><div><label>Original challan no</label><input id="rC" placeholder="DC/..."></div><div><label>Truck no</label><input id="rT"></div><div><label>Labor contractor</label><select id="rL">${contrOpts()}</select></div></div>
+      <button class="ghost sm" id="rFind" style="margin-top:8px">Find challan</button><div id="rLines"></div>`);
+    $('rFind').onclick = e => act(e.target, async () => {
+      const [c] = await q('wh_challans', b => b.eq('location_id', S.loc.id).eq('challan_no', $('rC').value.trim()));
+      if(!c) throw new Error('Challan not found at this warehouse');
+      const ls = await q('wh_challan_lines', b => b.eq('challan_id', c.id));
+      $('rLines').innerHTML = `<p class="muted">${esc(mat(c.material_id))} to ${esc(c.ship_to_code)} · batch and material come from the challan.</p>${table([{h:'Batch',k:'batch'},{h:'Dispatched MT',n:1,f:l=>n3(l.qty_mt)},{h:'Fresh back MT',f:l=>`<input type="number" step="0.001" data-f="${l.id}" style="height:36px">`},{h:'Damaged back MT',f:l=>`<input type="number" step="0.001" data-x="${l.id}" style="height:36px">`}], ls)}
+        <div class="row" style="margin-top:10px"><button class="primary" id="rGo">Record return</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`;
+      $('rGo').onclick = e2 => act(e2.target, async () => {
+        const lines = ls.map(l => ({challan_line_id:l.id, fresh_mt:+document.querySelector(`[data-f="${l.id}"]`).value||0, damaged_mt:+document.querySelector(`[data-x="${l.id}"]`).value||0})).filter(l => l.fresh_mt+l.damaged_mt>0);
+        await rpc('wh_return_create', {p:{challan_id:c.id, truck_no:$('rT').value, contractor_id:$('rL').value, lines}}); closeModal(); go();
+      }, 'Return recorded — inform the customer, take photos of damaged bags, then unload');
+    });
+  };
+};
+
+/* ============ DAMAGE (Fresh -> Damaged) ============ */
+VIEWS.damage = async m => {
+  const rows = await q('wh_damage_transfers', b => b.eq('location_id', S.loc.id).order('created_at', {ascending:false}).limit(50));
+  const fresh = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).eq('storage','fresh'));
+  const ph = await evidenceCount('damage_transfer', rows.map(r=>r.id));
+  const R = {handling:'Handling', leakage_water:'Leakage / water', stacking_collapse:'Stacking collapse', other:'Other'};
+  m.innerHTML = `<h1>Damage inside the godown</h1><div class="card"><h2>Request Fresh → Damaged</h2><div class="grid">
+    <div style="grid-column:span 2"><label>Stock</label><select id="dS">${fresh.map(x=>`<option value="${x.material_id}|${esc(x.batch)}">${esc(x.material)} · ${esc(x.batch)} · ${n3(x.qty_mt)} MT</option>`).join('')}</select></div>
+    <div><label>Quantity MT</label><input id="dQ" type="number" step="0.001"></div><div><label>Reason</label><select id="dR">${Object.entries(R).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div><div><label>Note</label><input id="dN"></div></div>
+    <button class="primary" id="dGo">Raise request</button> <span class="muted">Then take photos; an authorized office user approves.</span></div>
+  <div class="card">${table([{h:'Request',k:'transfer_no'},{h:'Material',f:r=>esc(mat(r.material_id))},{h:'Batch',k:'batch'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Reason',f:r=>esc(R[r.reason])+(r.reason_note?' — '+esc(r.reason_note):'')},{h:'Photos',f:r=>`<a href="#" data-ev="${r.id}">${ph[r.id]||0}</a>`},
+    {h:'Status',f:r=>chip(r.status, r.status==='approved'?'ok':r.status==='rejected'?'bad':'warn')},{h:'',f:r=>r.status==='requested'?`<button class="lime sm" data-ph="${r.id}">📷</button>${can('wh_damage_transfer_approve')?` <button class="primary sm" data-ap="${r.id}">Approve</button> <button class="ghost sm" data-rj="${r.id}">Reject</button>`:''}`:''}], rows, 'No requests.')}</div>`;
+  $('dGo').onclick = e => act(e.target, async () => { const [mid, b] = $('dS').value.split('|'); await rpc('wh_damage_request', {p_location:S.loc.id, p_material:mid, p_batch:b, p_qty:+$('dQ').value, p_reason:$('dR').value, p_note:$('dN').value||null}); go(); }, 'Request raised — add photos');
+  m.querySelectorAll('[data-ev]').forEach(a => a.onclick = e => { e.preventDefault(); showEvidenceAll(a.dataset.ev); });
+  m.querySelectorAll('[data-ph]').forEach(b => b.onclick = async () => { await capture('damage_transfer', b.dataset.ph, 'Damage ' + rows.find(r=>r.id===b.dataset.ph).transfer_no); go(); });
+  m.querySelectorAll('[data-ap],[data-rj]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_damage_decide', {p_transfer:b.dataset.ap||b.dataset.rj, p_approve:!!b.dataset.ap, p_note:null}); go(); }, 'Done'));
+};
+
+/* ============ MONTHLY STOCK COUNT ============ */
+VIEWS.count = async m => {
+  const counts = await q('wh_stock_counts', b => b.eq('location_id', S.loc.id).order('count_month', {ascending:false}).limit(12));
+  const cur = counts.find(c => c.status!=='posted');
+  let lines = cur ? await q('wh_count_lines', b => b.eq('count_id', cur.id).order('storage').order('batch')) : [];
+  m.innerHTML = `<h1>Monthly stock count · ${esc(S.loc.code)}</h1>
+  ${cur ? `<div class="card"><h2>${new Date(cur.count_month).toLocaleDateString('en-IN',{month:'long',year:'numeric'})} · ${chip(cur.status, cur.status==='submitted'?'warn':'info')}</h2>
+    ${table([{h:'Location',f:l=>chip(l.storage, l.storage==='damaged'?'bad':'ok')},{h:'Material',f:l=>esc(mat(l.material_id))},{h:'Batch',k:'batch'},{h:'Book MT',n:1,f:l=>n3(l.book_mt)},
+      {h:'Physical MT',f:l=>cur.status==='open'?`<input type="number" step="0.001" data-p="${l.id}" value="${l.physical_mt??''}" style="height:36px;width:110px">`:n3(l.physical_mt)},
+      {h:'Difference',n:1,f:l=>l.diff_mt?`<b style="color:${l.diff_mt<0?'var(--alert)':'var(--ok)'}">${n3(l.diff_mt)}</b>`:''},
+      {h:'Reason',f:l=>cur.status==='open'?`<select data-r="${l.id}" style="height:36px"><option value="">—</option><option value="damage" ${l.reason==='damage'?'selected':''}>Damage</option><option value="shortage" ${l.reason==='shortage'?'selected':''}>Shortage</option><option value="count_error" ${l.reason==='count_error'?'selected':''}>Count error (recount)</option></select>`:esc(l.reason||'')}], lines)}
+    <div class="row" style="margin-top:10px">${cur.status==='open'?'<button class="ghost" id="cSave">Save counts</button><button class="primary" id="cSub">Submit</button>':''}${cur.status==='submitted'&&can('wh_variance_approve')?'<button class="primary" id="cPost">Approve & post adjustments</button>':''}</div></div>`
+  : `<div class="card"><div class="grid"><div><label>Month</label><input type="month" id="cM" value="${today().slice(0,7)}"></div></div><button class="primary" id="cStart">Start count sheet</button></div>`}
+  <div class="card"><h2>Past counts</h2>${table([{h:'Month',f:c=>new Date(c.count_month).toLocaleDateString('en-IN',{month:'short',year:'numeric'})},{h:'Status',f:c=>chip(c.status)},{h:'Posted',f:c=>dt(c.posted_at)}], counts.filter(c=>c.status==='posted'))}</div>`;
+  if($('cStart')) $('cStart').onclick = e => act(e.target, async () => { await rpc('wh_count_start', {p_location:S.loc.id, p_month:$('cM').value+'-01'}); go(); }, 'Count sheet created from book stock');
+  const save = async () => { for(const l of lines){ const p = document.querySelector(`[data-p="${l.id}"]`).value; const r = document.querySelector(`[data-r="${l.id}"]`).value; if(p==='' ) continue; if(+p!==+l.physical_mt || (r||null)!==(l.reason||null)) await rpc('wh_count_enter', {p_line:l.id, p_physical:+p, p_reason:r||null, p_note:null}); } };
+  if($('cSave')) $('cSave').onclick = e => act(e.target, async () => { await save(); go(); }, 'Saved');
+  if($('cSub')) $('cSub').onclick = e => act(e.target, async () => { await save(); await rpc('wh_count_submit', {p_count:cur.id}); go(); }, 'Submitted for approval');
+  if($('cPost')) $('cPost').onclick = e => act(e.target, async () => { const n = await rpc('wh_count_post', {p_count:cur.id}); go(); return n; }, n => `${n} adjustment(s) posted`);
+};
+
+/* ============ ADJUSTMENT DISPATCH ============ */
+VIEWS.adjust = async m => {
+  const src = await q('wh_adjustable_sources', b => b.eq('location_id', S.loc.id).gt('unadjusted_mt', 0).order('created_at'));
+  const list = await q('wh_dispatches', b => b.eq('location_id', S.loc.id).like('dispatch_type','adjustment%').order('created_at', {ascending:false}).limit(30));
+  const T = {grn_shortage:'Own-truck shortage (GRN)', grn_damage:'GRN damage', return_damage:'Return damage', damage_transfer:'Internal damage', count_damage:'Count damage'};
+  m.innerHTML = `<h1>Adjustment Dispatch · ${esc(S.loc.code)}</h1><p class="muted">A billing entry with no truck: clubs shortages or damaged bags into one dispatch to one party so the customer can bill it. It is the only way stock leaves the Damaged location.</p>
+  <div class="card"><div class="grid"><div><label>Type</label><select id="aT"><option value="damage">Damage (bags sold off)</option><option value="shortage">Shortage</option></select></div><div><label>Ship-To (dealer)</label><select id="aP">${partyOpts(S.loc.client_id)}</select></div><div><label>Sold-To (optional)</label><input id="aS"></div><div><label>Note</label><input id="aN"></div></div>
+  <div id="aSrc"></div><button class="primary" id="aGo" style="margin-top:10px">Create for approval</button></div>
+  <div class="card"><h2>Adjustment Dispatches</h2>${table([{h:'No',k:'dispatch_no'},{h:'Type',f:d=>chip(d.dispatch_type.replace('adjustment_',''))},{h:'Created',f:d=>dt(d.created_at)},{h:'Status',f:d=>chip(d.status.replace('_',' '), d.status==='dispatched'?'ok':d.status==='cancelled'?'bad':'warn')}], list)}</div>`;
+  const draw = () => { const t = $('aT').value; const s = src.filter(x => (t==='shortage') === (x.source_type==='grn_shortage'));
+    $('aSrc').innerHTML = table([{h:'Source',f:x=>`${esc(T[x.source_type])}<br><span class="muted">${esc(x.ref_no)}</span>`},{h:'Material',f:x=>esc(mat(x.material_id))},{h:'Batch',k:'batch'},{h:'Unadjusted MT',n:1,f:x=>n3(x.unadjusted_mt)},{h:'Days',n:1,k:'days_pending'},{h:'Adjust MT',f:x=>`<input type="number" step="0.001" data-q="${x.source_type}|${x.source_id}" style="height:36px;width:110px">`}], s, 'Nothing waiting to be adjusted.'); };
+  $('aT').onchange = draw; draw();
+  $('aGo').onclick = e => act(e.target, async () => {
+    const sources = [...m.querySelectorAll('[data-q]')].filter(i => +i.value>0).map(i => { const [st, sidv] = i.dataset.q.split('|'); return {source_type:st, source_id:sidv, qty_mt:+i.value}; });
+    await rpc('wh_adjustment_create', {p:{location_id:S.loc.id, type:$('aT').value, ship_to_code:$('aP').value, sold_to_code:$('aS').value, note:$('aN').value, sources}}); go();
+  }, 'Created — waiting for approval');
+};
+
+/* ============ APPROVALS ============ */
+VIEWS.approvals = async m => {
+  const [op, adj, dmg, cnt, bills] = await Promise.all([
+    q('wh_opening_stock', b => b.eq('status','pending_approval')), q('wh_dispatches', b => b.eq('status','pending_approval')),
+    q('wh_damage_transfers', b => b.eq('status','requested')), q('wh_stock_counts', b => b.eq('status','submitted')), q('wh_labor_bills', b => b.eq('status','draft'))]);
+  const links = adj.length ? await q('wh_adjustment_links', b => b.in('dispatch_id', adj.map(a=>a.id))) : [];
+  const lines = cnt.length ? await q('wh_count_lines', b => b.in('count_id', cnt.map(c=>c.id)).neq('diff_mt', 0)) : [];
+  const L = id => (S.me.locations.find(l=>l.id===id)||{}).code || '';
+  const btn = (g, attr, id) => can(g) ? `<button class="lime sm" data-${attr}="${id}" data-v="1">Approve</button> <button class="ghost sm" data-${attr}="${id}" data-v="0">Reject</button>` : '<span class="muted">no permission</span>';
+  m.innerHTML = `<h1>Approvals</h1>
+  <div class="card"><h2>Opening stock mismatches</h2>${table([{h:'Location',f:r=>L(r.location_id)},{h:'Material',f:r=>esc(mat(r.material_id))},{h:'Physical',n:1,f:r=>n3(r.physical_mt)},{h:'SAP',n:1,f:r=>n3(r.sap_mt)},{h:'Reason',k:'mismatch_reason'},{h:'',f:r=>btn('wh_opening_mismatch_approve','op',r.id)}], op, 'None pending.')}</div>
+  <div class="card"><h2>Adjustment Dispatches</h2>${table([{h:'No',k:'dispatch_no'},{h:'Location',f:r=>L(r.location_id)},{h:'Type',f:r=>chip(r.dispatch_type.replace('adjustment_',''))},{h:'Party',f:r=>{try{return esc(JSON.parse(r.note).ship_to_code)}catch(e){return ''}}},{h:'Lines',f:r=>links.filter(l=>l.dispatch_id===r.id).map(l=>`${esc(mat(l.material_id))} ${esc(l.batch)} ${n3(l.qty_mt)}`).join('<br>')},{h:'MT',n:1,f:r=>n3(links.filter(l=>l.dispatch_id===r.id).reduce((s,l)=>s+ +l.qty_mt,0))},{h:'',f:r=>btn('wh_adjustment_approve','adj',r.id)}], adj, 'None pending.')}</div>
+  <div class="card"><h2>Fresh → Damaged transfers</h2>${table([{h:'No',k:'transfer_no'},{h:'Location',f:r=>L(r.location_id)},{h:'Material',f:r=>esc(mat(r.material_id))},{h:'Batch',k:'batch'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Reason',f:r=>esc(r.reason.replace('_',' '))},{h:'Photos',f:r=>`<a href="#" data-ev="${r.id}">view</a>`},{h:'',f:r=>btn('wh_damage_transfer_approve','dmg',r.id)}], dmg, 'None pending.')}</div>
+  <div class="card"><h2>Monthly count variances</h2>${table([{h:'Location',f:c=>L(c.location_id)},{h:'Month',f:c=>new Date(c.count_month).toLocaleDateString('en-IN',{month:'short',year:'numeric'})},{h:'Differences',f:c=>lines.filter(l=>l.count_id===c.id).map(l=>`${esc(mat(l.material_id))} ${esc(l.batch)} ${l.storage}: ${n3(l.diff_mt)} (${esc(l.reason||'')})`).join('<br>')},{h:'',f:c=>can('wh_variance_approve')?`<button class="lime sm" data-cnt="${c.id}">Approve & post</button>`:''}], cnt, 'None pending.')}</div>
+  <div class="card"><h2>Labor bills</h2>${table([{h:'Bill',k:'bill_no'},{h:'Location',f:r=>L(r.location_id)},{h:'Period',f:r=>`${d8(r.period_from)} – ${d8(r.period_to)}`},{h:'MT',n:1,f:r=>n3(r.total_mt)},{h:'Amount',n:1,f:r=>inr(r.amount)},{h:'',f:r=>can('wh_labor_bill_approve')?`<button class="lime sm" data-bill="${r.id}">Approve</button>`:''}], bills, 'None pending.')}</div>`;
+  m.querySelectorAll('[data-ev]').forEach(a => a.onclick = e => { e.preventDefault(); showEvidenceAll(a.dataset.ev); });
+  m.querySelectorAll('[data-op]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_opening_decide', {p_line:b.dataset.op, p_approve:b.dataset.v==='1', p_note:null}); go(); }, 'Done'));
+  m.querySelectorAll('[data-adj]').forEach(b => b.onclick = () => act(b, async () => { const r = await rpc('wh_adjustment_decide', {p_dispatch:b.dataset.adj, p_approve:b.dataset.v==='1'}); if(r==='APPROVED'){ const ch = await q('wh_challans', x => x.eq('dispatch_id', b.dataset.adj)); printChallans(ch.map(c=>c.id)); } go(); }, 'Done'));
+  m.querySelectorAll('[data-dmg]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_damage_decide', {p_transfer:b.dataset.dmg, p_approve:b.dataset.v==='1', p_note:null}); go(); }, 'Done'));
+  m.querySelectorAll('[data-cnt]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_count_post', {p_count:b.dataset.cnt}); go(); }, 'Posted'));
+  m.querySelectorAll('[data-bill]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_labor_bill_decide', {p_bill:b.dataset.bill, p_action:'approve', p_busy_ref:null}); go(); }, 'Approved'));
+};
+
+/* ============ SAP BILLING ============ */
+function parseSapRows(rows){
+  const hi = rows.findIndex(r => r.some(c => /^invoice no$/i.test(String(c||'').trim())));
+  if(hi<0) throw new Error('Could not find the "INVOICE NO" column — is this the SAP billing export?');
+  const H = rows[hi].map(c => String(c||'').trim().toUpperCase());
+  const col = name => H.indexOf(name);
+  const pick = (r, name) => { const i = col(name); return i<0 ? null : (r[i]==null ? null : String(r[i]).trim()); };
+  const iso = v => { if(!v) return null; if(/^\d{2}-\d{2}-\d{4}$/.test(v)) return v.split('-').reverse().join('-'); if(/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0,10); if(/^\d+(\.\d+)?$/.test(v)){ const d = XLSX.SSF.parse_date_code(+v); return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`; } return v; };
+  return rows.slice(hi+1).filter(r => pick(r,'INVOICE NO')).map(r => ({
+    invoice_no:pick(r,'INVOICE NO'), cancelled_invoice:pick(r,'CANCELLED INVOICE'), invoice_date:iso(pick(r,'INVOICE DATE')), gi_date:iso(pick(r,'ACTUAL GI DATE')),
+    truck_no:pick(r,'TRUCK NO'), sold_to_code:pick(r,'SOLD TO PARTY'), ship_to_code:pick(r,'SHIP TO PARTY'), product_code:pick(r,'PRODUCT'), product_description:pick(r,'PRODUCT DESCRIPTION'),
+    qty:+String(pick(r,'QTY')||'0').replace(/,/g,''), uom:pick(r,'UOM'), so_no:pick(r,'SO/PO NUMBER'), delivery_no:pick(r,'DELIVERY NO'), shipment_no:pick(r,'SHIPMENT NO'),
+    batch_no:pick(r,'BATCH NO'), plant:pick(r,'PLANT'), transporter:pick(r,'TRANSPORTER NAME'), shipment_amount:pick(r,'SHIPMENT AMOUNT') }));
+}
+VIEWS.billing = async m => {
+  S.billClient = S.billClient || (S.loc && S.loc.client_id) || (S.clients[0]||{}).id;
+  const cid = S.billClient;
+  const [held, sug, lvb, ui, uc] = await Promise.all([
+    q('wh_sap_invoices', b => b.eq('client_id', cid).not('hold_reason','is',null).eq('cancelled', false)),
+    rpc('wh_tag_suggestions', {p_client:cid}), q('wh_lifted_vs_billed', b => b.eq('client_id', cid)),
+    q('wh_untagged_invoices', b => b.eq('client_id', cid).is('hold_reason', null).order('invoice_date')), q('wh_untagged_challans', b => b.eq('client_id', cid).order('dispatched_at'))]);
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>SAP billing & tagging</h1><select id="bC" style="width:auto">${opt(S.clients,'id','name',cid)}</select></div>
+  <div class="card"><h2>Upload SAP billing export</h2><div class="row"><input type="file" id="bF" accept=".txt,.tsv,.csv,.xlsx,.xls" class="grow" style="max-width:420px"><button class="primary" id="bUp">Upload</button></div><p class="muted">Upload exactly as downloaded. Invoices already uploaded are skipped; cancelled invoices are reversed and un-tagged; unmapped products or Ship-To codes are held.</p></div>
+  <div class="card"><h2>Lifted vs billed</h2>${table([{h:'Material',k:'material'},{h:'Lifted MT',n:1,f:r=>n3(r.lifted_mt)},{h:'Billed MT',n:1,f:r=>n3(r.billed_mt)},{h:'Gap MT',n:1,f:r=>`<b>${n3(r.gap_mt)}</b>`},{h:'Position',f:r=>chip(r.position, r.position==='balanced'?'ok':r.position==='advance billing'?'info':'warn')}], lvb)}</div>
+  ${held.length ? `<div class="card"><h2>Held invoices (map, then release)</h2>${table([{h:'Invoice',k:'invoice_no'},{h:'Product',k:'product_code'},{h:'Ship-To',k:'ship_to_code'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Why held',f:r=>chip(r.hold_reason,'bad')}], held)}<button class="ghost sm" id="bRel" style="margin-top:8px">Release after mapping</button></div>` : ''}
+  <div class="card"><div class="row" style="justify-content:space-between"><h2>Suggested matches (${sug.length})</h2>${sug.length?'<button class="lime sm" id="bAll">Tag all suggestions</button>':''}</div>${table([{h:'Invoice',k:'invoice_no'},{h:'Challan',k:'challan_no'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Matched on',f:r=>chip(r.match, r.match.startsWith('truck')?'ok':'info')},{h:'',f:r=>`<button class="primary sm" data-tg="${r.invoice_id}|${r.challan_id}|${r.qty_mt}">Tag</button>`}], sug, 'No suggestions.')}</div>
+  <div class="card"><h2>Manual tag</h2><div class="grid"><div style="grid-column:span 2"><label>Invoice</label><select id="mI">${ui.map(i=>`<option value="${i.id}">${esc(i.invoice_no)} · ${esc(mat(i.material_id))} · ${esc(i.ship_to_code)} · open ${n3(i.open_mt)} MT${i.advance_billing?' · ADVANCE':''}</option>`).join('')}</select></div>
+    <div style="grid-column:span 2"><label>Challan</label><select id="mC">${uc.map(c=>`<option value="${c.challan_id}">${esc(c.challan_no)} · ${esc(mat(c.material_id))} · ${esc(c.ship_to_code)} · ${esc(c.truck_no||'no truck')} · open ${n3(c.open_mt)} MT</option>`).join('')}</select></div><div><label>MT</label><input id="mQ" type="number" step="0.001"></div></div><button class="primary" id="mGo">Tag</button></div>
+  <div class="grid" style="grid-template-columns:1fr 1fr"><div class="card"><h2>Untagged invoices (${ui.length})</h2>${table([{h:'Invoice',k:'invoice_no'},{h:'Date',f:r=>d8(r.invoice_date)},{h:'Open MT',n:1,f:r=>n3(r.open_mt)},{h:'',f:r=>r.advance_billing?chip('advance','info'):''},{h:'Days',n:1,k:'days_open'}], ui, 'All tagged.')}</div>
+    <div class="card"><h2>Untagged challans (${uc.length})</h2>${table([{h:'Challan',k:'challan_no'},{h:'Truck',k:'truck_no'},{h:'Open MT',n:1,f:r=>n3(r.open_mt)},{h:'Days',n:1,k:'days_open'}], uc, 'All tagged.')}</div></div>`;
+  $('bC').onchange = () => { S.billClient = $('bC').value; go(); };
+  $('bUp').onclick = e => act(e.target, async () => {
+    const f = $('bF').files[0]; if(!f) throw new Error('Choose the SAP file');
+    let rows;
+    if(/\.(xlsx|xls)$/i.test(f.name)){ const wb = XLSX.read(await f.arrayBuffer()); rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {header:1, raw:false, defval:null}); }
+    else { const txt = await f.text(); const sep = txt.split('\n')[0].includes('\t') ? '\t' : ','; rows = txt.split(/\r?\n/).map(l => l.split(sep)); }
+    const parsed = parseSapRows(rows);
+    const r = await rpc('wh_sap_upload', {p_client:cid, p_file_name:f.name, p_rows:parsed}); go(); return r;
+  }, r => `${r.inserted} new · ${r.skipped_duplicate} duplicates skipped · ${r.held} held · ${r.cancelled} cancelled`);
+  if($('bRel')) $('bRel').onclick = e => act(e.target, async () => { await rpc('wh_sap_release_holds', {p_client:cid}); go(); }, 'Holds re-checked');
+  const tag = async s => { const [i,c,qv] = s.split('|'); await rpc('wh_tag', {p_invoice:i, p_challan:c, p_qty:+qv}); };
+  m.querySelectorAll('[data-tg]').forEach(b => b.onclick = () => act(b, async () => { await tag(b.dataset.tg); go(); }, 'Tagged'));
+  if($('bAll')) $('bAll').onclick = e => act(e.target, async () => { for(const s of sug) await rpc('wh_tag', {p_invoice:s.invoice_id, p_challan:s.challan_id, p_qty:s.qty_mt}); go(); return sug.length; }, n => `${n} tagged`);
+  $('mGo').onclick = e => act(e.target, async () => { await rpc('wh_tag', {p_invoice:$('mI').value, p_challan:$('mC').value, p_qty:+$('mQ').value}); go(); }, 'Tagged');
+};
+
+/* ============ SAP GRN ============ */
+VIEWS.sapgrn = async m => {
+  const rows = await q('wh_pending_sap_grn', b => b.order('created_at'));
+  m.innerHTML = `<h1>SAP GRN numbers pending</h1><div class="card">${table([{h:'GRN',k:'grn_no'},{h:'Location',k:'location'},{h:'Truck',k:'truck_no'},{h:'Material',k:'material'},{h:'MT',n:1,f:r=>n3(r.received_mt)},{h:'Days',n:1,f:r=>r.days_pending>2?`<b style="color:var(--alert)">${r.days_pending}</b>`:r.days_pending},
+    {h:'SAP GRN no',f:r=>`<input data-s="${r.id}" style="height:36px;width:160px">`},{h:'',f:r=>`<button class="primary sm" data-g="${r.id}">Save</button>`}], rows, 'Every GRN has its SAP number.')}</div>`;
+  m.querySelectorAll('[data-g]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_grn_set_sap', {p_grn:b.dataset.g, p_sap_no:m.querySelector(`[data-s="${b.dataset.g}"]`).value}); go(); }, 'Saved'));
+};
+
+/* ============ RECOVERIES ============ */
+VIEWS.recoveries = async m => {
+  const grns = await q('wh_grns', b => b.eq('location_id', S.loc.id));
+  const rows = grns.length ? await q('wh_recoveries', b => b.in('grn_id', grns.map(g=>g.id)).order('created_at', {ascending:false})) : [];
+  const G = id => (grns.find(g=>g.id===id)||{}).grn_no;
+  const pend = rows.filter(r=>r.kind==='driver' && r.status==='pending');
+  m.innerHTML = `<h1>Shortage recoveries · ${esc(S.loc.code)}</h1><div class="kpi"><div><span>Driver cash pending</span><b style="color:var(--alert)">${inr(pend.reduce((s,r)=>s+ +r.amount,0))}</b></div><div><span>Trucks blocked</span><b>${new Set(pend.map(r=>r.truck_no)).size}</b></div></div>
+  <div class="card"><h2>Own-truck drivers (next trip blocked until settled, no override)</h2>${table([{h:'GRN',f:r=>esc(G(r.grn_id))},{h:'Truck',f:r=>`<span class="plate">${esc(r.truck_no)}</span>`},{h:'Driver',k:'driver_name'},{h:'Bags',n:1,k:'shortage_bags'},{h:'Rate',n:1,f:r=>inr(r.rate_per_bag)},{h:'Amount',n:1,f:r=>`<b>${inr(r.amount)}</b>`},
+    {h:'',f:r=>r.status==='pending'?`<button class="lime sm" data-c="${r.id}">Cash received</button> <button class="ghost sm" data-k="${r.id}">Deduct from khuraki</button>`:chip(r.status.replace('_',' ')+' · '+(r.settlement_ref||''),'ok')}], rows.filter(r=>r.kind==='driver'), 'No driver recoveries.')}</div>
+  <div class="card"><h2>Vendor trucks (recovered through the vendor ledger)</h2>${table([{h:'GRN',f:r=>esc(G(r.grn_id))},{h:'Truck',k:'truck_no'},{h:'Vendor',f:r=>esc((S.vendors.find(v=>v.id===r.vendor_id)||{}).vendor_name)},{h:'Bags',n:1,k:'shortage_bags'},{h:'Amount',n:1,f:r=>inr(r.amount)}], rows.filter(r=>r.kind==='vendor'), 'None.')}</div>
+  <div class="card"><h2>Endorsed on challan (customer deducts)</h2>${table([{h:'GRN',f:r=>esc(G(r.grn_id))},{h:'Truck',k:'truck_no'},{h:'Bags',n:1,k:'shortage_bags'}], rows.filter(r=>r.kind==='endorsed'), 'None.')}</div>`;
+  const settle = (id, mode, label) => { const ref = prompt(label); if(!ref) return; act(null, async () => { await rpc('wh_recovery_settle', {p_recovery:id, p_mode:mode, p_ref:ref}); go(); }, 'Settled — truck released'); };
+  m.querySelectorAll('[data-c]').forEach(b => b.onclick = () => settle(b.dataset.c, 'paid_cash', 'Cash receipt number (location cash)'));
+  m.querySelectorAll('[data-k]').forEach(b => b.onclick = () => settle(b.dataset.k, 'deducted_khuraki', 'Trip / advance reference the deduction was made on'));
+};
+
+/* ============ LABOR ============ */
+VIEWS.labor = async m => {
+  const cons = S.contractors.filter(c=>c.location_id===S.loc.id);
+  const bills = await q('wh_labor_bills', b => b.eq('location_id', S.loc.id).order('created_at', {ascending:false}).limit(40));
+  const unb = await q('wh_labor_ops', b => b.eq('location_id', S.loc.id).is('labor_bill_id', null));
+  const V = c => c.vendor_name;
+  m.innerHTML = `<h1>Labor · ${esc(S.loc.code)}</h1><p class="muted">Bills are generated from our slips. Our records take precedence over the contractor's bill.</p>
+  <div class="card">${table([{h:'Contractor',f:c=>esc(V(c))},{h:'Cycle',f:c=>c.billing_cycle_days+' days'},{h:'Unbilled MT',n:1,f:c=>n3(unb.filter(o=>o.contractor_id===c.id).reduce((s,o)=>s+ +o.qty_mt,0))},{h:'Bill up to',f:c=>`<input type="date" data-to="${c.id}" value="${today()}" style="height:36px">`},{h:'',f:c=>`<button class="primary sm" data-gen="${c.id}">Generate bill</button>`}], cons, 'No contractors assigned to this location.')}</div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2>Bills</h2><button class="ghost sm" id="lCsv">BUSY export (CSV)</button></div>${table([{h:'Bill',f:b=>`<a href="#" data-bl="${b.id}">${esc(b.bill_no)}</a>`},{h:'Contractor',f:b=>esc(V(cons.find(c=>c.id===b.contractor_id)||{}))},{h:'Period',f:b=>`${d8(b.period_from)} – ${d8(b.period_to)}`},{h:'MT',n:1,f:b=>n3(b.total_mt)},{h:'Amount',n:1,f:b=>inr(b.amount)},
+    {h:'Status',f:b=>chip(b.status + (b.busy_ref?' · '+b.busy_ref:''), b.status==='exported'?'ok':b.status==='approved'?'info':'warn')},
+    {h:'',f:b=>b.status==='draft'?`<button class="ghost sm" data-dis="${b.id}">Discard</button>`:b.status==='approved'&&can('wh_labor_bill_approve')?`<button class="lime sm" data-exp="${b.id}">Entered in BUSY</button>`:''}], bills, 'No bills yet.')}</div>`;
+  m.querySelectorAll('[data-gen]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_labor_bill_generate', {p_contractor:b.dataset.gen, p_period_to:m.querySelector(`[data-to="${b.dataset.gen}"]`).value}); go(); }, 'Bill generated — slips on it are now locked'));
+  m.querySelectorAll('[data-dis]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_labor_bill_decide', {p_bill:b.dataset.dis, p_action:'discard', p_busy_ref:null}); go(); }, 'Discarded'));
+  m.querySelectorAll('[data-exp]').forEach(b => b.onclick = () => { const ref = prompt('BUSY voucher reference'); if(ref) act(b, async () => { await rpc('wh_labor_bill_decide', {p_bill:b.dataset.exp, p_action:'exported', p_busy_ref:ref}); go(); }, 'Marked as entered in BUSY'); });
+  m.querySelectorAll('[data-bl]').forEach(a => a.onclick = async e => { e.preventDefault(); const ls = await q('wh_labor_bill_lines', b => b.eq('bill_id', a.dataset.bl).order('op_date'));
+    modal(`<h2>Bill lines</h2>${table([{h:'Date',f:l=>d8(l.op_date)},{h:'Document',k:'doc_no'},{h:'Activity',k:'activity'},{h:'Material',f:l=>esc(mat(l.material_id))},{h:'MT',n:1,f:l=>n3(l.qty_mt)},{h:'Rate',n:1,f:l=>inr(l.rate_per_mt)},{h:'Amount',n:1,f:l=>inr(l.amount)}], ls)}<button class="ghost" onclick="closeModal()" style="margin-top:10px">Close</button>`); });
+  $('lCsv').onclick = async () => csv(await q('wh_labor_busy_export', b => b.eq('location', S.loc.code)), 'labor-busy-' + S.loc.code);
+};
+
+/* ============ REPORTS ============ */
+const REPORTS = {
+  'Stock position': ['wh_stock_view', b => b.order('location_code').order('material')],
+  'Lifted vs billed': ['wh_lifted_vs_billed'],
+  'Untagged invoices': ['wh_untagged_invoices', b => b.order('invoice_date')],
+  'Untagged challans': ['wh_untagged_challans', b => b.order('dispatched_at')],
+  'Adjustment Dispatches': ['wh_dispatches', b => b.like('dispatch_type','adjustment%').order('created_at',{ascending:false})],
+  'Damage aging': ['wh_damage_aging', b => b.order('days_pending',{ascending:false})],
+  'Internal damage': ['wh_damage_transfers', b => b.order('created_at',{ascending:false})],
+  'Material mismatch': ['wh_material_mismatch_report'],
+  'Pending SAP GRN': ['wh_pending_sap_grn'],
+  'Stock variance': ['wh_stock_variance_report'],
+  'Wagon damage final count': ['wh_wagon_damage_final', b => b.not('damage_flag','is',null)],
+  'Labor bills': ['wh_labor_busy_export'],
+};
+VIEWS.reports = async m => {
+  S.rep = S.rep || 'Stock position';
+  const [t, f] = REPORTS[S.rep]; const rows = await q(t, f);
+  const hide = /(^id$|_id$|^lot_id$|client_id)/;
+  const cols = rows.length ? Object.keys(rows[0]).filter(k => !hide.test(k)).map(k => ({h:k.replace(/_/g,' '), f:r => { const v = r[k]; if(typeof v==='number' || (/_mt$/.test(k) && v!=null)) return n3(v); if(/_at$/.test(k)) return dt(v); return esc(v); }, n:/_mt$|bags|amount|days/.test(k)})) : [];
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Reports</h1><div class="row"><select id="rS" style="width:auto">${Object.keys(REPORTS).map(k=>`<option ${k===S.rep?'selected':''}>${k}</option>`).join('')}</select><button class="ghost sm" id="rCsv">CSV</button></div></div>
+  <div class="card">${table(cols, rows, 'No rows.')}</div>`;
+  $('rS').onchange = () => { S.rep = $('rS').value; go(); };
+  $('rCsv').onclick = () => csv(rows, S.rep.toLowerCase().replace(/ /g,'-'));
+};
+
+/* ============ MASTERS ============ */
+const MASTERS = {
+  'Customers': {t:'sys_clients', cols:['code','name','is_active'], form:[['code','Code (e.g. UTCL)'],['name','Customer name']]},
+  'Plants': {t:'sys_plants', cols:['code','name','client_id'], form:[['code','Plant code'],['name','Plant name'],['client_id','Customer','client']]},
+  'Vendors': {t:'sys_vendors', cols:['vendor_code','vendor_name','busy_name','is_active'], form:[['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
+  'Own trucks': {t:'sys_trucks', cols:['registration_no','is_active'], form:[['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
+  'Materials': {t:'wh_materials', cols:['code','name','is_active'], form:[['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']]},
+  'Locations': {t:'wh_locations', cols:['code','name','kind','station_code','return_intimation','is_live'], form:[['code','Code'],['name','Name'],['kind','Kind','sel',['warehouse','siding']],['client_id','Customer (warehouse only)','client'],['station_code','Station code (siding)'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r},
+  'SAP product mapping': {t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
+  'Parties (Ship-To / Sold-To)': {t:'wh_party_map', cols:['client_id','sap_code','party_name','location_id'], form:[['client_id','Customer','client'],['sap_code','SAP party code'],['party_name','Party name'],['location_id','If this is our own warehouse','loc']]},
+  'Bag conversion': {t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant (blank = all plants)','plant'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
+  'Labor rates': {t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
+  'Shortage recovery rates': {t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
+  'Labor contractors': {t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Vendor','vendor'],['billing_cycle_days','Billing cycle (days)','num']]},
+  'Customer email settings': {t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
+};
+VIEWS.masters = async m => {
+  S.mst = S.mst || 'Materials'; const M = MASTERS[S.mst];
+  const rows = await q(M.t, b => b.limit(500));
+  const allLocs = await q('wh_locations'); const plants = await q('sys_plants');
+  const show = (k, v) => { if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id') return esc((plants.find(x=>x.id===v)||{}).code); return esc(v); };
+  const input = ([k, l, t, o]) => { const sel = (arr) => `<select id="f_${k}"><option value=""></option>${arr}</select>`;
+    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plant' ? sel(opt(plants,'id','code')) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
+    return `<div><label>${esc(l)}</label>${el}</div>`; };
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Masters</h1><select id="mS" style="width:auto">${Object.keys(MASTERS).map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
+  <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid">${M.form.map(input).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
+  <div class="card">${table(M.cols.map(k => ({h:k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})), rows)}</div>`;
+  $('mS').onchange = () => { S.mst = $('mS').value; go(); };
+  $('mAdd').onclick = e => act(e.target, async () => {
+    let r = {}; M.form.forEach(([k,,t]) => { const v = $('f_'+k).value; if(v!=='') r[k] = t==='num' ? +v : v; });
+    if(M.extra) r = M.extra(r);
+    const {error} = M.upsert ? await sb.from(M.t).upsert(r, {onConflict:M.upsert}) : await sb.from(M.t).insert(r);
+    if(error) throw new Error(error.message);
+    await loadMasters(); if(M.t==='wh_locations'){ S.me = await rpc('wh_me'); } go();
+  }, 'Saved');
+};
+/* ============ USERS & PERMISSIONS (admin) ============ */
+VIEWS.users = async m => {
+  const [users, perms, ups, uls, locs] = await Promise.all([q('sys_users', b => b.order('email')), q('sys_permissions', b => b.order('key')), q('sys_user_permissions'), q('wh_user_locations'), q('wh_locations', b => b.order('code'))]);
+  m.innerHTML = `<h1>Users & permissions</h1><p class="muted">Logging in alone gives no access. Activate the user, then give permissions and locations. Office users see every location; others only their assigned ones. Final role design comes with the Roles & Profiles module.</p>
+  ${users.map(u => `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(u.email)}</h2><div class="row">
+    <label class="row" style="margin:0"><input type="checkbox" data-u="${u.id}" data-f="is_active" ${u.is_active?'checked':''}> Active</label>
+    <label class="row" style="margin:0"><input type="checkbox" data-u="${u.id}" data-f="is_office" ${u.is_office?'checked':''}> Office</label>
+    <label class="row" style="margin:0"><input type="checkbox" data-u="${u.id}" data-f="is_admin" ${u.is_admin?'checked':''}> Admin</label></div></div>
+    <div class="grid" style="margin-top:10px">${perms.map(p => `<label class="row" style="margin:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600"><input type="checkbox" data-pu="${u.id}" data-pk="${p.key}" ${ups.some(x=>x.user_id===u.id&&x.permission_key===p.key)?'checked':''}> ${esc(p.description)}</label>`).join('')}</div>
+    <div class="row" style="margin-top:10px"><span class="muted">Locations:</span>${locs.map(l => `<label class="row" style="margin:0;text-transform:none;letter-spacing:0;font-size:13px"><input type="checkbox" data-lu="${u.id}" data-lk="${l.id}" ${uls.some(x=>x.user_id===u.id&&x.location_id===l.id)?'checked':''}> ${esc(l.code)}</label>`).join('')}</div></div>`).join('')}`;
+  const run = async (fn) => { try{ const {error} = await fn(); if(error) throw new Error(error.message); toast('Saved'); }catch(e){ toast(e.message,'err',6000); go(); } };
+  m.querySelectorAll('[data-f]').forEach(c => c.onchange = () => run(() => sb.from('sys_users').update({[c.dataset.f]: c.checked}).eq('id', c.dataset.u)));
+  m.querySelectorAll('[data-pk]').forEach(c => c.onchange = () => run(() => c.checked ? sb.from('sys_user_permissions').insert({user_id:c.dataset.pu, permission_key:c.dataset.pk, granted_by:S.me.user_id}) : sb.from('sys_user_permissions').delete().eq('user_id', c.dataset.pu).eq('permission_key', c.dataset.pk)));
+  m.querySelectorAll('[data-lk]').forEach(c => c.onchange = () => run(() => c.checked ? sb.from('wh_user_locations').insert({user_id:c.dataset.lu, location_id:c.dataset.lk}) : sb.from('wh_user_locations').delete().eq('user_id', c.dataset.lu).eq('location_id', c.dataset.lk)));
+};
+</script>
+</body>
+</html>
