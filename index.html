@@ -296,7 +296,7 @@ async function start(){
   $('uEmail').textContent = user.email; $('uRole').textContent = (S.me.role||'').replace('_',' ');
   if(!S.me.active){ $('loginMsg').textContent = 'Your login works, but your user is not activated yet. Ask the admin to activate you.'; return; }
   $('login').classList.add('hide'); $('app').classList.remove('hide');
-  const locs = S.me.locations;
+  const locs = S.me.locations.filter(l => l.kind !== 'plant');
   $('locSel').innerHTML = locs.length ? locs.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)} (${l.kind})</option>`).join('') : '<option value="">No location assigned</option>';
   const saved = (() => { try { return localStorage.getItem('wh_loc'); } catch(e){ return null; } })();
   S.loc = locs.find(l => l.id===saved) || locs[0] || null; if(S.loc) $('locSel').value = S.loc.id;
@@ -314,8 +314,8 @@ const ICONS = {
   users:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/><path d="M16 4a4 4 0 0 1 0 8M22 21v-1a6 6 0 0 0-4-5.6"/></svg>',
 };
 const MODULES = [
-  { key:'wh', name:'Warehouse', icon:'warehouse', desc:'Rakes and sidings, godown receipts, loading and challans, returns, damage, stock, SAP billing, labor',
-    usesLocation:true, visible: () => S.me.grants.some(g => g.startsWith('wh_') && g !== 'wh_master_admin') || S.me.locations.length > 0,
+  { key:'wh', name:'Warehouse', icon:'warehouse', desc:'Sidings and warehouses: rakes, godown receipts, loading and challans, returns, damage, stock, SAP billing, labor',
+    usesLocation:true, visible: () => S.me.grants.some(g => g.startsWith('wh_') && g !== 'wh_master_admin') || S.me.locations.some(l => l.kind !== 'plant'),
     screens: () => {
       const t = []; const L = S.loc;
       if(L && L.kind==='siding'){ t.push(['#', L.code + ' · siding'],['rakes','Rakes'],['dispatch','Dispatch'],['stock','Stock']); }
@@ -332,7 +332,7 @@ const MODULES = [
       if(can('wh_master_admin')){ t.push(['#','Setup']); t.push(['whsetup','Warehouse setup']); }
       return t;
     } },
-  { key:'md', name:'Master Data', icon:'masters', desc:'Customers, Sold-To and Ship-To parties, destinations, plants, vendors, trucks',
+  { key:'md', name:'Master Data', icon:'masters', desc:'Customers, plants and warehouses, Sold-To and Ship-To parties, destinations, vendors, trucks',
     visible: () => can('wh_master_admin'), screens: () => [['#','Master data'],['masters','Masters']] },
   { key:'admin', name:'Users & Roles', icon:'users', desc:'Add users, set roles, permissions and locations',
     visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
@@ -977,17 +977,16 @@ VIEWS.reports = async m => {
 /* ============ MASTERS ============ */
 const MASTERS = {
   'Customers': {t:'sys_clients', cols:['code','name','is_active'], form:[['code','Code (e.g. UTCL)'],['name','Customer name']]},
-  'Plants': {t:'sys_plants', cols:['code','name','client_id'], form:[['code','Plant code'],['name','Plant name'],['client_id','Customer','client']]},
+  'Plants & warehouses': {t:'sys_plants', cols:['code','name','kind','client_id','parent_id','station_code','return_intimation','is_live'], form:[['kind','Type','sel',['plant','warehouse','siding']],['code','Plant code (e.g. 3W61)'],['name','Name'],['client_id','Customer (plant / warehouse)','client'],['parent_id','Inside plant (optional)','plant'],['station_code','Railway station code (siding)'],['return_intimation','Return intimation (warehouse)','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r.kind==='plant' ? {...r, is_live:true} : r, note:'A warehouse is a kind of plant and uses the same plant code convention. A rake siding is shared by customers.'},
   'Vendors': {t:'sys_vendors', cols:['vendor_code','vendor_name','busy_name','is_active'], form:[['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
   'Own trucks': {t:'sys_trucks', cols:['registration_no','is_active'], form:[['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
   'Materials': {wh:1, t:'wh_materials', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']], note:'Every material belongs to one customer. The same short name can exist for two customers.'},
-  'Locations': {wh:1, t:'wh_locations', cols:['code','name','kind','station_code','return_intimation','is_live'], form:[['code','Code'],['name','Name'],['kind','Kind','sel',['warehouse','siding']],['client_id','Customer (warehouse only)','client'],['station_code','Station code (siding)'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r},
   'SAP product mapping': {wh:1, t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
   'Sold-To parties': {t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], edit:['contact_phone','name'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
   'Ship-To parties': {t:'sys_ship_to', cols:['client_id','sold_to_id','sap_code','name','destination_id','location_id'], form:[['client_id','Customer','client'],['sold_to_id','Sold-To (buyer)','soldto'],['sap_code','SAP Ship-To code'],['name','Ship-To name'],['destination_id','Destination','dest'],['location_id','If this is our own warehouse','loc']], note:'Where the material goes. Belongs to one Sold-To and carries its destination.'},
   'Destinations': {t:'sys_destinations', cols:['name','district_id','pincode'], form:[['district_id','District (state)','district'],['name','Destination'],['pincode','PIN code']], note:'Every destination carries its district and state. Add the district first if it is not in the list.'},
   'Districts': {t:'sys_districts', cols:['state_id','name'], form:[['state_id','State','state'],['name','District']]},
-  'Bag conversion': {wh:1, t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant (blank = all plants)','plant'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
+  'Bag conversion': {wh:1, t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant / warehouse (blank = all)','plantall'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
   'Labor rates': {wh:1, t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
   'Shortage recovery rates': {wh:1, t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
   'Labor contractors': {wh:1, t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Vendor','vendor'],['billing_cycle_days','Billing cycle (days)','num']]},
@@ -1001,9 +1000,9 @@ VIEWS.masters = async (m, whOnly = false) => {
   const allLocs = await q('wh_locations'); const plants = await q('sys_plants');
   const [states, districts, dests, soldTos] = await Promise.all([q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
   const distLabel = d => d ? `${d.name} · ${(states.find(s=>s.id===d.state_id)||{}).name||''}` : '';
-  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='state_id') return esc((states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(districts.find(x=>x.id===v))); if(k==='destination_id'){ const x = dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`) : ''; } if(k==='sold_to_id'){ const x = soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; } if(k==='contact_phone' && !v) return chip('missing','bad'); return esc(v); };
+  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id' || k==='parent_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='state_id') return esc((states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(districts.find(x=>x.id===v))); if(k==='destination_id'){ const x = dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`) : ''; } if(k==='sold_to_id'){ const x = soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; } if(k==='contact_phone' && !v) return chip('missing','bad'); return esc(v); };
   const input = ([k, l, t, o]) => { const sel = (arr) => `<select id="f_${k}"><option value=""></option>${arr}</select>`;
-    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plant' ? sel(opt(plants,'id','code')) : t==='state' ? sel(opt(states,'id','name')) : t==='district' ? sel(opt(districts,'id',distLabel)) : t==='dest' ? sel(opt(dests,'id',x=>`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`)) : t==='soldto' ? sel(opt(soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`)) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
+    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plantall' ? sel(opt(plants.filter(x=>x.kind!=='siding'),'id',x=>`${x.code} · ${x.name}`)) : t==='plant' ? sel(opt(plants.filter(x=>x.kind==='plant'),'id',x=>`${x.code} · ${x.name}`)) : t==='state' ? sel(opt(states,'id','name')) : t==='district' ? sel(opt(districts,'id',distLabel)) : t==='dest' ? sel(opt(dests,'id',x=>`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`)) : t==='soldto' ? sel(opt(soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`)) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
     return `<div><label>${esc(l)}</label>${el}</div>`; };
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${whOnly ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid">${M.form.map(input).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
@@ -1015,7 +1014,7 @@ VIEWS.masters = async (m, whOnly = false) => {
     if(M.extra) r = M.extra(r);
     const {error} = M.upsert ? await sb.from(M.t).upsert(r, {onConflict:M.upsert}) : await sb.from(M.t).insert(r);
     if(error) throw new Error(error.message);
-    await loadMasters(); if(M.t==='wh_locations'){ S.me = await rpc('wh_me'); } go();
+    await loadMasters(); if(M.t==='sys_plants'){ S.me = await rpc('wh_me'); } go();
   }, 'Saved');
 };
 /* ============ MY PROFILE ============ */
