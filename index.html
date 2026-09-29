@@ -257,7 +257,8 @@ function tabList(){
   if(L) t.push(['recoveries','Recoveries'],['labor','Labor']);
   t.push(['messages','Messages'],['reports','Reports']);
   if(can('wh_master_admin')) t.push(['masters','Masters']);
-  if(S.me.admin) t.push(['users','Users']);
+  if(can('sys_user_admin') || can('sys_role_admin')) t.push(['access','Users & roles']);
+  t.push(['profile','My profile']);
   return t;
 }
 function renderTabs(){
@@ -896,20 +897,107 @@ VIEWS.masters = async m => {
     await loadMasters(); if(M.t==='wh_locations'){ S.me = await rpc('wh_me'); } go();
   }, 'Saved');
 };
-/* ============ USERS & PERMISSIONS (admin) ============ */
-VIEWS.users = async m => {
-  const [users, perms, ups, uls, locs] = await Promise.all([q('sys_users', b => b.order('email')), q('sys_permissions', b => b.order('key')), q('sys_user_permissions'), q('wh_user_locations'), q('wh_locations', b => b.order('code'))]);
-  m.innerHTML = `<h1>Users & permissions</h1><p class="muted">Logging in alone gives no access. Activate the user, then give permissions and locations. Office users see every location; others only their assigned ones. Final role design comes with the Roles & Profiles module.</p>
-  ${users.map(u => `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(u.email)}</h2><div class="row">
-    <label class="row" style="margin:0"><input type="checkbox" data-u="${u.id}" data-f="is_active" ${u.is_active?'checked':''}> Active</label>
-    <label class="row" style="margin:0"><input type="checkbox" data-u="${u.id}" data-f="is_office" ${u.is_office?'checked':''}> Office</label>
-    <label class="row" style="margin:0"><input type="checkbox" data-u="${u.id}" data-f="is_admin" ${u.is_admin?'checked':''}> Admin</label></div></div>
-    <div class="grid" style="margin-top:10px">${perms.map(p => `<label class="row" style="margin:0;text-transform:none;letter-spacing:0;font-size:13px;font-weight:600"><input type="checkbox" data-pu="${u.id}" data-pk="${p.key}" ${ups.some(x=>x.user_id===u.id&&x.permission_key===p.key)?'checked':''}> ${esc(p.description)}</label>`).join('')}</div>
-    <div class="row" style="margin-top:10px"><span class="muted">Locations:</span>${locs.map(l => `<label class="row" style="margin:0;text-transform:none;letter-spacing:0;font-size:13px"><input type="checkbox" data-lu="${u.id}" data-lk="${l.id}" ${uls.some(x=>x.user_id===u.id&&x.location_id===l.id)?'checked':''}> ${esc(l.code)}</label>`).join('')}</div></div>`).join('')}`;
-  const run = async (fn) => { try{ const {error} = await fn(); if(error) throw new Error(error.message); toast('Saved'); }catch(e){ toast(e.message,'err',6000); go(); } };
-  m.querySelectorAll('[data-f]').forEach(c => c.onchange = () => run(() => sb.from('sys_users').update({[c.dataset.f]: c.checked}).eq('id', c.dataset.u)));
-  m.querySelectorAll('[data-pk]').forEach(c => c.onchange = () => run(() => c.checked ? sb.from('sys_user_permissions').insert({user_id:c.dataset.pu, permission_key:c.dataset.pk, granted_by:S.me.user_id}) : sb.from('sys_user_permissions').delete().eq('user_id', c.dataset.pu).eq('permission_key', c.dataset.pk)));
-  m.querySelectorAll('[data-lk]').forEach(c => c.onchange = () => run(() => c.checked ? sb.from('wh_user_locations').insert({user_id:c.dataset.lu, location_id:c.dataset.lk}) : sb.from('wh_user_locations').delete().eq('user_id', c.dataset.lu).eq('location_id', c.dataset.lk)));
+/* ============ MY PROFILE ============ */
+VIEWS.profile = async m => {
+  const me = await rpc('wh_me'); const p = me.profile || {};
+  const perms = await q('sys_permissions', b => b.order('module').order('sort'));
+  m.innerHTML = `<h1>My profile</h1>
+  <div class="card"><div class="grid">
+    <div><label>Email (login)</label><input value="${esc(p.email)}" disabled></div>
+    <div><label>Full name</label><input id="pfN" value="${esc(p.full_name||'')}"></div>
+    <div><label>Phone</label><input id="pfP" value="${esc(p.phone||'')}"></div>
+    <div><label>Employee code</label><input value="${esc(p.employee_code||'')}" disabled></div>
+    <div><label>Designation</label><input value="${esc(p.designation||'')}" disabled></div>
+    <div><label>Department</label><input value="${esc(p.department||'')}" disabled></div></div>
+    <button class="primary" id="pfSave">Save</button></div>
+  <div class="card"><h2>Change password</h2><div class="grid"><div><label>New password</label><input id="pw1" type="password"></div><div><label>Repeat</label><input id="pw2" type="password"></div></div><button class="ghost" id="pwGo">Change password</button></div>
+  <div class="card"><h2>My access</h2><p><b>Roles:</b> ${me.roles.map(r=>chip(r,'ok')).join(' ') || chip('No role','bad')}</p>
+    <p><b>Locations:</b> ${me.office ? chip('All locations','info') : me.locations.map(l=>chip(l.code)).join(' ') || chip('None','bad')}</p>
+    <p><b>I can:</b></p><ul>${perms.filter(x=>me.grants.includes(x.key)).map(x=>`<li>${esc(x.module)} · ${esc(x.description)}</li>`).join('') || '<li class="muted">Nothing yet — ask the administrator for a role.</li>'}</ul></div>`;
+  $('pfSave').onclick = e => act(e.target, async () => { await rpc('sys_profile_update', {p_full_name:$('pfN').value, p_phone:$('pfP').value}); }, 'Profile saved');
+  $('pwGo').onclick = e => act(e.target, async () => { if($('pw1').value.length<6) throw new Error('At least 6 characters'); if($('pw1').value!==$('pw2').value) throw new Error('The two passwords differ'); const {error} = await sb.auth.updateUser({password:$('pw1').value}); if(error) throw new Error(error.message); $('pw1').value=$('pw2').value=''; }, 'Password changed');
+};
+
+/* ============ USERS & ROLES (access administration) ============ */
+VIEWS.access = async m => {
+  S.acc = S.acc || (can('sys_user_admin') ? 'users' : 'roles');
+  const [users, roles, perms, rp, ur, sc, locs] = await Promise.all([
+    can('sys_user_admin') ? q('sys_users', b => b.order('email')) : [], q('sys_roles', b => b.order('name')), q('sys_permissions', b => b.order('module').order('sort')),
+    q('sys_role_permissions'), can('sys_user_admin') ? q('sys_user_roles') : [], can('sys_user_admin') ? q('sys_user_scopes') : [], q('wh_locations', b => b.order('code'))]);
+  const modules = [...new Set(perms.map(p => p.module))];
+  const sub = [['users','Users'],['roles','Roles'],['perms','Permission catalogue']].filter(([k]) => k!=='users' || can('sys_user_admin'));
+  m.innerHTML = `<h1>Users & roles</h1><div class="row" style="margin-bottom:12px">${sub.map(([k,l]) => `<button class="${S.acc===k?'primary':'ghost'} sm" data-sub="${k}">${l}</button>`).join('')}</div><div id="accBody"></div>`;
+  m.querySelectorAll('[data-sub]').forEach(b => b.onclick = () => { S.acc = b.dataset.sub; go(); });
+  const body = $('accBody');
+  const roleNames = uid => ur.filter(x=>x.user_id===uid).map(x=>(roles.find(r=>r.id===x.role_id)||{}).name).filter(Boolean);
+  const scopeTxt = uid => sc.some(x=>x.user_id===uid && x.scope_type==='all_locations') ? chip('All locations','info') : sc.filter(x=>x.user_id===uid && x.scope_type==='location').map(x=>chip((locs.find(l=>l.id===x.scope_id)||{}).code||'?')).join(' ') || chip('None','bad');
+  const permGrid = (checked, disabled) => modules.map(md => `<div style="margin-bottom:10px"><div class="muted" style="font-weight:800;text-transform:uppercase;letter-spacing:.08em;font-size:11px;margin-bottom:4px">${esc(md)}</div>
+     ${perms.filter(p=>p.module===md).map(p => `<label class="row" style="margin:0 0 4px;text-transform:none;letter-spacing:0;font-size:14px;font-weight:600"><input type="checkbox" data-perm="${p.key}" ${checked.includes(p.key)?'checked':''} ${disabled?'disabled':''}> ${esc(p.description)} <span class="muted">(${esc(p.action||'')})</span></label>`).join('')}</div>`).join('');
+
+  const userForm = (u) => {
+    const isNew = !u; u = u || {};
+    const myRoles = ur.filter(x=>x.user_id===u.id).map(x=>x.role_id);
+    const all = sc.some(x=>x.user_id===u.id && x.scope_type==='all_locations');
+    const myLocs = sc.filter(x=>x.user_id===u.id && x.scope_type==='location').map(x=>x.scope_id);
+    modal(`<h2>${isNew ? 'Add user' : esc(u.email)}</h2>
+      <div class="grid">
+        ${isNew ? `<div><label>Email (login)</label><input id="uE" type="email" placeholder="name@gmail.com"></div><div><label>Temporary password</label><input id="uP" value="${Math.random().toString(36).slice(2,8)}${Math.floor(Math.random()*90+10)}"></div>` : ''}
+        <div><label>Full name</label><input id="uN" value="${esc(u.full_name||'')}"></div><div><label>Phone</label><input id="uPh" value="${esc(u.phone||'')}"></div>
+        <div><label>Employee code</label><input id="uC" value="${esc(u.employee_code||'')}"></div><div><label>Designation</label><input id="uD" value="${esc(u.designation||'')}"></div>
+        <div><label>Department</label><input id="uDp" value="${esc(u.department||'')}"></div>
+        ${isNew ? '' : `<div><label>Status</label><select id="uA"><option value="true" ${u.is_active?'selected':''}>Active</option><option value="false" ${!u.is_active?'selected':''}>Inactive (no access)</option></select></div>`}
+      </div>
+      <h2 style="margin-top:10px">Roles</h2><div class="row">${roles.filter(r=>r.is_active).map(r => `<label class="row" style="margin:0;text-transform:none;letter-spacing:0;font-size:14px;font-weight:600" title="${esc(r.description||'')}"><input type="checkbox" data-role="${r.id}" ${myRoles.includes(r.id)?'checked':''}> ${esc(r.name)}</label>`).join('')}</div>
+      <h2 style="margin-top:14px">Locations</h2><label class="row" style="margin:0 0 6px;text-transform:none;letter-spacing:0;font-size:14px;font-weight:700"><input type="checkbox" id="uAll" ${all?'checked':''}> All locations (office / head office)</label>
+      <div class="row" id="uLocs">${locs.map(l => `<label class="row" style="margin:0;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" data-loc="${l.id}" ${myLocs.includes(l.id)?'checked':''}> ${esc(l.code)}</label>`).join('') || '<span class="muted">No locations yet — add them in Masters.</span>'}</div>
+      <div class="row" style="margin-top:16px"><button class="primary" id="uGo">${isNew?'Add user':'Save'}</button>${isNew?'':'<button class="ghost" id="uPw">Set new password</button>'}<button class="ghost" onclick="closeModal()">Cancel</button></div>
+      ${isNew?'<p class="muted">Share the email and temporary password with the user; they can change it in My profile. If they later sign in with Google using the same email, it opens this same account.</p>':''}`);
+    const upd = () => $('uLocs').style.opacity = $('uAll').checked ? .4 : 1; $('uAll').onchange = upd; upd();
+    $('uGo').onclick = e => act(e.target, async () => {
+      const p = {full_name:$('uN').value, phone:$('uPh').value, employee_code:$('uC').value, designation:$('uD').value, department:$('uDp').value,
+        role_ids:[...document.querySelectorAll('[data-role]:checked')].map(x=>x.dataset.role), all_locations:$('uAll').checked,
+        location_ids:$('uAll').checked ? [] : [...document.querySelectorAll('[data-loc]:checked')].map(x=>x.dataset.loc)};
+      if(isNew){ p.email = $('uE').value; p.password = $('uP').value; await rpc('sys_user_create', {p}); toast(`User added. Login: ${p.email} / ${p.password}`, 'ok', 12000); }
+      else { p.id = u.id; p.is_active = $('uA').value==='true'; await rpc('sys_user_save', {p}); toast('Saved'); }
+      closeModal(); if(p.id===S.me.user_id){ S.me = await rpc('wh_me'); } go();
+    });
+    if(!isNew) $('uPw').onclick = () => { const pw = prompt('New password for ' + u.email + ' (min 6 characters)'); if(pw) act(null, async () => { await rpc('sys_user_set_password', {p_user:u.id, p_password:pw}); }, 'Password set — share it with the user'); };
+  };
+
+  if(S.acc==='users'){
+    body.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:10px"><p class="muted" style="margin:0">A login alone gives no access. Access = the user's roles, limited to their locations.</p><button class="primary" id="uNew">+ Add user</button></div>
+    <div class="card">${table([{h:'User',f:u=>`<b>${esc(u.full_name||'')}</b><br><span class="muted">${esc(u.email)}</span>`},{h:'Phone',k:'phone'},{h:'Designation',f:u=>esc([u.designation,u.department].filter(Boolean).join(' · '))},
+      {h:'Roles',f:u=>roleNames(u.id).map(n=>chip(n,'ok')).join(' ')||chip('No role','bad')},{h:'Locations',f:u=>scopeTxt(u.id)},{h:'Status',f:u=>u.is_active?chip('active','ok'):chip('inactive','bad')},{h:'',f:u=>`<button class="ghost sm" data-ed="${u.id}">Edit</button>`}], users)}</div>`;
+    $('uNew').onclick = () => userForm(null);
+    body.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => userForm(users.find(u=>u.id===b.dataset.ed)));
+  }
+  if(S.acc==='roles'){
+    body.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:10px"><p class="muted" style="margin:0">A role is a set of permissions. Give users roles; change a role once and every user holding it changes.</p>${can('sys_role_admin')?'<button class="primary" id="rNew">+ New role</button>':''}</div>
+    <div class="card">${table([{h:'Role',f:r=>`<b>${esc(r.name)}</b><br><span class="muted">${esc(r.code)}</span>`},{h:'Description',k:'description'},{h:'Permissions',n:1,f:r=>r.code==='ADMIN'?'all':rp.filter(x=>x.role_id===r.id).length},
+      {h:'Users',n:1,f:r=>can('sys_user_admin')?ur.filter(x=>x.role_id===r.id).length:''},{h:'Status',f:r=>r.is_active?chip('active','ok'):chip('inactive','bad')},{h:'',f:r=>`<button class="ghost sm" data-re="${r.id}">${can('sys_role_admin')&&!r.is_system?'Edit':'View'}</button>`}], roles)}</div>`;
+    const roleForm = r => {
+      const isNew = !r; r = r || {}; const ro = !can('sys_role_admin') || r.is_system;
+      modal(`<h2>${isNew?'New role':esc(r.name)}</h2>${r.is_system?'<p class="muted">The Administrator role always holds every permission, including those added by future modules.</p>':''}
+        <div class="grid">${isNew?'<div><label>Code</label><input id="rC" placeholder="e.g. PLANT_EXEC"></div>':''}<div><label>Name</label><input id="rN" value="${esc(r.name||'')}" ${ro?'disabled':''}></div>
+        <div style="grid-column:span 2"><label>Description</label><input id="rD" value="${esc(r.description||'')}" ${ro?'disabled':''}></div>
+        ${isNew||ro?'':`<div><label>Status</label><select id="rA"><option value="true" ${r.is_active?'selected':''}>Active</option><option value="false" ${!r.is_active?'selected':''}>Inactive</option></select></div>`}</div>
+        <h2 style="margin-top:10px">Permissions</h2>${permGrid(r.is_system ? perms.map(p=>p.key) : rp.filter(x=>x.role_id===r.id).map(x=>x.permission_key), ro)}
+        <div class="row" style="margin-top:14px">${ro?'':`<button class="primary" id="rGo">${isNew?'Create role':'Save'}</button>`}${!isNew&&!ro?'<button class="danger" id="rDel">Delete</button>':''}<button class="ghost" onclick="closeModal()">Close</button></div>`);
+      if(ro) return;
+      $('rGo').onclick = e => act(e.target, async () => {
+        const p = {name:$('rN').value, description:$('rD').value, permissions:[...document.querySelectorAll('[data-perm]:checked')].map(x=>x.dataset.perm)};
+        if(isNew){ p.code = $('rC').value; if(!p.code || !p.name) throw new Error('Code and name are required'); } else { p.id = r.id; p.is_active = $('rA').value==='true'; }
+        await rpc('sys_role_save', {p}); closeModal(); S.me = await rpc('wh_me'); go();
+      }, 'Role saved');
+      if($('rDel')) $('rDel').onclick = e => { if(confirm('Delete role ' + r.name + '?')) act(e.target, async () => { await rpc('sys_role_delete', {p_role:r.id}); closeModal(); go(); }, 'Role deleted'); };
+    };
+    if($('rNew')) $('rNew').onclick = () => roleForm(null);
+    body.querySelectorAll('[data-re]').forEach(b => b.onclick = () => roleForm(roles.find(r=>r.id===b.dataset.re)));
+  }
+  if(S.acc==='perms'){
+    body.innerHTML = `<p class="muted">Every module adds its permissions here as it is built. Roles pick them up in the Roles tab; the Administrator role gets them automatically.</p>
+    <div class="card">${table([{h:'Module',k:'module'},{h:'Permission',k:'description'},{h:'Action',k:'action'},{h:'Code',f:p=>`<span class="muted">${esc(p.key)}</span>`},{h:'In roles',f:p=>roles.filter(r=>r.code==='ADMIN'||rp.some(x=>x.role_id===r.id&&x.permission_key===p.key)).map(r=>chip(r.name)).join(' ')}], perms)}</div>`;
+  }
 };
 </script>
 </body>
