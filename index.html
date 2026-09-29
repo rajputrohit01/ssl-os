@@ -144,7 +144,8 @@ const opt = (arr, val, lab, sel, blank) => (blank!==undefined ? `<option value="
 const clientCode = id => (S.clients.find(c=>c.id===id)||{}).code || '';
 const matOpts = (sel, blank, clientId) => opt(S.materials.filter(m=>m.is_active && (!clientId || m.client_id===clientId)), 'id', m => clientId ? m.code : `${m.code} · ${clientCode(m.client_id)}`, sel, blank);
 const contrOpts = () => opt(S.contractors.filter(c=>c.location_id===S.loc.id && c.is_active), 'id', 'vendor_name');
-const partyOpts = (clientId, sel) => opt(S.parties.filter(p=>p.client_id===clientId), 'sap_code', p => `${p.party_name} · ${p.sap_code}${p.location_id?' (our warehouse)':''}`, sel, 'Select Ship-To');
+const partyOpts = (clientId, sel) => opt(S.parties.filter(p=>p.client_id===clientId), 'sap_code', p => `${p.party_name} · ${p.sap_code} · ${p.destination}${p.location_id?' (our warehouse)':''}`, sel, 'Select Ship-To');
+const soldToLine = (clientId, code) => { const p = S.parties.find(x=>x.client_id===clientId && x.sap_code===code); return p ? `Sold-To: <b>${esc(p.sold_to_name)}</b> (${esc(p.sold_to_code)}) · ${esc(p.sold_to_phone||'no phone')} · ${esc(p.destination)}, ${esc(p.district)}, ${esc(p.state)}` : ''; };
 const chip = (txt, kind='') => `<span class="chip ${kind}">${esc(txt)}</span>`;
 function table(cols, rows, empty='Nothing here yet.'){
   if(!rows.length) return `<div class="empty">${esc(empty)}</div>`;
@@ -598,7 +599,7 @@ async function dispatchDetail(m, id){
   ${d.status==='loading' ? `<div class="card"><h2>Add loading slip</h2><div class="grid">
     <div style="grid-column:1/-1"><label>Load from</label><select id="sSrc">${sources.length ? sources.map(s=>`<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('') : '<option value="">No stock available</option>'}</select></div>
     <div><label>Quantity MT</label><input id="sQ" type="number" step="0.001"></div>
-    <div><label>Ship-To</label><select id="sT">${partyOpts(d.client_id)}</select></div><div><label>Sold-To (optional)</label><input id="sSo"></div>
+    <div style="grid-column:span 2"><label>Ship-To</label><select id="sT">${partyOpts(d.client_id)}</select><div class="muted" id="sSoL" style="margin-top:4px"></div></div>
     <div><label>Labor contractor</label><select id="sL">${contrOpts()}</select></div></div>
     <div class="row"><button class="lime" id="sGo">Add slip</button><button class="primary" id="dConf" ${slips.some(s=>s.status==='open')?'':'disabled'}>Truck loaded → generate challans</button></div>
     <p class="muted">If one batch is short, add a second slip from another batch. The in-charge is accountable if the batch loaded differs from the slip.</p></div>` : `<div class="okbox">Dispatched ${dt(d.dispatched_at)}</div>`}`;
@@ -606,9 +607,10 @@ async function dispatchDetail(m, id){
   m.querySelectorAll('[data-cx]').forEach(b => b.onclick = () => act(b, async () => { await rpc('wh_slip_cancel', {p_slip:b.dataset.cx}); dispatchDetail(m, id); }, 'Slip cancelled'));
   m.querySelectorAll('[data-ps]').forEach(b => b.onclick = () => printSlip(slips.find(s=>s.id===b.dataset.ps), d));
   if(d.status!=='loading') return;
+  $('sT').onchange = () => $('sSoL').innerHTML = soldToLine(d.client_id, $('sT').value);
   $('sGo').onclick = e => act(e.target, async () => {
     const [kind, a, bch] = $('sSrc').value.split(':'); if(!kind) throw new Error('Nothing to load from');
-    const p = {dispatch_id:id, source: kind==='lot'?'platform_lot':kind, qty_mt:+$('sQ').value, ship_to_code:$('sT').value, sold_to_code:$('sSo').value, contractor_id:$('sL').value};
+    const p = {dispatch_id:id, source: kind==='lot'?'platform_lot':kind, qty_mt:+$('sQ').value, ship_to_code:$('sT').value, contractor_id:$('sL').value};
     if(kind==='wagon') p.wagon_id = a; if(kind==='lot') p.lot_id = a; if(kind==='paltai') p.source_grn_id = a; if(kind==='godown'){ p.material_id = a; p.batch = bch; }
     await rpc('wh_slip_create', {p}); dispatchDetail(m, id);
   }, 'Slip added');
@@ -628,7 +630,7 @@ async function printChallans(ids){
   printWin(ch.map(c => { const d = disp.find(x=>x.id===c.dispatch_id)||{}; const p = S.parties.find(x=>x.client_id===c.client_id && x.sap_code===c.ship_to_code)||{};
     return `<div class="pg"><h2>${c.challan_no.startsWith('ADC')?'ADJUSTMENT CHALLAN (no physical movement)':'DELIVERY CHALLAN'} ${esc(c.challan_no)}</h2><div>${esc(S.loc.code)} · ${new Date(c.created_at).toLocaleString('en-IN')}</div>
     <table><tr><th>Customer</th><td>${esc((S.clients.find(x=>x.id===c.client_id)||{}).name)}</td><th>Truck</th><td>${esc(d.truck_no||'—')}</td></tr>
-    <tr><th>Ship-To</th><td>${esc(p.party_name||'')} (${esc(c.ship_to_code)})</td><th>Sold-To</th><td>${esc(c.sold_to_code||'')}</td></tr><tr><th>Material</th><td colspan="3"><b>${esc(mat(c.material_id))}</b></td></tr></table>
+    <tr><th>Sold-To</th><td>${esc(p.sold_to_name||'')} (${esc(c.sold_to_code||'')})</td><th>Contact</th><td>${esc(p.sold_to_phone||'')}</td></tr><tr><th>Ship-To</th><td>${esc(p.party_name||'')} (${esc(c.ship_to_code)})</td><th>Destination</th><td>${esc([p.destination,p.district,p.state].filter(Boolean).join(', '))}</td></tr><tr><th>Material</th><td colspan="3"><b>${esc(mat(c.material_id))}</b></td></tr></table>
     <table><tr><th>Batch</th><th class="n">MT</th><th class="n">Bags</th></tr>${lines.filter(l=>l.challan_id===c.id).map(l=>`<tr><td>${esc(l.batch)}</td><td class="n">${n3(l.qty_mt)}</td><td class="n">${l.bags??''}</td></tr>`).join('')}
     <tr><th>Total</th><th class="n">${n3(c.qty_mt)} MT</th><th class="n">${c.bags??''} Bags</th></tr></table><p style="margin-top:40px">Driver ____________________ &nbsp;&nbsp; For SS Logistics ____________________</p></div>`; }).join(''));
 }
@@ -711,15 +713,16 @@ VIEWS.adjust = async m => {
   const list = await q('wh_dispatches', b => b.eq('location_id', S.loc.id).like('dispatch_type','adjustment%').order('created_at', {ascending:false}).limit(30));
   const T = {grn_shortage:'Own-truck shortage (GRN)', grn_damage:'GRN damage', return_damage:'Return damage', damage_transfer:'Internal damage', count_damage:'Count damage'};
   m.innerHTML = `<h1>Adjustment Dispatch · ${esc(S.loc.code)}</h1><p class="muted">A billing entry with no truck: clubs shortages or damaged bags into one dispatch to one party so the customer can bill it. It is the only way stock leaves the Damaged location.</p>
-  <div class="card"><div class="grid"><div><label>Type</label><select id="aT"><option value="damage">Damage (bags sold off)</option><option value="shortage">Shortage</option></select></div><div><label>Ship-To (dealer)</label><select id="aP">${partyOpts(S.loc.client_id)}</select></div><div><label>Sold-To (optional)</label><input id="aS"></div><div><label>Note</label><input id="aN"></div></div>
+  <div class="card"><div class="grid"><div><label>Type</label><select id="aT"><option value="damage">Damage (bags sold off)</option><option value="shortage">Shortage</option></select></div><div style="grid-column:span 2"><label>Ship-To (dealer)</label><select id="aP">${partyOpts(S.loc.client_id)}</select><div class="muted" id="aSL" style="margin-top:4px"></div></div><div><label>Note</label><input id="aN"></div></div>
   <div id="aSrc"></div><button class="primary" id="aGo" style="margin-top:10px">Create for approval</button></div>
   <div class="card"><h2>Adjustment Dispatches</h2>${table([{h:'No',k:'dispatch_no'},{h:'Type',f:d=>chip(d.dispatch_type.replace('adjustment_',''))},{h:'Created',f:d=>dt(d.created_at)},{h:'Status',f:d=>chip(d.status.replace('_',' '), d.status==='dispatched'?'ok':d.status==='cancelled'?'bad':'warn')}], list)}</div>`;
   const draw = () => { const t = $('aT').value; const s = src.filter(x => (t==='shortage') === (x.source_type==='grn_shortage'));
     $('aSrc').innerHTML = table([{h:'Source',f:x=>`${esc(T[x.source_type])}<br><span class="muted">${esc(x.ref_no)}</span>`},{h:'Material',f:x=>esc(mat(x.material_id))},{h:'Batch',k:'batch'},{h:'Unadjusted MT',n:1,f:x=>n3(x.unadjusted_mt)},{h:'Days',n:1,k:'days_pending'},{h:'Adjust MT',f:x=>`<input type="number" step="0.001" data-q="${x.source_type}|${x.source_id}" style="height:36px;width:110px">`}], s, 'Nothing waiting to be adjusted.'); };
   $('aT').onchange = draw; draw();
+  $('aP').onchange = () => $('aSL').innerHTML = soldToLine(S.loc.client_id, $('aP').value);
   $('aGo').onclick = e => act(e.target, async () => {
     const sources = [...m.querySelectorAll('[data-q]')].filter(i => +i.value>0).map(i => { const [st, sidv] = i.dataset.q.split('|'); return {source_type:st, source_id:sidv, qty_mt:+i.value}; });
-    await rpc('wh_adjustment_create', {p:{location_id:S.loc.id, type:$('aT').value, ship_to_code:$('aP').value, sold_to_code:$('aS').value, note:$('aN').value, sources}}); go();
+    await rpc('wh_adjustment_create', {p:{location_id:S.loc.id, type:$('aT').value, ship_to_code:$('aP').value, note:$('aN').value, sources}}); go();
   }, 'Created — waiting for approval');
 };
 
@@ -870,7 +873,10 @@ const MASTERS = {
   'Materials': {t:'wh_materials', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']], note:'Every material belongs to one customer. The same short name can exist for two customers.'},
   'Locations': {t:'wh_locations', cols:['code','name','kind','station_code','return_intimation','is_live'], form:[['code','Code'],['name','Name'],['kind','Kind','sel',['warehouse','siding']],['client_id','Customer (warehouse only)','client'],['station_code','Station code (siding)'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r},
   'SAP product mapping': {t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
-  'Parties (Ship-To / Sold-To)': {t:'wh_party_map', cols:['client_id','sap_code','party_name','location_id'], form:[['client_id','Customer','client'],['sap_code','SAP party code'],['party_name','Party name'],['location_id','If this is our own warehouse','loc']]},
+  'Sold-To parties': {t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], edit:['contact_phone','name'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
+  'Ship-To parties': {t:'sys_ship_to', cols:['client_id','sold_to_id','sap_code','name','destination_id','location_id'], form:[['client_id','Customer','client'],['sold_to_id','Sold-To (buyer)','soldto'],['sap_code','SAP Ship-To code'],['name','Ship-To name'],['destination_id','Destination','dest'],['location_id','If this is our own warehouse','loc']], note:'Where the material goes. Belongs to one Sold-To and carries its destination.'},
+  'Destinations': {t:'sys_destinations', cols:['name','district_id','pincode'], form:[['district_id','District (state)','district'],['name','Destination'],['pincode','PIN code']], note:'Every destination carries its district and state. Add the district first if it is not in the list.'},
+  'Districts': {t:'sys_districts', cols:['state_id','name'], form:[['state_id','State','state'],['name','District']]},
   'Bag conversion': {t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant (blank = all plants)','plant'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
   'Labor rates': {t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
   'Shortage recovery rates': {t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
@@ -881,13 +887,16 @@ VIEWS.masters = async m => {
   S.mst = S.mst || 'Materials'; const M = MASTERS[S.mst];
   const rows = await q(M.t, b => b.limit(500));
   const allLocs = await q('wh_locations'); const plants = await q('sys_plants');
-  const show = (k, v) => { if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id') return esc((plants.find(x=>x.id===v)||{}).code); return esc(v); };
+  const [states, districts, dests, soldTos] = await Promise.all([q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
+  const distLabel = d => d ? `${d.name} · ${(states.find(s=>s.id===d.state_id)||{}).name||''}` : '';
+  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='state_id') return esc((states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(districts.find(x=>x.id===v))); if(k==='destination_id'){ const x = dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`) : ''; } if(k==='sold_to_id'){ const x = soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; } if(k==='contact_phone' && !v) return chip('missing','bad'); return esc(v); };
   const input = ([k, l, t, o]) => { const sel = (arr) => `<select id="f_${k}"><option value=""></option>${arr}</select>`;
-    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plant' ? sel(opt(plants,'id','code')) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
+    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plant' ? sel(opt(plants,'id','code')) : t==='state' ? sel(opt(states,'id','name')) : t==='district' ? sel(opt(districts,'id',distLabel)) : t==='dest' ? sel(opt(dests,'id',x=>`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`)) : t==='soldto' ? sel(opt(soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`)) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
     return `<div><label>${esc(l)}</label>${el}</div>`; };
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Masters</h1><select id="mS" style="width:auto">${Object.keys(MASTERS).map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid">${M.form.map(input).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
-  <div class="card">${table(M.cols.map(k => ({h:k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})), rows)}</div>`;
+  <div class="card">${table(M.cols.map(k => ({h:k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(M.edit ? [{h:'', f:r => `<button class="ghost sm" data-edit="${r.id}">Edit</button>`}] : []), rows)}</div>`;
+  m.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { const r = rows.find(x=>x.id===b.dataset.edit); const upd = {}; for(const k of M.edit){ const v = prompt(k.replace(/_/g,' '), r[k]||''); if(v===null) return; upd[k] = v.trim(); } act(b, async () => { const {error} = await sb.from(M.t).update(upd).eq('id', r.id); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Saved'); });
   $('mS').onchange = () => { S.mst = $('mS').value; go(); };
   $('mAdd').onclick = e => act(e.target, async () => {
     let r = {}; M.form.forEach(([k,,t]) => { const v = $('f_'+k).value; if(v!=='') r[k] = t==='num' ? +v : v; });
