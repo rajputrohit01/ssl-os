@@ -63,7 +63,7 @@
   .kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
   .kpi span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--slate)}
   .toast{position:fixed;left:16px;right:16px;bottom:20px;max-width:560px;margin:0 auto;z-index:60;padding:12px 16px;border-radius:12px;color:#fff;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.25);transform:translateY(160%);transition:transform .3s}
-  .toast.show{transform:translateY(0)} .toast.ok{background:var(--ok)} .toast.err{background:var(--alert)} .toast.warn{background:var(--amber)}
+  .toast{visibility:hidden} .toast.show{transform:translateY(0);visibility:visible} .toast.ok{background:var(--ok)} .toast.err{background:var(--alert)} .toast.warn{background:var(--amber)}
   .modal{position:fixed;inset:0;background:rgba(11,31,23,.5);z-index:40;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 12px}
   .modal .box{background:#fff;border-radius:14px;max-width:760px;width:100%;padding:18px}
   .hide{display:none!important}
@@ -75,7 +75,51 @@
   .spin{width:18px;height:18px;border:3px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;display:inline-block;animation:s .7s linear infinite;vertical-align:-4px}
   @keyframes s{to{transform:rotate(360deg)}}
   pre.msg{white-space:pre-wrap;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:13px;max-height:260px;overflow:auto}
-  @media (max-width:640px){.who{display:none}.tabs{position:static}.topbar{position:static}}
+  /* ===== responsive shell: sidebar on desktop, drawer on tablet & phone ===== */
+  input,select,textarea{font-size:16px}
+  .topbar{position:sticky;top:0;z-index:30;flex-wrap:nowrap;min-height:56px}
+  .menuBtn{display:none;background:none;color:var(--sand);font-size:24px;height:44px;width:44px;padding:0;flex:0 0 auto}
+  .shell{display:flex;align-items:flex-start}
+  .side{position:sticky;top:56px;height:calc(100vh - 56px);overflow-y:auto;width:220px;flex:0 0 220px;background:#fff;border-right:1px solid var(--line);padding:8px 0 24px}
+  .sideHead{display:none}
+  .side .grp{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate);font-weight:800;padding:14px 18px 6px}
+  .side button{display:block;width:100%;text-align:left;height:42px;background:none;border:0;border-left:4px solid transparent;border-radius:0;font-size:14.5px;font-weight:700;color:var(--ink);padding:0 14px}
+  .side button:hover{background:var(--paper)}
+  .side button.on{border-left-color:var(--lime);background:#EEF5E6;color:var(--deep)}
+  .scrim{display:none}
+  .wrap{flex:1 1 auto;min-width:0;max-width:1180px}
+  .modal .box{max-height:calc(100vh - 60px);overflow:auto}
+  @media (max-width:1023px){
+    .menuBtn{display:block}
+    .side{position:fixed;top:0;left:0;bottom:0;height:100vh;z-index:50;width:280px;transform:translateX(-105%);transition:transform .25s;box-shadow:0 0 40px rgba(0,0,0,.25)}
+    body.nav-open .side{transform:none}
+    body.nav-open .scrim{display:block;position:fixed;inset:0;background:rgba(11,31,23,.45);z-index:45}
+    .sideHead{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;background:var(--deep);color:var(--sand);font-size:13px}
+    .sideHead a{color:var(--lime);cursor:pointer}
+    .who{display:none}
+    .topbar select{flex:1 1 auto;min-width:0}
+  }
+  @media (max-width:640px){
+    .brand{display:none}
+    .wrap{padding:12px 12px 80px}
+    .grid{grid-template-columns:1fr}
+    .kpi{grid-template-columns:1fr 1fr}
+    .kpi b{font-size:18px}
+    .card{padding:12px}
+    .row>button,.row>a{flex:1 1 auto}
+    .modal{padding:0}
+    .modal .box{max-width:none;min-height:100vh;border-radius:0;max-height:none}
+    /* tables become cards: one row = one card, each cell labelled */
+    .tbl table,.tbl thead,.tbl tbody,.tbl tr,.tbl td{display:block;width:100%}
+    .tbl thead{display:none}
+    .tbl tr{border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin-bottom:10px;background:#fff}
+    .tbl td{border:0;padding:5px 0;display:flex;justify-content:space-between;gap:12px;text-align:right}
+    .tbl td::before{content:attr(data-label);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--slate);font-weight:700;text-align:left;flex:0 0 auto;padding-top:2px}
+    .tbl td[data-label=""]::before{display:none}
+    .tbl td[data-label=""]{justify-content:flex-end;flex-wrap:wrap}
+    .tbl td input,.tbl td select{max-width:60%}
+  }
+  @media (min-width:641px) and (max-width:1023px){ .wrap{padding:14px 18px 80px} }
 </style>
 </head>
 <body>
@@ -93,12 +137,16 @@
 
 <div id="app" class="hide">
   <div class="topbar">
+    <button class="menuBtn" id="menuBtn" aria-label="Menu">&#9776;</button>
     <div class="brand">SS<b>L</b> · Warehouse</div>
     <select id="locSel" aria-label="Location"></select>
     <div class="who"><span id="uEmail"></span><br><span id="uRole" style="color:var(--lime)"></span> · <a id="logout">Sign out</a></div>
   </div>
-  <div class="tabs" id="tabs"></div>
-  <div class="wrap" id="main"></div>
+  <div class="shell">
+    <nav class="side" id="side"><div class="sideHead"><b id="sideUser"></b><a id="logout2">Sign out</a></div><div id="tabs"></div></nav>
+    <div class="scrim" id="scrim"></div>
+    <div class="wrap" id="main"></div>
+  </div>
 </div>
 
 <div id="modal" class="modal hide"><div class="box" id="modalBox"></div></div>
@@ -150,7 +198,7 @@ const chip = (txt, kind='') => `<span class="chip ${kind}">${esc(txt)}</span>`;
 function table(cols, rows, empty='Nothing here yet.'){
   if(!rows.length) return `<div class="empty">${esc(empty)}</div>`;
   return `<div class="tbl"><table><thead><tr>${cols.map(c=>`<th class="${c.n?'n':''}">${esc(c.h)}</th>`).join('')}</tr></thead><tbody>${
-    rows.map(r=>`<tr>${cols.map(c=>`<td class="${c.n?'n':''}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+    rows.map(r=>`<tr>${cols.map(c=>`<td class="${c.n?'n':''}" data-label="${esc(c.h)}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 function csv(rows, name){
   if(!rows.length){ toast('Nothing to download','warn'); return; }
@@ -247,25 +295,32 @@ sb.auth.getSession().then(({data}) => { if(data.session) start(); });
 /* ============ NAVIGATION ============ */
 function tabList(){
   const t = []; const L = S.loc;
-  if(L && L.kind==='siding'){ t.push(['rakes','Rakes'],['dispatch','Dispatch'],['stock','Stock']); }
+  if(L && L.kind==='siding'){ t.push(['#', L.code + ' · siding'],['rakes','Rakes'],['dispatch','Dispatch'],['stock','Stock']); }
   if(L && L.kind==='warehouse'){
+    t.push(['#', L.code + ' · warehouse']);
     if(!L.is_live) t.push(['opening','Opening stock']);
     t.push(['grn','Receive (GRN)'],['dispatch','Dispatch'],['returns','Returns'],['stock','Stock'],['damage','Damage'],['count','Stock count'],['adjust','Adjustment']);
   }
-  t.push(['|']);
+  t.push(['#','Office']);
   if(S.me.office || can('wh_adjustment_approve') || can('wh_damage_transfer_approve') || can('wh_variance_approve') || can('wh_labor_bill_approve') || can('wh_opening_mismatch_approve')) t.push(['approvals','Approvals']);
   if(can('wh_sap_operator')) t.push(['billing','SAP billing'],['sapgrn','SAP GRN']);
   if(L) t.push(['recoveries','Recoveries'],['labor','Labor']);
   t.push(['messages','Messages'],['reports','Reports']);
+  t.push(['#','Settings']);
   if(can('wh_master_admin')) t.push(['masters','Masters']);
   if(can('sys_user_admin') || can('sys_role_admin')) t.push(['access','Users & roles']);
   t.push(['profile','My profile']);
   return t;
 }
+function setNav(open){ document.body.classList.toggle('nav-open', open); }
+$('menuBtn').onclick = () => setNav(!document.body.classList.contains('nav-open'));
+$('scrim').onclick = () => setNav(false);
+$('logout2').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 function renderTabs(){
-  const t = tabList(); if(!S.tab || !t.find(x=>x[0]===S.tab)) S.tab = (t.find(x=>x[0]!=='|')||[])[0];
-  $('tabs').innerHTML = t.map(([k,l]) => k==='|' ? '<span class="sep"></span>' : `<button class="${k===S.tab?'on':''}" data-t="${k}">${l}</button>`).join('');
-  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { S.tab = b.dataset.t; renderTabs(); });
+  const t = tabList(); if(!S.tab || !t.find(x=>x[0]===S.tab)) S.tab = (t.find(x=>x[0]!=='#')||[])[0];
+  $('tabs').innerHTML = t.map(([k,l]) => k==='#' ? `<div class="grp">${esc(l)}</div>` : `<button class="${k===S.tab?'on':''}" data-t="${k}">${l}</button>`).join('');
+  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { S.tab = b.dataset.t; setNav(false); renderTabs(); window.scrollTo(0,0); });
+  $('sideUser').textContent = (S.me.profile && (S.me.profile.full_name || S.me.profile.email)) || '';
   go();
 }
 async function go(){
