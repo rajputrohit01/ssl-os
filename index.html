@@ -75,6 +75,19 @@
   .spin{width:18px;height:18px;border:3px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;display:inline-block;animation:s .7s linear infinite;vertical-align:-4px}
   @keyframes s{to{transform:rotate(360deg)}}
   pre.msg{white-space:pre-wrap;background:var(--paper);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:13px;max-height:260px;overflow:auto}
+  /* ===== home: one block per module ===== */
+  body.home .side, body.home .menuBtn, body.home #locSel{display:none!important}
+  .home-wrap{max-width:1100px;margin:0 auto;padding:28px 20px 60px}
+  .home-hello{font-size:22px;font-weight:800;margin:0 0 4px}
+  .mods{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:16px;margin-top:22px}
+  .mod{display:flex;flex-direction:column;justify-content:flex-start;align-items:flex-start;text-align:left;height:auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px 20px;cursor:pointer;color:var(--ink);font-family:inherit;transition:transform .12s, box-shadow .12s, border-color .12s}
+  .mod:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(11,61,46,.12);border-color:var(--moss)}
+  .mod .ic{width:48px;height:48px;border-radius:12px;background:#EEF5E6;color:var(--deep);display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+  .mod .nm{font-size:18px;font-weight:800;margin-bottom:6px}
+  .mod .ds{font-size:13.5px;color:var(--slate);font-weight:500;line-height:1.45}
+  .side .back{color:var(--moss);font-weight:800}
+  @media (min-width:1024px){ .homeLinks{display:none} }
+  @media (max-width:640px){ .mods{grid-template-columns:1fr 1fr;gap:12px} .mod{padding:16px 14px} .mod .nm{font-size:16px} .mod .ds{display:none} .home-wrap{padding:18px 14px 60px} }
   /* ===== responsive shell: sidebar on desktop, drawer on tablet & phone ===== */
   input,select,textarea{font-size:16px}
   .topbar{position:sticky;top:0;z-index:30;flex-wrap:nowrap;min-height:56px}
@@ -138,9 +151,9 @@
 <div id="app" class="hide">
   <div class="topbar">
     <button class="menuBtn" id="menuBtn" aria-label="Menu">&#9776;</button>
-    <div class="brand">SS<b>L</b> · Warehouse</div>
+    <a class="brand" href="#" id="homeLink" style="color:inherit;text-decoration:none">SS<b>L</b> <span id="modName"></span></a>
     <select id="locSel" aria-label="Location"></select>
-    <div class="who"><span id="uEmail"></span><br><span id="uRole" style="color:var(--lime)"></span> · <a id="logout">Sign out</a></div>
+    <div class="who"><span id="uEmail"></span><br><span id="uRole" style="color:var(--lime)"></span> · <a href="#profile" style="color:var(--lime)">My profile</a> · <a id="logout">Sign out</a></div>
   </div>
   <div class="shell">
     <nav class="side" id="side"><div class="sideHead"><b id="sideUser"></b><a id="logout2">Sign out</a></div><div id="tabs"></div></nav>
@@ -288,40 +301,82 @@ async function start(){
   const saved = (() => { try { return localStorage.getItem('wh_loc'); } catch(e){ return null; } })();
   S.loc = locs.find(l => l.id===saved) || locs[0] || null; if(S.loc) $('locSel').value = S.loc.id;
   $('locSel').onchange = () => { S.loc = locs.find(l => l.id===$('locSel').value); try{ localStorage.setItem('wh_loc', S.loc.id); }catch(e){} S.tab=null; renderTabs(); };
-  renderTabs();
+  route();
 }
 sb.auth.getSession().then(({data}) => { if(data.session) start(); });
 
 /* ============ NAVIGATION ============ */
-function tabList(){
-  const t = []; const L = S.loc;
-  if(L && L.kind==='siding'){ t.push(['#', L.code + ' · siding'],['rakes','Rakes'],['dispatch','Dispatch'],['stock','Stock']); }
-  if(L && L.kind==='warehouse'){
-    t.push(['#', L.code + ' · warehouse']);
-    if(!L.is_live) t.push(['opening','Opening stock']);
-    t.push(['grn','Receive (GRN)'],['dispatch','Dispatch'],['returns','Returns'],['stock','Stock'],['damage','Damage'],['count','Stock count'],['adjust','Adjustment']);
-  }
-  t.push(['#','Office']);
-  if(S.me.office || can('wh_adjustment_approve') || can('wh_damage_transfer_approve') || can('wh_variance_approve') || can('wh_labor_bill_approve') || can('wh_opening_mismatch_approve')) t.push(['approvals','Approvals']);
-  if(can('wh_sap_operator')) t.push(['billing','SAP billing'],['sapgrn','SAP GRN']);
-  if(L) t.push(['recoveries','Recoveries'],['labor','Labor']);
-  t.push(['messages','Messages'],['reports','Reports']);
-  t.push(['#','Settings']);
-  if(can('wh_master_admin')) t.push(['masters','Masters']);
-  if(can('sys_user_admin') || can('sys_role_admin')) t.push(['access','Users & roles']);
-  t.push(['profile','My profile']);
-  return t;
-}
+/* Module registry: the home screen shows one block per module the user can use.
+   A future module = one more entry here + its screens in VIEWS. */
+const ICONS = {
+  warehouse:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V8l9-5 9 5v13"/><path d="M7 21v-8h10v8"/><path d="M7 17h10"/></svg>',
+  masters:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
+  users:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/><path d="M16 4a4 4 0 0 1 0 8M22 21v-1a6 6 0 0 0-4-5.6"/></svg>',
+};
+const MODULES = [
+  { key:'wh', name:'Warehouse', icon:'warehouse', desc:'Rakes and sidings, godown receipts, loading and challans, returns, damage, stock, SAP billing, labor',
+    usesLocation:true, visible: () => S.me.grants.some(g => g.startsWith('wh_') && g !== 'wh_master_admin') || S.me.locations.length > 0,
+    screens: () => {
+      const t = []; const L = S.loc;
+      if(L && L.kind==='siding'){ t.push(['#', L.code + ' · siding'],['rakes','Rakes'],['dispatch','Dispatch'],['stock','Stock']); }
+      if(L && L.kind==='warehouse'){
+        t.push(['#', L.code + ' · warehouse']);
+        if(!L.is_live) t.push(['opening','Opening stock']);
+        t.push(['grn','Receive (GRN)'],['dispatch','Dispatch'],['returns','Returns'],['stock','Stock'],['damage','Damage'],['count','Stock count'],['adjust','Adjustment']);
+      }
+      t.push(['#','Office']);
+      if(S.me.office || can('wh_adjustment_approve') || can('wh_damage_transfer_approve') || can('wh_variance_approve') || can('wh_labor_bill_approve') || can('wh_opening_mismatch_approve')) t.push(['approvals','Approvals']);
+      if(can('wh_sap_operator')) t.push(['billing','SAP billing'],['sapgrn','SAP GRN']);
+      if(L) t.push(['recoveries','Recoveries'],['labor','Labor']);
+      t.push(['messages','Messages'],['reports','Reports']);
+      if(can('wh_master_admin')){ t.push(['#','Setup']); t.push(['whsetup','Warehouse setup']); }
+      return t;
+    } },
+  { key:'md', name:'Master Data', icon:'masters', desc:'Customers, Sold-To and Ship-To parties, destinations, plants, vendors, trucks',
+    visible: () => can('wh_master_admin'), screens: () => [['#','Master data'],['masters','Masters']] },
+  { key:'admin', name:'Users & Roles', icon:'users', desc:'Add users, set roles, permissions and locations',
+    visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
+];
+const modOf = k => MODULES.find(x => x.key === k);
+function tabList(){ const M = modOf(S.module); return M ? M.screens() : []; }
 function setNav(open){ document.body.classList.toggle('nav-open', open); }
 $('menuBtn').onclick = () => setNav(!document.body.classList.contains('nav-open'));
 $('scrim').onclick = () => setNav(false);
 $('logout2').onclick = async () => { await sb.auth.signOut(); location.reload(); };
+$('homeLink').onclick = e => { e.preventDefault(); location.hash = ''; };
+
+// routes: #  (home) · #wh/grn · #md/masters · #admin/access · #profile
+function route(){
+  const [mod, tab] = location.hash.replace(/^#/, '').split('/');
+  setNav(false);
+  if(mod === 'profile'){ S.module = 'profile'; S.tab = 'profile'; }
+  else if(mod && modOf(mod) && modOf(mod).visible()){ S.module = mod; S.tab = tab || null; }
+  else { S.module = null; S.tab = null; }
+  renderTabs();
+}
+window.addEventListener('hashchange', route);
 function renderTabs(){
-  const t = tabList(); if(!S.tab || !t.find(x=>x[0]===S.tab)) S.tab = (t.find(x=>x[0]!=='#')||[])[0];
-  $('tabs').innerHTML = t.map(([k,l]) => k==='#' ? `<div class="grp">${esc(l)}</div>` : `<button class="${k===S.tab?'on':''}" data-t="${k}">${l}</button>`).join('');
-  $('tabs').querySelectorAll('button').forEach(b => b.onclick = () => { S.tab = b.dataset.t; setNav(false); renderTabs(); window.scrollTo(0,0); });
+  const M = modOf(S.module); const home = !S.module;
+  document.body.classList.toggle('home', home || S.module === 'profile');
+  $('modName').textContent = M ? '· ' + M.name : S.module === 'profile' ? '· My profile' : '';
+  $('locSel').style.display = M && M.usesLocation ? '' : 'none';
   $('sideUser').textContent = (S.me.profile && (S.me.profile.full_name || S.me.profile.email)) || '';
+  if(home){ $('tabs').innerHTML = ''; return renderHome(); }
+  if(S.module === 'profile'){ $('tabs').innerHTML = ''; return go(); }
+  const t = tabList(); if(!S.tab || !t.find(x=>x[0]===S.tab)) S.tab = (t.find(x=>x[0]!=='#')||[])[0];
+  $('tabs').innerHTML = `<button class="back" data-home="1">&#8592; All modules</button>` + t.map(([k,l]) => k==='#' ? `<div class="grp">${esc(l)}</div>` : `<button class="${k===S.tab?'on':''}" data-t="${k}">${l}</button>`).join('');
+  $('tabs').querySelector('[data-home]').onclick = () => { location.hash = ''; };
+  $('tabs').querySelectorAll('[data-t]').forEach(b => b.onclick = () => { if(location.hash !== `#${S.module}/${b.dataset.t}`) location.hash = `${S.module}/${b.dataset.t}`; else route(); window.scrollTo(0,0); });
+  if(location.hash !== `#${S.module}/${S.tab}`) history.replaceState(null, '', `#${S.module}/${S.tab}`);
   go();
+}
+function renderHome(){
+  const mods = MODULES.filter(x => x.visible());
+  const name = (S.me.profile && (S.me.profile.full_name || S.me.profile.email)) || '';
+  $('main').innerHTML = `<div class="home-wrap"><div class="row" style="justify-content:space-between;align-items:flex-start"><div><p class="home-hello">Welcome${name ? ', ' + esc(name.split(' ')[0]) : ''}</p><p class="muted" style="margin:0">Choose a module.</p></div><div class="row homeLinks"><a class="ghost sm" href="#profile" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px">My profile</a><button class="ghost sm" onclick="sb.auth.signOut().then(()=>location.reload())">Sign out</button></div></div>
+    <div class="mods">${mods.map(x => `<button class="mod" data-mod="${x.key}"><div class="ic">${ICONS[x.icon]}</div><div class="nm">${esc(x.name)}</div><div class="ds">${esc(x.desc)}</div></button>`).join('')
+      || '<div class="empty">No module is open to you yet. Ask the administrator to give you a role.</div>'}</div></div>`;
+  $('main').querySelectorAll('[data-mod]').forEach(b => b.onclick = () => { location.hash = b.dataset.mod; });
 }
 async function go(){
   const m = $('main'); m.innerHTML = '<div class="empty"><span class="spin" style="border-top-color:var(--deep);border-color:var(--line)"></span></div>';
@@ -925,21 +980,23 @@ const MASTERS = {
   'Plants': {t:'sys_plants', cols:['code','name','client_id'], form:[['code','Plant code'],['name','Plant name'],['client_id','Customer','client']]},
   'Vendors': {t:'sys_vendors', cols:['vendor_code','vendor_name','busy_name','is_active'], form:[['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
   'Own trucks': {t:'sys_trucks', cols:['registration_no','is_active'], form:[['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
-  'Materials': {t:'wh_materials', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']], note:'Every material belongs to one customer. The same short name can exist for two customers.'},
-  'Locations': {t:'wh_locations', cols:['code','name','kind','station_code','return_intimation','is_live'], form:[['code','Code'],['name','Name'],['kind','Kind','sel',['warehouse','siding']],['client_id','Customer (warehouse only)','client'],['station_code','Station code (siding)'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r},
-  'SAP product mapping': {t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
+  'Materials': {wh:1, t:'wh_materials', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']], note:'Every material belongs to one customer. The same short name can exist for two customers.'},
+  'Locations': {wh:1, t:'wh_locations', cols:['code','name','kind','station_code','return_intimation','is_live'], form:[['code','Code'],['name','Name'],['kind','Kind','sel',['warehouse','siding']],['client_id','Customer (warehouse only)','client'],['station_code','Station code (siding)'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r},
+  'SAP product mapping': {wh:1, t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
   'Sold-To parties': {t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], edit:['contact_phone','name'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
   'Ship-To parties': {t:'sys_ship_to', cols:['client_id','sold_to_id','sap_code','name','destination_id','location_id'], form:[['client_id','Customer','client'],['sold_to_id','Sold-To (buyer)','soldto'],['sap_code','SAP Ship-To code'],['name','Ship-To name'],['destination_id','Destination','dest'],['location_id','If this is our own warehouse','loc']], note:'Where the material goes. Belongs to one Sold-To and carries its destination.'},
   'Destinations': {t:'sys_destinations', cols:['name','district_id','pincode'], form:[['district_id','District (state)','district'],['name','Destination'],['pincode','PIN code']], note:'Every destination carries its district and state. Add the district first if it is not in the list.'},
   'Districts': {t:'sys_districts', cols:['state_id','name'], form:[['state_id','State','state'],['name','District']]},
-  'Bag conversion': {t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant (blank = all plants)','plant'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
-  'Labor rates': {t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
-  'Shortage recovery rates': {t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
-  'Labor contractors': {t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Vendor','vendor'],['billing_cycle_days','Billing cycle (days)','num']]},
-  'Customer email settings': {t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
+  'Bag conversion': {wh:1, t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant (blank = all plants)','plant'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
+  'Labor rates': {wh:1, t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
+  'Shortage recovery rates': {wh:1, t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
+  'Labor contractors': {wh:1, t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Vendor','vendor'],['billing_cycle_days','Billing cycle (days)','num']]},
+  'Customer email settings': {wh:1, t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
 };
-VIEWS.masters = async m => {
-  S.mst = S.mst || 'Materials'; const M = MASTERS[S.mst];
+VIEWS.whsetup = m => VIEWS.masters(m, true);
+VIEWS.masters = async (m, whOnly = false) => {
+  const keys = Object.keys(MASTERS).filter(k => !!MASTERS[k].wh === whOnly);
+  if(!keys.includes(S.mst)) S.mst = keys[0]; const M = MASTERS[S.mst];
   const rows = await q(M.t, b => b.limit(500));
   const allLocs = await q('wh_locations'); const plants = await q('sys_plants');
   const [states, districts, dests, soldTos] = await Promise.all([q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
@@ -948,7 +1005,7 @@ VIEWS.masters = async m => {
   const input = ([k, l, t, o]) => { const sel = (arr) => `<select id="f_${k}"><option value=""></option>${arr}</select>`;
     const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plant' ? sel(opt(plants,'id','code')) : t==='state' ? sel(opt(states,'id','name')) : t==='district' ? sel(opt(districts,'id',distLabel)) : t==='dest' ? sel(opt(dests,'id',x=>`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`)) : t==='soldto' ? sel(opt(soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`)) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
     return `<div><label>${esc(l)}</label>${el}</div>`; };
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Masters</h1><select id="mS" style="width:auto">${Object.keys(MASTERS).map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${whOnly ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid">${M.form.map(input).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
   <div class="card">${table(M.cols.map(k => ({h:k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(M.edit ? [{h:'', f:r => `<button class="ghost sm" data-edit="${r.id}">Edit</button>`}] : []), rows)}</div>`;
   m.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { const r = rows.find(x=>x.id===b.dataset.edit); const upd = {}; for(const k of M.edit){ const v = prompt(k.replace(/_/g,' '), r[k]||''); if(v===null) return; upd[k] = v.trim(); } act(b, async () => { const {error} = await sb.from(M.t).update(upd).eq('id', r.id); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Saved'); });
