@@ -3,20 +3,27 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<meta name="theme-color" content="#0B3D2E" />
-<title>SSL Warehouse</title>
+<meta name="theme-color" content="#236B76" />
+<title>SS Logistics</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="logo-mark.png">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
   :root{
-    --ink:#0B1F17; --deep:#0B3D2E; --moss:#1B5E43; --lime:#8BC34A;
-    --sand:#EFE9DC; --paper:#F7F4EC; --line:#D9D2C2; --slate:#5B6B63;
-    --alert:#B23A2E; --amber:#C7862B; --ok:#1B7A4B; --r:12px; --tap:48px;
+    /* SS Logistics brand: mint, aqua and deep teal from the logo */
+    --ink:#123A40; --deep:#236B76; --moss:#2F7D87; --lime:#3BB3C8; --mint:#B6DDC8; --aqua:#3BB3C8;
+    --sand:#E7F4F2; --paper:#F3F9F8; --line:#D6E8E6; --slate:#5F7E82;
+    --alert:#C0473B; --amber:#C98A2E; --ok:#1F8A6A; --r:14px; --tap:48px;
+    --grad:linear-gradient(135deg,#2F7D87 0%,#3BB3C8 100%);
+    --shadow:0 1px 2px rgba(18,58,64,.06),0 4px 16px rgba(18,58,64,.06);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
   html,body{margin:0}
-  body{font-family:"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;background:var(--paper);color:var(--ink);font-size:15px;line-height:1.4}
+  body{font-family:Inter,"Segoe UI",system-ui,-apple-system,Roboto,sans-serif;background:var(--paper);color:var(--ink);font-size:15px;line-height:1.4}
   .topbar{position:sticky;top:0;z-index:20;background:var(--deep);color:var(--sand);display:flex;align-items:center;gap:12px;padding:10px 16px;flex-wrap:wrap}
   .brand{font-weight:800;letter-spacing:.16em;font-size:14px;text-transform:uppercase;white-space:nowrap}
   .brand b{color:var(--lime)}
@@ -133,25 +140,88 @@
     .tbl td input,.tbl td select{max-width:60%}
   }
   @media (min-width:641px) and (max-width:1023px){ .wrap{padding:14px 18px 80px} }
+  /* ===== SS Logistics theme ===== */
+  body{background:var(--paper);-webkit-font-smoothing:antialiased;letter-spacing:-.005em}
+  .topbar{background:#fff;color:var(--ink);box-shadow:0 1px 0 var(--line),0 6px 20px rgba(18,58,64,.05)}
+  .brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);letter-spacing:0;text-transform:none;font-size:16px;font-weight:800}
+  .brand img{width:34px;height:34px;object-fit:contain}
+  .brand .bname{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+  #modName{color:var(--slate);font-weight:600}
+  #modName:not(:empty)::before{content:"·";margin:0 6px 0 2px;color:var(--line)}
+  .menuBtn{color:var(--deep)}
+  .topbar select{background:var(--paper);border-color:var(--line);color:var(--ink);font-weight:600;border-radius:10px}
+  .who{color:var(--slate);opacity:1}
+  .who a,.who #uRole{color:var(--deep)!important;font-weight:600}
+  .side{background:#fff;border-right:1px solid var(--line)}
+  .side button{color:var(--ink);font-weight:600;border-radius:0 10px 10px 0;margin-right:10px;width:calc(100% - 10px);transition:background .15s,color .15s}
+  .side button:hover{background:var(--sand)}
+  .side button.on{border-left-color:var(--aqua);background:linear-gradient(90deg,#DDF1F3,#EEF8F6);color:var(--deep);font-weight:800}
+  .side .grp{color:var(--moss)}
+  .sideHead{background:var(--grad)!important;color:#fff!important}
+  .sideHead a{color:#fff!important;text-decoration:underline}
+  h1{color:var(--moss);letter-spacing:.1em}
+  .card{border:1px solid var(--line);box-shadow:var(--shadow);border-radius:var(--r)}
+  input,select,textarea{background:#fff;border-color:var(--line);transition:border-color .15s,box-shadow .15s}
+  input:focus,select:focus,textarea:focus{border-color:var(--aqua);box-shadow:0 0 0 4px rgba(59,179,200,.15)}
+  input:disabled{background:var(--paper);color:var(--slate)}
+  button{transition:transform .08s,box-shadow .15s,filter .15s}
+  button:active{transform:scale(.98)}
+  .primary{background:var(--grad);color:#fff;box-shadow:0 4px 14px rgba(47,125,135,.25)}
+  .primary:hover{filter:brightness(1.05);box-shadow:0 6px 18px rgba(47,125,135,.32)}
+  .primary:disabled{background:#B7CDCF;box-shadow:none}
+  .lime{background:var(--mint);color:var(--ink)}
+  .lime:hover{filter:brightness(.97)}
+  .ghost{background:#fff;color:var(--deep);border:1.5px solid var(--line)}
+  .ghost:hover{border-color:var(--aqua);background:#F7FCFC}
+  .plate{background:#FFF6D6;color:#3A2E00;border:1.5px solid #E5CF7A}
+  th{color:var(--moss);border-bottom-color:var(--line)}
+  td{border-bottom-color:#E9F2F1}
+  tbody tr{transition:background .12s}
+  tbody tr:hover{background:#F6FBFB}
+  .chip{background:var(--sand);color:var(--deep)}
+  .chip.ok{background:#DDF3EA;color:var(--ok)} .chip.info{background:#DDF1F5;color:#1D6C7D}
+  .kpi div{border:1px solid var(--line);box-shadow:var(--shadow);border-radius:12px;background:#fff}
+  .kpi span{color:var(--moss)}
+  .okbox{background:#E6F5EF;border-color:#BFE3D2;color:var(--ok)}
+  .toast.ok{background:var(--deep)}
+  .modal{background:rgba(18,58,64,.45);backdrop-filter:blur(3px)}
+  .modal .box{box-shadow:0 20px 60px rgba(18,58,64,.25);border-radius:18px}
+  a{color:var(--moss)}
+  /* login */
+  #login{background:radial-gradient(1200px 600px at 50% -10%, #DDF1F3 0%, transparent 60%), radial-gradient(800px 400px at 110% 110%, #E3F3EA 0%, transparent 60%), var(--paper);min-height:100vh;max-width:none}
+  #login>*{max-width:380px;width:100%;margin-left:auto;margin-right:auto}
+  .loginLogo{display:block;width:170px!important;margin:0 auto 6px!important}
+  .tag{color:var(--moss)}
+  /* home */
+  html{background:var(--paper)}
+  body.home{min-height:100vh;background:radial-gradient(900px 420px at 15% -5%, #DDF1F3 0%, transparent 60%), radial-gradient(700px 360px at 100% 0%, #E3F3EA 0%, transparent 55%), var(--paper);background-attachment:fixed}
+  .home-hello{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;font-size:26px}
+  .mod{border:1px solid var(--line);box-shadow:var(--shadow);border-radius:18px;position:relative;overflow:hidden}
+  .mod::after{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:var(--grad);opacity:.9}
+  .mod:hover{border-color:var(--aqua);box-shadow:0 14px 34px rgba(47,125,135,.18)}
+  .mod .ic{background:linear-gradient(135deg,#E3F3EA,#DDF1F5);color:var(--deep)}
+  .mod .nm{color:var(--ink)}
+  @media (max-width:640px){ body:not(.home) .bname, body:not(.home) #modName{display:none} .brand img{width:30px;height:30px} }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
 <body>
 
 <div id="login" class="center">
-  <div class="logo">SS <b>LOGISTICS</b></div>
-  <div class="tag">Warehouse · Siding</div>
+  <img src="logo.png" alt="SS Logistics — The Goods Way" class="loginLogo">
+  <div class="tag">Operations portal</div>
   <button class="primary" id="googleBtn" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px"><svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>Sign in with Google</button>
-  <div class="muted" style="text-align:center;margin:18px 0 12px">or sign in with email and password</div>
+  <div class="muted hide" id="orLine" style="text-align:center;margin:18px 0 12px">or sign in with email and password</div>
   <div class="field"><label for="email">Email</label><input id="email" type="email" autocomplete="username" placeholder="you@gmail.com"></div>
   <div class="field"><label for="pass">Password</label><input id="pass" type="password" autocomplete="current-password"></div>
-  <button class="ghost" id="loginBtn" style="width:100%">Sign in</button>
+  <button class="primary" id="loginBtn" style="width:100%">Sign in</button>
   <p class="muted" style="text-align:center;margin-top:16px" id="loginMsg"></p>
 </div>
 
 <div id="app" class="hide">
   <div class="topbar">
     <button class="menuBtn" id="menuBtn" aria-label="Menu">&#9776;</button>
-    <a class="brand" href="#" id="homeLink" style="color:inherit;text-decoration:none">SS<b>L</b> <span id="modName"></span></a>
+    <a class="brand" href="#" id="homeLink"><img src="logo-mark.png" alt=""><span class="bname">SS Logistics</span><span id="modName"></span></a>
     <select id="locSel" aria-label="Location"></select>
     <div class="who"><span id="uEmail"></span><br><span id="uRole" style="color:var(--lime)"></span> · <a href="#profile" style="color:var(--lime)">My profile</a> · <a id="logout">Sign out</a></div>
   </div>
@@ -275,7 +345,7 @@ $('googleBtn').onclick = async () => {
 };
 // show the Google button only once Google sign-in is switched on in Supabase
 $('googleBtn').classList.add('hide');
-fetch(SB_URL + '/auth/v1/settings', {headers:{apikey:SB_KEY}}).then(r => r.json()).then(st => { if(st && st.external && st.external.google) $('googleBtn').classList.remove('hide'); }).catch(() => {});
+fetch(SB_URL + '/auth/v1/settings', {headers:{apikey:SB_KEY}}).then(r => r.json()).then(st => { if(st && st.external && st.external.google){ $('googleBtn').classList.remove('hide'); $('orLine').classList.remove('hide'); } }).catch(() => {});
 sb.auth.onAuthStateChange((event) => { if(event === 'SIGNED_IN' && $('app').classList.contains('hide')) start(); });
 $('logout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
@@ -358,7 +428,7 @@ window.addEventListener('hashchange', route);
 function renderTabs(){
   const M = modOf(S.module); const home = !S.module;
   document.body.classList.toggle('home', home || S.module === 'profile');
-  $('modName').textContent = M ? '· ' + M.name : S.module === 'profile' ? '· My profile' : '';
+  $('modName').textContent = M ? M.name : S.module === 'profile' ? 'My profile' : '';
   $('locSel').style.display = M && M.usesLocation ? '' : 'none';
   $('sideUser').textContent = (S.me.profile && (S.me.profile.full_name || S.me.profile.email)) || '';
   if(home){ $('tabs').innerHTML = ''; return renderHome(); }
