@@ -202,6 +202,26 @@
   .mod .ic{background:linear-gradient(135deg,#E3F3EA,#DDF1F5);color:var(--deep)}
   .mod .nm{color:var(--ink)}
   @media (max-width:640px){ body:not(.home) .bname, body:not(.home) #modName{display:none} .brand img{width:30px;height:30px} }
+  /* rake operations */
+  .rkgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px;margin-bottom:16px}
+  .rkc{display:block;text-align:left;height:auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px 16px;box-shadow:var(--shadow);color:var(--ink);font-weight:500;cursor:pointer;position:relative;overflow:hidden}
+  .rkc::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--grad)}
+  .rkc:hover{border-color:var(--aqua);box-shadow:0 10px 26px rgba(47,125,135,.16)}
+  .rkc b{font-size:15px}
+  .rkm{display:flex;gap:14px;flex-wrap:wrap;margin:10px 0 6px;font-size:12.5px;color:var(--slate)}
+  .rkm b{color:var(--ink);font-size:14px}
+  .clk{margin-top:8px}
+  .clkT{display:flex;justify-content:space-between;font-size:12px;color:var(--slate);margin-bottom:4px}
+  .clkB{height:8px;border-radius:99px;background:#E9F2F1;overflow:hidden}
+  .clkB i{display:block;height:100%;border-radius:99px;transition:width .3s}
+  .steps{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+  .steps span{font-size:12px;font-weight:700;padding:6px 10px;border-radius:99px;background:#fff;border:1px solid var(--line);color:var(--slate)}
+  .steps span.done{background:#DDF3EA;border-color:#BFE3D2;color:var(--ok)}
+  .steps span.cur{background:var(--grad);border-color:transparent;color:#fff}
+  .checks div{padding:4px 0;font-size:14px}
+  .warnbox{background:#FFF4E0;border:1px solid #F1D9A6;color:#8a5a14;border-radius:10px;padding:10px 14px;margin:10px 0}
+  .lineRow{display:grid;grid-template-columns:1fr 130px 40px;gap:8px;align-items:center;margin-bottom:6px}
+  @media (max-width:640px){ .lineRow{grid-template-columns:1fr 100px 40px} .rkgrid{grid-template-columns:1fr} }
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 </head>
@@ -244,7 +264,7 @@ const sb = supabase.createClient(SB_URL, SB_KEY);
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 /* ============ STATE + HELPERS ============ */
-const S = { me:null, loc:null, tab:null, clients:[], materials:[], contractors:[], parties:[], trucks:[], vendors:[] };
+const S = { me:null, loc:null, tab:null, locs:[], clients:[], materials:[], contractors:[], parties:[], trucks:[], vendors:[], cats:[], sardars:[], links:[], terms:[], plants:[] };
 const $ = id => document.getElementById(id);
 const esc = v => v==null ? '' : String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const n3 = v => v==null||v==='' ? '' : Number(v).toFixed(3);
@@ -358,6 +378,8 @@ async function loadMasters(){
     q('sys_vendors', b => b.eq('is_active', true).order('vendor_name')),
   ]);
   S.trucks = await q('sys_trucks', b => b.eq('is_active', true).order('registration_no'));
+  [S.cats, S.sardars, S.links, S.terms, S.plants] = await Promise.all([
+    q('sys_material_categories', b => b.order('code')), q('rk_sardars'), q('sys_plant_sidings'), q('rk_siding_client_terms'), q('sys_plants', b => b.order('code'))]);
 }
 async function start(){
   const {data:{user}} = await sb.auth.getUser(); if(!user) return;
@@ -366,11 +388,8 @@ async function start(){
   $('uEmail').textContent = user.email; $('uRole').textContent = (S.me.role||'').replace('_',' ');
   if(!S.me.active){ $('loginMsg').textContent = 'Your login works, but your user is not activated yet. Ask the admin to activate you.'; return; }
   $('login').classList.add('hide'); $('app').classList.remove('hide');
-  const locs = S.me.locations.filter(l => l.kind !== 'plant');
-  $('locSel').innerHTML = locs.length ? locs.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)} (${l.kind})</option>`).join('') : '<option value="">No location assigned</option>';
-  const saved = (() => { try { return localStorage.getItem('wh_loc'); } catch(e){ return null; } })();
-  S.loc = locs.find(l => l.id===saved) || locs[0] || null; if(S.loc) $('locSel').value = S.loc.id;
-  $('locSel').onchange = () => { S.loc = locs.find(l => l.id===$('locSel').value); try{ localStorage.setItem('wh_loc', S.loc.id); }catch(e){} S.tab=null; renderTabs(); };
+  S.locs = S.me.locations;
+  $('locSel').onchange = () => { S.loc = S.locs.find(l => l.id===$('locSel').value) || null; try{ if(S.loc) localStorage.setItem('loc_'+S.module, S.loc.id); }catch(e){} S.tab=null; renderTabs(); };
   route();
 }
 sb.auth.getSession().then(({data}) => { if(data.session) start(); });
@@ -381,14 +400,23 @@ sb.auth.getSession().then(({data}) => { if(data.session) start(); });
 const ICONS = {
   warehouse:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21V8l9-5 9 5v13"/><path d="M7 21v-8h10v8"/><path d="M7 17h10"/></svg>',
   masters:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
+  rake:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M3 10h18M8 4v6M16 4v6"/><circle cx="7.5" cy="19" r="1.5"/><circle cx="16.5" cy="19" r="1.5"/><path d="M2 22h20"/></svg>',
   users:'<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1"/><path d="M16 4a4 4 0 0 1 0 8M22 21v-1a6 6 0 0 0-4-5.6"/></svg>',
 };
 const MODULES = [
-  { key:'wh', name:'Warehouse', icon:'warehouse', desc:'Sidings and warehouses: rakes, godown receipts, loading and challans, returns, damage, stock, SAP billing, labor',
-    usesLocation:true, visible: () => S.me.grants.some(g => g.startsWith('wh_') && g !== 'wh_master_admin') || S.me.locations.some(l => l.kind !== 'plant'),
+  { key:'rk', name:'Rake Operations', icon:'rake', desc:'Rakes at railway sidings: intimation, RR and wagons, arrival, unloading, trucks and challans, platform lot, DC/WC, closure',
+    usesLocation:true, locKinds:['siding'], visible: () => can('rk_view') || can('rk_master_admin'),
     screens: () => {
       const t = []; const L = S.loc;
-      if(L && L.kind==='siding'){ t.push(['#', L.code + ' · siding'],['rakes','Rakes'],['dispatch','Dispatch'],['stock','Stock']); }
+      if(L && can('rk_view')) t.push(['#', L.code + ' · siding'],['rk_board','Rakes'],['rk_trucks','Trucks'],['rk_lots','Platform lots']);
+      if(can('rk_view')) t.push(['#','Office'],['rk_recov','Platform recoveries'],['rk_msgs','Customer emails'],['rk_reports','Reports']);
+      if(can('rk_master_admin')) t.push(['#','Setup'],['rk_setup','Siding setup']);
+      return t;
+    } },
+  { key:'wh', name:'Warehouse', icon:'warehouse', desc:'Godown receipts, loading and challans, returns, damage, stock, SAP billing, labor',
+    usesLocation:true, locKinds:['warehouse'], visible: () => S.me.grants.some(g => g.startsWith('wh_') && g !== 'wh_master_admin') || S.me.locations.some(l => l.kind === 'warehouse'),
+    screens: () => {
+      const t = []; const L = S.loc;
       if(L && L.kind==='warehouse'){
         t.push(['#', L.code + ' · warehouse']);
         if(!L.is_live) t.push(['opening','Opening stock']);
@@ -402,7 +430,7 @@ const MODULES = [
       if(can('wh_master_admin')){ t.push(['#','Setup']); t.push(['whsetup','Warehouse setup']); }
       return t;
     } },
-  { key:'md', name:'Master Data', icon:'masters', desc:'Customers, plants and warehouses, Sold-To and Ship-To parties, destinations, vendors, trucks',
+  { key:'md', name:'Master Data', icon:'masters', desc:'Customers, material categories and types, plants, warehouses and sidings, Sold-To and Ship-To parties, destinations, vendors, trucks',
     visible: () => can('wh_master_admin'), screens: () => [['#','Master data'],['masters','Masters']] },
   { key:'admin', name:'Users & Roles', icon:'users', desc:'Add users, set roles, permissions and locations',
     visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
@@ -430,6 +458,12 @@ function renderTabs(){
   document.body.classList.toggle('home', home || S.module === 'profile');
   $('modName').textContent = M ? M.name : S.module === 'profile' ? 'My profile' : '';
   $('locSel').style.display = M && M.usesLocation ? '' : 'none';
+  if(M && M.usesLocation){
+    const locs = S.locs.filter(l => M.locKinds.includes(l.kind));
+    if(!S.loc || !locs.find(l => l.id===S.loc.id)){ let saved = null; try{ saved = localStorage.getItem('loc_'+S.module); }catch(e){} S.loc = locs.find(l => l.id===saved) || locs[0] || null; }
+    $('locSel').innerHTML = locs.length ? locs.map(l => `<option value="${l.id}">${esc(l.code)} · ${esc(l.name)}</option>`).join('') : `<option value="">No ${M.locKinds.join('/')} assigned</option>`;
+    if(S.loc) $('locSel').value = S.loc.id;
+  }
   $('sideUser').textContent = (S.me.profile && (S.me.profile.full_name || S.me.profile.email)) || '';
   if(home){ $('tabs').innerHTML = ''; return renderHome(); }
   if(S.module === 'profile'){ $('tabs').innerHTML = ''; return go(); }
@@ -455,20 +489,7 @@ async function go(){
 }
 const VIEWS = {};
 
-/* ============ RAKES (siding) ============ */
-VIEWS.rakes = async m => {
-  const rakes = await q('wh_rakes', b => b.eq('siding_id', S.loc.id).order('created_at', {ascending:false}).limit(50));
-  const st = {expected:'info', placed_partial:'warn', placed:'ok', released:'', closed:'ok'};
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Rakes at ${esc(S.loc.code)}</h1><button class="primary" id="newRake">+ New rake from RR</button></div>
-  <div class="card">${table([
-    {h:'Rake', f:r=>`<a href="#" data-rk="${r.id}"><b>${esc(r.rake_no)}</b></a>`},
-    {h:'Customer', f:r=>esc((S.clients.find(c=>c.id===r.client_id)||{}).name)},
-    {h:'RR / FNR', f:r=>`${esc(r.rr_no)} / ${esc(r.fnr)}`}, {h:'RR date', f:r=>d8(r.rr_date)}, {h:'Batch', k:'batch'},
-    {h:'Wagons', k:'rr_wagon_count', n:1}, {h:'MT', f:r=>n3(r.rr_mt), n:1}, {h:'Status', f:r=>chip(r.status.replace('_',' '), st[r.status])}], rakes, 'No rakes yet. Start with the RR PDF and wagon sheet.')}</div>`;
-  $('newRake').onclick = () => rakeNew(m);
-  m.querySelectorAll('[data-rk]').forEach(a => a.onclick = e => { e.preventDefault(); rakeDetail(m, a.dataset.rk); });
-};
-
+/* ============ RR / WAGON SHEET READERS (used by Rake Operations) ============ */
 async function parseRR(file){
   const doc = await pdfjsLib.getDocument({data: new Uint8Array(await file.arrayBuffer())}).promise;
   let t=''; for(let i=1;i<=doc.numPages;i++){ const p = await doc.getPage(i); t += (await p.getTextContent()).items.map(x=>x.str).join(' ') + '\n'; }
@@ -493,142 +514,6 @@ async function parseWagonSheet(file){
   return out;
 }
 
-function rakeNew(m){
-  const F = {client_id:'', wagons:[], sibling:[], rrFile:null, sheetFile:null};
-  m.innerHTML = `<h1>New rake · ${esc(S.loc.code)}</h1>
-  <div class="card"><div class="grid">
-    <div><label>Customer</label><select id="rkClient">${opt(S.clients,'id','name','', 'Select customer')}</select></div>
-    <div><label>RR PDF (from email)</label><input type="file" id="rkPdf" accept="application/pdf"></div>
-    <div><label>Wagon details sheet</label><input type="file" id="rkSheet" accept=".xlsx,.xls,.csv"></div>
-    <div><label>Other destination's sheet (optional, for duplicate check)</label><input type="file" id="rkSib" accept=".xlsx,.xls,.csv"></div>
-  </div></div>
-  <div class="card"><h2>RR header — verify before saving</h2><div class="grid" id="rkHead">
-    ${['rr_no:RR No','fnr:FNR','rr_date:RR date:date','railway_invoice_no:Railway invoice no','invoice_date:Invoice date:date','from_station:From station','to_station:To station','rr_wagon_count:Wagons (RR):number','rr_bags:Bags (RR):number','rr_mt:MT (RR):number'].map(s=>{const[k,l,t]=s.split(':');return `<div><label>${l}</label><input id="h_${k}" type="${t||'text'}" step="any"></div>`;}).join('')}
-  </div><p class="muted" id="rkBatch"></p></div>
-  <div class="card"><h2>Wagons (from wagon sheet)</h2><div id="rkWagons"><div class="empty">Upload the wagon sheet.</div></div></div>
-  <div id="rkIssues"></div>
-  <div class="row"><button class="primary" id="rkSave">Save rake</button><button class="ghost" id="rkBack">Back</button></div>`;
-  const head = () => { const o={}; m.querySelectorAll('#rkHead input').forEach(i => { const k=i.id.slice(2); o[k] = i.type==='number' ? (i.value===''?null:+i.value) : i.value.trim(); }); return o; };
-  const payload = () => ({...head(), client_id:$('rkClient').value, siding_id:S.loc.id, wagons:F.wagons, sibling_wagons:F.sibling});
-  const check = async () => {
-    const p = payload(); $('rkBatch').textContent = p.invoice_date ? `Batch will be ${batchOf(p.invoice_date)} (from invoice date)` : '';
-    if(!F.wagons.length || !p.rr_wagon_count) return;
-    const issues = await rpc('wh_rake_check', {p});
-    $('rkIssues').innerHTML = issues.length ? `<div class="issues"><b>Cannot save yet:</b><br>${issues.map(esc).join('<br>')}<br><span class="muted">Fix the source documents with the customer, or correct a mis-read field above.</span></div>` : `<div class="okbox">RR and wagon sheet tie: ${F.wagons.length} wagons, ${F.wagons.reduce((s,w)=>s+w.bags,0)} bags, ${n3(F.wagons.reduce((s,w)=>s+w.mt,0))} MT.</div>`;
-  };
-  const drawWagons = () => {
-    const cid = $('rkClient').value; const known = new Set(S.materials.filter(x => x.client_id===cid).map(x => x.code.toUpperCase()));
-    $('rkWagons').innerHTML = table([{h:'Sr',k:'sr'},{h:'Wagon no',k:'wagon_no'},{h:'Type',k:'wagon_type'},{h:'Bags',k:'bags',n:1},{h:'MT',f:w=>n3(w.mt),n:1},
-      {h:'Declared material',f:w=>known.has((w.material||'').toUpperCase()) ? esc(w.material) : chip(w.material+(cid?' — not in this customer\'s materials':' — choose the customer first'),'bad')},{h:'Destination',k:'destination'}], F.wagons);
-  };
-  $('rkPdf').onchange = async e => { try{ F.rrFile = e.target.files[0]; const r = await parseRR(F.rrFile); Object.entries(r).forEach(([k,v]) => { if($('h_'+k) && v!=null) $('h_'+k).value = v; }); toast('RR read — please verify the fields'); check(); }catch(err){ toast('Could not read RR: '+err.message,'err',7000); } };
-  $('rkSheet').onchange = async e => { try{ F.sheetFile = e.target.files[0]; F.wagons = await parseWagonSheet(F.sheetFile); drawWagons(); check(); }catch(err){ toast(err.message,'err',7000); } };
-  $('rkClient').onchange = () => { if(F.wagons.length) drawWagons(); check(); };
-  $('rkSib').onchange = async e => { try{ F.sibling = (await parseWagonSheet(e.target.files[0])).map(w => w.wagon_no); check(); }catch(err){ toast(err.message,'err'); } };
-  m.querySelectorAll('#rkHead input').forEach(i => i.onchange = check);
-  $('rkBack').onclick = () => go();
-  $('rkSave').onclick = e => act(e.target, async () => {
-    const p = payload(); if(!p.client_id) throw new Error('Select the customer');
-    const stamp = Date.now();
-    if(F.rrFile){ const path = `rr/${S.loc.code}/${stamp}-${F.rrFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.rrFile); if(!u.error) p.rr_file_path = path; }
-    if(F.sheetFile){ const path = `rr/${S.loc.code}/${stamp}-${F.sheetFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.sheetFile); if(!u.error) p.sheet_file_path = path; }
-    const id = await rpc('wh_rake_register', {p}); rakeDetail(m, id);
-  }, 'Rake saved');
-}
-
-async function rakeDetail(m, id){
-  const [rk] = await q('wh_rakes', b => b.eq('id', id));
-  const wagons = await q('wh_wagons', b => b.eq('rake_id', id).order('sheet_sr'));
-  const lots = await q('wh_platform_lots', b => b.eq('rake_id', id).order('lot_code'));
-  const bal = await q('wh_stock_balance', b => b.eq('location_id', rk.siding_id).eq('batch', rk.batch));
-  const balOf = lot => (bal.find(x => x.lot_id===lot)||{}).qty_mt || 0;
-  const photos = await evidenceCount('wagon_gate', wagons.map(w=>w.id));
-  const dmgPh = await evidenceCount('wagon_damage', wagons.map(w=>w.id));
-  const msgs = await q('wh_messages', b => b.eq('rake_id', id).order('created_at'));
-  const client = (S.clients.find(c=>c.id===rk.client_id)||{}).name;
-  const opened = wagons.filter(w=>w.gate_opened_at).length, emptied = wagons.filter(w=>w.emptied_at).length, missing = wagons.filter(w=>w.status==='missing').length;
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(rk.rake_no)} · ${esc(client)}</h1><button class="ghost sm" id="rkBack">All rakes</button></div>
-  <div class="kpi"><div><span>RR / FNR</span><b style="font-size:16px">${esc(rk.rr_no)} / ${esc(rk.fnr)}</b></div><div><span>Batch</span><b>${esc(rk.batch)}</b></div>
-   <div><span>Status</span><b style="font-size:18px">${esc(rk.status.replace('_',' '))}</b></div><div><span>Gates opened</span><b>${opened}/${wagons.length}</b></div>
-   <div><span>Wagons empty</span><b>${emptied}/${wagons.length}</b></div><div><span>Missing</span><b style="color:${missing?'var(--alert)':'inherit'}">${missing}</b></div></div>
-  <div id="rkBody"></div>`;
-  $('rkBack').onclick = () => go();
-  const body = $('rkBody');
-  if(rk.status==='expected'){
-    body.innerHTML = `<div class="card"><h2>Rake placement</h2><p class="muted">Untick wagons that were not placed. Enter each wagon's physical position in the rake.</p>
-      <div class="field" style="max-width:260px"><label>Placed at</label><input type="datetime-local" id="plAt" value="${new Date(Date.now()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16)}"></div>
-      ${table([{h:'Placed',f:w=>`<input type="checkbox" data-pl="${w.id}" checked>`},{h:'Sr',k:'sheet_sr'},{h:'Wagon',k:'wagon_no'},{h:'Declared',f:w=>esc(mat(w.declared_material_id))},{h:'Position',f:w=>`<input type="number" data-pos="${w.id}" value="${w.sheet_sr}" style="width:90px;height:36px">`}], wagons)}
-      <button class="primary" id="plGo" style="margin-top:10px">Record placement</button></div>`;
-    $('plGo').onclick = e => act(e.target, async () => {
-      const arr = wagons.filter(w => body.querySelector(`[data-pl="${w.id}"]`).checked).map(w => ({wagon_id:w.id, position:+body.querySelector(`[data-pos="${w.id}"]`).value}));
-      const r = await rpc('wh_rake_place', {p_rake:id, p_arrivals:arr, p_arrived_at:new Date($('plAt').value).toISOString()});
-      rakeDetail(m, id); return r;
-    }, r => r==='placed_partial' ? 'Placed with missing wagons — email drafted in Messages' : 'Rake placed');
-    return;
-  }
-  const flagTxt = {wet:'Wet', cut_torn:'Cut/Torn', major:'Major'};
-  body.innerHTML = `<div class="card"><h2>Wagons</h2>${table([
-    {h:'Pos',k:'position'},{h:'Wagon',f:w=>`<b>${esc(w.wagon_no)}</b><br><span class="muted">${esc(w.wagon_type||'')}</span>`},
-    {h:'Declared',f:w=>esc(mat(w.declared_material_id))},
-    {h:'Found',f:w=>w.found_material_id ? (w.found_material_id!==w.declared_material_id ? chip(mat(w.found_material_id)+' ≠ declared','bad') : esc(mat(w.found_material_id))) : ''},
-    {h:'Status',f:w=> w.status==='missing' ? chip('missing','bad') : w.emptied_at ? chip('empty','ok') : w.gate_opened_at ? chip('gate open','info') : chip(w.status.replace('_',' '))},
-    {h:'Damage',f:w=>w.damage_flag ? chip(flagTxt[w.damage_flag],'warn') : ''},
-    {h:'In wagon MT',n:1,f:w=>w.gate_opened_at && !w.emptied_at ? n3(balOf(w.id)) : w.shortage_mt!=null ? `<span class="muted">short ${n3(w.shortage_mt)}</span>` : ''},
-    {h:'Photos',f:w=>`<a href="#" data-ev="${w.id}">${photos[w.id]||0}${dmgPh[w.id]?' + '+dmgPh[w.id]+' dmg':''}</a>`},
-    {h:'',f:w=>{
-      if(w.status==='missing') return `<button class="ghost sm" data-late="${w.id}">Arrived late</button>`;
-      if(!w.gate_opened_at) return `<button class="lime sm" data-photo="${w.id}" data-wn="${esc(w.wagon_no)}">📷 Gate photo</button> <button class="primary sm" data-open="${w.id}" ${photos[w.id]?'':'disabled title="Take the gate-open photo first"'}>Open gate</button>`;
-      if(!w.emptied_at) return `<button class="ghost sm" data-plat="${w.id}">To platform</button> <button class="ghost sm" data-empty="${w.id}">Mark empty</button>`;
-      return '';
-    }}], wagons)}</div>
-  <div class="card"><h2>Platform lots</h2>${table([{h:'Lot',f:l=>`<b>${esc(l.lot_code)}</b>`},{h:'On platform MT',n:1,f:l=>l.closed_at?'':n3(balOf(l.id))},
-     {h:'Status',f:l=>l.closed_at ? chip('lifted · short '+n3(l.shortage_mt), 'ok') : chip('on platform','info')},
-     {h:'',f:l=>l.closed_at?'':`<button class="ghost sm" data-close="${l.id}">Lot fully lifted</button>`}], lots, 'No material unloaded to platform.')}</div>
-  <div class="card"><div class="row" style="justify-content:space-between"><h2>Customer emails</h2><div class="row">
-     <button class="ghost sm" id="dmgMail">Draft damage email</button><button class="ghost sm" id="misMail">Draft mismatch email</button></div></div>
-     ${table([{h:'Kind',f:x=>chip(x.kind.replace(/_/g,' '))},{h:'Subject',k:'subject'},{h:'Status',f:x=>x.status==='sent'?chip('sent '+(x.sent_via||''),'ok'):chip('draft','warn')},{h:'',f:x=>`<button class="ghost sm" data-msg="${x.id}">Open</button>`}], msgs, 'No emails yet.')}</div>`;
-  const W = id2 => wagons.find(w=>w.id===id2);
-  body.querySelectorAll('[data-ev]').forEach(a => a.onclick = e => { e.preventDefault(); showEvidenceAll(a.dataset.ev); });
-  body.querySelectorAll('[data-photo]').forEach(b => b.onclick = async () => { await capture('wagon_gate', b.dataset.photo, `Wagon ${b.dataset.wn} · gate open · ${rk.rake_no}`); rakeDetail(m, id); });
-  body.querySelectorAll('[data-late]').forEach(b => b.onclick = () => {
-    modal(`<h2>Late arrival · ${esc(W(b.dataset.late).wagon_no)}</h2><div class="grid"><div><label>Placed at</label><input type="datetime-local" id="laAt"></div><div><label>Position</label><input type="number" id="laPos"></div></div>
-      <div class="row" style="margin-top:10px"><button class="primary" id="laGo">Record</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('laGo').onclick = e => act(e.target, async () => { await rpc('wh_wagon_late_arrival', {p_wagon:b.dataset.late, p_arrived_at:new Date($('laAt').value||Date.now()).toISOString(), p_position:+$('laPos').value||null}); closeModal(); rakeDetail(m, id); }, 'Recorded — late-arrival email drafted');
-  });
-  body.querySelectorAll('[data-open]').forEach(b => b.onclick = () => {
-    const w = W(b.dataset.open);
-    modal(`<h2>Open gate · ${esc(w.wagon_no)}</h2><p class="muted">Declared on wagon sheet: <b>${esc(mat(w.declared_material_id))}</b>. Record what is actually inside — stock is booked as found.</p>
-      <div class="grid"><div><label>Material found</label><select id="goMat">${matOpts(w.declared_material_id, undefined, rk.client_id)}</select></div>
-      <div><label>Damage seen</label><select id="goDmg"><option value="">No damage</option><option value="wet">Wet</option><option value="cut_torn">Cut / Torn</option><option value="major">Major visible damage</option></select></div></div>
-      <div class="field"><label>Damage note</label><input id="goNote"></div>
-      <div id="goDmgPh" class="hide"><button class="lime sm" id="goCap">📷 Damage photo / video</button> <span class="muted" id="goCapN">${dmgPh[w.id]||0} taken</span></div>
-      <div class="row" style="margin-top:12px"><button class="primary" id="goGo">Confirm gate open</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('goDmg').onchange = () => $('goDmgPh').classList.toggle('hide', !$('goDmg').value);
-    $('goCap').onclick = async () => { await capture('wagon_damage', w.id, `Wagon ${w.wagon_no} · damage · ${rk.rake_no}`, true); $('goCapN').textContent = (+$('goCapN').textContent.split(' ')[0]+1) + ' taken'; };
-    $('goGo').onclick = e => act(e.target, async () => { await rpc('wh_wagon_gate_open', {p_wagon:w.id, p_found_material:$('goMat').value, p_damage_flag:$('goDmg').value||null, p_damage_note:$('goNote').value||null}); closeModal(); rakeDetail(m, id); }, 'Gate opened — loading slips can now be issued from this wagon');
-  });
-  body.querySelectorAll('[data-plat]').forEach(b => b.onclick = () => {
-    const w = W(b.dataset.plat);
-    modal(`<h2>Unload to platform · ${esc(w.wagon_no)}</h2><div class="grid"><div><label>Platform</label><input id="ptP" value="P1"></div><div><label>Quantity MT</label><input id="ptQ" type="number" step="0.001" value="${n3(balOf(w.id))}"></div>
-      <div><label>Labor contractor</label><select id="ptC">${contrOpts()}</select></div></div><p class="muted">Lot will be <b id="ptL">P1–${esc(w.wagon_no)}</b></p>
-      <div class="row"><button class="primary" id="ptGo">Unload to platform</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('ptP').oninput = () => $('ptL').textContent = $('ptP').value.toUpperCase() + '–' + w.wagon_no;
-    $('ptGo').onclick = e => act(e.target, async () => { await rpc('wh_wagon_to_platform', {p_wagon:w.id, p_platform:$('ptP').value, p_qty:+$('ptQ').value, p_contractor:$('ptC').value}); closeModal(); rakeDetail(m, id); }, 'Platform lot updated');
-  });
-  body.querySelectorAll('[data-empty]').forEach(b => b.onclick = () => {
-    const w = W(b.dataset.empty); const left = balOf(w.id);
-    if(!confirm(`Mark ${w.wagon_no} empty? ${n3(left)} MT still booked in the wagon will be recorded as rake shortage.`)) return;
-    act(b, async () => { const r = await rpc('wh_wagon_mark_empty', {p_wagon:w.id}); rakeDetail(m, id); return r; }, r => r==='closed' ? 'Rake closed — closure email drafted' : r==='released' ? 'All wagons empty — rake released' : 'Wagon marked empty');
-  });
-  body.querySelectorAll('[data-close]').forEach(b => b.onclick = () => {
-    const l = lots.find(x=>x.id===b.dataset.close);
-    if(!confirm(`Lot ${l.lot_code} fully lifted? ${n3(balOf(l.id))} MT still booked will be recorded as shortage.`)) return;
-    act(b, async () => { const r = await rpc('wh_lot_close', {p_lot:l.id}); rakeDetail(m, id); return r; }, r => r==='closed' ? 'Rake operation closed — closure email drafted' : 'Lot closed');
-  });
-  $('dmgMail').onclick = e => act(e.target, async () => { await rpc('wh_rake_damage_email', {p_rake:id}); rakeDetail(m, id); }, 'Damage email drafted');
-  $('misMail').onclick = e => act(e.target, async () => { await rpc('wh_rake_mismatch_email', {p_rake:id}); rakeDetail(m, id); }, 'Mismatch email drafted');
-  body.querySelectorAll('[data-msg]').forEach(b => b.onclick = () => openMessage(msgs.find(x=>x.id===b.dataset.msg), () => rakeDetail(m, id)));
-}
 async function showEvidenceAll(entityId){
   const rows = await q('wh_evidence', b => b.eq('entity_id', entityId).order('taken_at'));
   const urls = await Promise.all(rows.map(async r => (await sb.storage.from('wh-evidence').createSignedUrl(r.storage_path, 600)).data?.signedUrl));
@@ -651,26 +536,29 @@ function openMessage(x, after){
   $('msgCopy').onclick = async () => { await navigator.clipboard.writeText(x.subject + '\n\n' + x.body); toast('Copied'); };
   $('msgSent').onclick = e => act(e.target, async () => { await saveTo(); await rpc('wh_mark_message_sent', {p_message:x.id, p_via:$('msgVia').value}); closeModal(); after && after(); }, 'Marked sent');
 }
-VIEWS.messages = async m => {
-  const rows = await q('wh_messages', b => b.order('created_at', {ascending:false}).limit(200));
+VIEWS.messages = m => messagesView(m, false);
+VIEWS.rk_msgs = m => messagesView(m, true);
+async function messagesView(m, rake){
+  let rows = await q('wh_messages', b => (rake ? b.not('rake_id','is',null) : b.is('rake_id', null)).order('created_at', {ascending:false}).limit(200));
+  if(rake){ const mine = new Set((await q('rk_rakes')).map(x => x.id)); rows = rows.filter(r => mine.has(r.rake_id)); }
   const draw = f => {
     const list = rows.filter(r => f==='all' || r.status===f);
-    m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Customer messages</h1><select id="mf" style="width:auto"><option value="draft">Drafts to send</option><option value="sent">Sent</option><option value="all">All</option></select></div>
+    m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${rake ? 'Rake customer emails' : 'Customer messages'}</h1><select id="mf" style="width:auto"><option value="draft">Drafts to send</option><option value="sent">Sent</option><option value="all">All</option></select></div>
     <div class="card">${table([{h:'Created',f:r=>dt(r.created_at)},{h:'Kind',f:r=>chip(r.kind.replace(/_/g,' '))},{h:'Customer',f:r=>esc((S.clients.find(c=>c.id===r.client_id)||{}).name)},{h:'Subject',k:'subject'},{h:'To',k:'to_address'},
       {h:'Status',f:r=>r.status==='sent'?chip('sent','ok'):chip('draft','warn')},{h:'',f:r=>`<button class="ghost sm" data-m="${r.id}">Open</button>`}], list, 'No messages.')}</div>`;
     $('mf').value = f; $('mf').onchange = () => draw($('mf').value);
     m.querySelectorAll('[data-m]').forEach(b => b.onclick = () => openMessage(rows.find(r=>r.id===b.dataset.m), () => go()));
   };
   draw('draft');
-};
+}
 
 /* ============ STOCK ============ */
 VIEWS.stock = async m => {
   const rows = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).order('material').order('batch'));
   const tot = s => rows.filter(r=>r.storage===s).reduce((a,r)=>a+ +r.qty_mt,0);
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Stock · ${esc(S.loc.code)}</h1><button class="ghost sm" id="stCsv">Download CSV</button></div>
-  <div class="kpi">${S.loc.kind==='warehouse' ? `<div><span>Fresh MT</span><b>${n3(tot('fresh'))}</b></div><div><span>Damaged MT</span><b style="color:var(--alert)">${n3(tot('damaged'))}</b></div>` : `<div><span>In wagons MT</span><b>${n3(tot('wagon'))}</b></div><div><span>On platform MT</span><b>${n3(tot('platform'))}</b></div>`}</div>
-  <div class="card">${table([{h:'Location',f:r=>chip(r.storage, r.storage==='damaged'?'bad':r.storage==='fresh'?'ok':'info')},{h:'Customer',f:r=>esc((S.clients.find(c=>c.id===r.client_id)||{}).code)},{h:'Material',k:'material'},{h:'Batch',k:'batch'},{h:'Wagon / lot',k:'lot_label'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Bags',n:1,k:'bags'}], rows, 'No stock.')}</div>`;
+  <div class="kpi"><div><span>Fresh MT</span><b>${n3(tot('fresh'))}</b></div><div><span>Damaged MT</span><b style="color:var(--alert)">${n3(tot('damaged'))}</b></div></div>
+  <div class="card">${table([{h:'Location',f:r=>chip(r.storage, r.storage==='damaged'?'bad':r.storage==='fresh'?'ok':'info')},{h:'Customer',f:r=>esc((S.clients.find(c=>c.id===r.client_id)||{}).code)},{h:'Material',k:'material'},{h:'Batch',k:'batch'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Bags',n:1,k:'bags'}], rows, 'No stock.')}</div>`;
   $('stCsv').onclick = () => csv(rows.map(r=>({location:r.location_code, storage:r.storage, material:r.material, batch:r.batch, lot:r.lot_label||'', mt:r.qty_mt, bags:r.bags})), 'stock-'+S.loc.code);
 };
 
@@ -695,7 +583,7 @@ VIEWS.grn = async m => {
   const recent = await q('wh_grns', b => b.eq('location_id', S.loc.id).order('created_at', {ascending:false}).limit(30));
   const recs = await q('wh_recoveries', b => b.in('grn_id', recent.map(g=>g.id).length ? recent.map(g=>g.id) : ['00000000-0000-0000-0000-000000000000']));
   m.innerHTML = `<h1>Receive at ${esc(S.loc.code)}</h1>
-  <div class="card"><h2>Trucks from the siding (challans addressed here)</h2>${table([{h:'Challan',k:'challan_no'},{h:'Truck',f:r=>`<span class="plate">${esc(r.truck_no)}</span> ${chip(r.truck_kind)}`},{h:'Material',f:r=>esc(mat(r.material_id))},{h:'Batch',k:'batch'},{h:'Challan MT',n:1,f:r=>n3(r.qty_mt)},{h:'Dispatched',f:r=>dt(r.dispatched_at)},{h:'',f:r=>`<button class="primary sm" data-rx="${r.challan_line_id}">Receive</button>`}], inbound, 'No siding trucks on the way.')}</div>
+  <div class="card"><h2>Trucks from the siding (challans addressed here)</h2>${table([{h:'Challan',k:'challan_no'},{h:'Truck',f:r=>`<span class="plate">${esc(r.truck_no)}</span> ${chip(r.truck_kind)}`},{h:'Material',f:r=>esc(mat(r.material_id))+(r.is_damaged?' '+chip('damaged bags','bad'):'')},{h:'Batch',k:'batch'},{h:'Challan MT',n:1,f:r=>n3(r.qty_mt)},{h:'Dispatched',f:r=>dt(r.dispatched_at)},{h:'',f:r=>`<button class="primary sm" data-rx="${r.challan_line_id}">Receive</button>`}], inbound, 'No siding trucks on the way.')}</div>
   <div class="card"><h2>Primary receipt (plant / market / own truck)</h2><div class="grid">
     <div><label>Truck kind</label><select id="gK"><option value="market">Market truck</option><option value="own">SSL own truck</option></select></div>
     <div><label>Truck no</label><input id="gT" list="ownTrucks" placeholder="WB23E2769"><datalist id="ownTrucks">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
@@ -719,7 +607,8 @@ VIEWS.grn = async m => {
   m.querySelectorAll('[data-rx]').forEach(b => b.onclick = () => {
     const r = inbound.find(x=>x.challan_line_id===b.dataset.rx);
     modal(`<h2>Receive ${esc(r.challan_no)} · <span class="plate">${esc(r.truck_no)}</span></h2><p class="muted">${esc(mat(r.material_id))} · batch ${esc(r.batch)} · challan ${n3(r.qty_mt)} MT. Record exactly what was received — there is no tolerance.</p>
-      <div class="grid"><div><label>Received good MT</label><input id="rxR" type="number" step="0.001" value="${n3(r.qty_mt)}"></div><div><label>Damaged MT</label><input id="rxX" type="number" step="0.001" value="0"></div><div><label>Labor contractor</label><select id="rxL">${contrOpts()}</select></div></div>
+      ${r.is_damaged ? '<div class="issues">Damaged bags from the rake: everything received goes to Damaged storage.</div>' : ''}
+      <div class="grid"><div><label>${r.is_damaged ? 'Received MT (damaged)' : 'Received good MT'}</label><input id="rxR" type="number" step="0.001" value="${n3(r.qty_mt)}"></div><div><label>Damaged MT</label><input id="rxX" type="number" step="0.001" value="0"></div><div><label>Labor contractor</label><select id="rxL">${contrOpts()}</select></div></div>
       <p class="muted" id="rxS"></p><div class="row"><button class="primary" id="rxGo">Post GRN</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
     const u = () => { const s = r.qty_mt - (+$('rxR').value||0) - (+$('rxX').value||0); $('rxS').innerHTML = s>0.0005 ? `<b style="color:var(--alert)">Shortage ${n3(s)} MT</b> — recovered from ${r.truck_kind==='own'?'the driver (cash or trip advance)':'the vendor'} at the warehouse recovery rate.` : ''; };
     $('rxR').oninput = u; $('rxX').oninput = u;
@@ -737,9 +626,7 @@ VIEWS.dispatch = async m => {
   m.querySelectorAll('[data-d]').forEach(b => b.onclick = () => dispatchDetail(m, b.dataset.d));
   m.querySelectorAll('[data-pr]').forEach(b => b.onclick = () => printChallans([b.dataset.pr]));
   $('dNew').onclick = () => {
-    const sid = S.loc.kind==='siding';
     modal(`<h2>New truck at ${esc(S.loc.code)}</h2><div class="grid">
-      ${sid ? `<div><label>Customer (rake material)</label><select id="nC">${opt(S.clients,'id','name','', 'Select customer')}</select></div>` : ''}
       <div><label>Truck kind</label><select id="nK"><option value="market">Market</option><option value="vendor">Vendor</option><option value="own">SSL own</option><option value="dealer">Dealer's own</option></select></div>
       <div><label>Truck no</label><input id="nT" list="ownTrucks2"><datalist id="ownTrucks2">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
       <div id="nVW" class="hide"><label>Vendor</label><select id="nV">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
@@ -749,7 +636,7 @@ VIEWS.dispatch = async m => {
     $('nGo').onclick = e => act(e.target, async () => {
       const own = $('nK').value==='own'; const tr = S.trucks.find(t=>t.registration_no===$('nT').value.trim().toUpperCase());
       if(own && !tr) throw new Error('Own truck not found in the truck master');
-      const id = await rpc('wh_dispatch_create', {p_location:S.loc.id, p_client:sid?$('nC').value||null:null, p_truck_no:$('nT').value, p_truck_kind:$('nK').value, p_truck:own?tr.id:null, p_vendor:$('nK').value==='vendor'?$('nV').value||null:null, p_driver:$('nD').value||null});
+      const id = await rpc('wh_dispatch_create', {p_location:S.loc.id, p_client:null, p_truck_no:$('nT').value, p_truck_kind:$('nK').value, p_truck:own?tr.id:null, p_vendor:$('nK').value==='vendor'?$('nV').value||null:null, p_driver:$('nD').value||null});
       closeModal(); dispatchDetail(m, id);
     });
   };
@@ -758,16 +645,8 @@ VIEWS.dispatch = async m => {
 async function dispatchDetail(m, id){
   const [d] = await q('wh_dispatches', b => b.eq('id', id));
   const slips = await q('wh_loading_slips', b => b.eq('dispatch_id', id).neq('status','cancelled').order('created_at'));
-  const sid = S.loc.kind==='siding';
   let sources = [];
-  if(sid){
-    const wagons = await q('wh_wagons', b => b.not('gate_opened_at','is',null).is('emptied_at', null));
-    const lots = await q('wh_platform_lots', b => b.is('closed_at', null));
-    const bal = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).eq('client_id', d.client_id));
-    bal.forEach(x => { const w = wagons.find(v=>v.id===x.lot_id); const l = lots.find(v=>v.id===x.lot_id);
-      if(w && x.storage==='wagon') sources.push({key:'wagon:'+w.id, label:`Wagon ${w.wagon_no} · ${x.material} · ${x.batch} · ${n3(x.qty_mt)} MT`});
-      if(l && x.storage==='platform') sources.push({key:'lot:'+l.id, label:`Lot ${l.lot_code} · ${x.material} · ${x.batch} · ${n3(x.qty_mt)} MT`}); });
-  } else {
+  {
     const bal = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).eq('storage','fresh').order('material').order('batch'));
     bal.forEach(x => sources.push({key:`godown:${x.material_id}:${x.batch}`, label:`Godown · ${x.material} · batch ${x.batch} · ${n3(x.qty_mt)} MT in stock`}));
     const grns = await q('wh_grns', b => b.eq('location_id', S.loc.id).is('labor_bill_id', null).gte('created_at', new Date(Date.now()-3*86400000).toISOString()).order('created_at',{ascending:false}));
@@ -808,7 +687,7 @@ async function printChallans(ids){
   const ch = await q('wh_challans', b => b.in('id', ids)); const lines = await q('wh_challan_lines', b => b.in('challan_id', ids));
   const disp = await q('wh_dispatches', b => b.in('id', [...new Set(ch.map(c=>c.dispatch_id))]));
   printWin(ch.map(c => { const d = disp.find(x=>x.id===c.dispatch_id)||{}; const p = S.parties.find(x=>x.client_id===c.client_id && x.sap_code===c.ship_to_code)||{};
-    return `<div class="pg"><h2>${c.challan_no.startsWith('ADC')?'ADJUSTMENT CHALLAN (no physical movement)':'DELIVERY CHALLAN'} ${esc(c.challan_no)}</h2><div>${esc(S.loc.code)} · ${new Date(c.created_at).toLocaleString('en-IN')}</div>
+    return `<div class="pg"><h2>${c.challan_no.startsWith('ADC')?'ADJUSTMENT CHALLAN (no physical movement)':c.is_damaged?'DELIVERY CHALLAN · DAMAGED BAGS':'DELIVERY CHALLAN'} ${esc(c.challan_no)}</h2><div>${esc(S.loc.code)} · ${new Date(c.created_at).toLocaleString('en-IN')}</div>
     <table><tr><th>Customer</th><td>${esc((S.clients.find(x=>x.id===c.client_id)||{}).name)}</td><th>Truck</th><td>${esc(d.truck_no||'—')}</td></tr>
     <tr><th>Sold-To</th><td>${esc(p.sold_to_name||'')} (${esc(c.sold_to_code||'')})</td><th>Contact</th><td>${esc(p.sold_to_phone||'')}</td></tr><tr><th>Ship-To</th><td>${esc(p.party_name||'')} (${esc(c.ship_to_code)})</td><th>Destination</th><td>${esc([p.destination,p.district,p.state].filter(Boolean).join(', '))}</td></tr><tr><th>Material</th><td colspan="3"><b>${esc(mat(c.material_id))}</b></td></tr></table>
     <table><tr><th>Batch</th><th class="n">MT</th><th class="n">Bags</th></tr>${lines.filter(l=>l.challan_id===c.id).map(l=>`<tr><td>${esc(l.batch)}</td><td class="n">${n3(l.qty_mt)}</td><td class="n">${l.bags??''}</td></tr>`).join('')}
@@ -1027,10 +906,8 @@ const REPORTS = {
   'Adjustment Dispatches': ['wh_dispatches', b => b.like('dispatch_type','adjustment%').order('created_at',{ascending:false})],
   'Damage aging': ['wh_damage_aging', b => b.order('days_pending',{ascending:false})],
   'Internal damage': ['wh_damage_transfers', b => b.order('created_at',{ascending:false})],
-  'Material mismatch': ['wh_material_mismatch_report'],
   'Pending SAP GRN': ['wh_pending_sap_grn'],
   'Stock variance': ['wh_stock_variance_report'],
-  'Wagon damage final count': ['wh_wagon_damage_final', b => b.not('damage_flag','is',null)],
   'Labor bills': ['wh_labor_busy_export'],
 };
 VIEWS.reports = async m => {
@@ -1044,13 +921,506 @@ VIEWS.reports = async m => {
   $('rCsv').onclick = () => csv(rows, S.rep.toLowerCase().replace(/ /g,'-'));
 };
 
+/* ============ RAKE OPERATIONS ============ */
+const RK_STEPS = [['planned','Planned'],['wagons_updated','Wagons updated'],['arrived','Arrived'],['unloading','Unloading'],['unloaded','Unloading complete'],['released','Released'],['cleared','Platform clear'],['closed','Closed']];
+const rkIdx = st => RK_STEPS.findIndex(x => x[0]===st);
+const rkChip = st => chip((RK_STEPS.find(x => x[0]===st)||[st,st])[1], st==='closed'?'ok':['arrived','unloading','unloaded'].includes(st)?'info':['released','cleared'].includes(st)?'warn':'');
+const sardarName = id => { const x = S.sardars.find(y => y.id===id); return x ? ((S.vendors.find(v => v.id===x.vendor_id)||{}).vendor_name || 'Sardar') : '—'; };
+const sardarOpts = sel => opt(S.sardars.filter(x => S.loc && x.siding_id===S.loc.id && x.is_active).map(x => ({id:x.id, n:sardarName(x.id)})), 'id', 'n', sel, 'Select Labour Sardar');
+const plantCode = id => (S.plants.find(p => p.id===id)||{}).code || '';
+const localDT = d => { const x = d ? new Date(d) : new Date(); return new Date(x.getTime() - x.getTimezoneOffset()*60000).toISOString().slice(0,16); };
+const isoDT = v => v ? new Date(v).toISOString() : null;
+const bearerTxt = b => b==='ssl' ? 'SSL bears DC/WC' : b==='customer' ? 'Customer bears DC/WC' : 'DC/WC bearer not set';
+const rkBearer = (clientId) => { const t = S.terms.find(x => x.siding_id===S.loc.id && x.client_id===clientId); return t ? t.dcwc_bearer : (S.clients.find(c => c.id===clientId)||{}).dcwc_bearer; };
+function clockBar(pct, running, label){
+  if(pct==null) return '';
+  const c = pct>=90 ? 'var(--alert)' : pct>=75 ? '#D97F06' : pct>=50 ? '#B89400' : 'var(--moss)';
+  return `<div class="clk"><div class="clkT"><span>${esc(label)}</span><b style="color:${c}">${pct}% ${running?'· running':''}</b></div><div class="clkB"><i style="width:${Math.min(100,pct)}%;background:${c}"></i></div></div>`;
+}
+function rakeCard(r){
+  const c = r.calc || {};
+  return `<button class="rkc" data-rk="${r.id}"><div class="row" style="justify-content:space-between"><b>${esc(r.rake_no)}</b>${rkChip(r.status)}</div>
+    <div class="muted" style="margin-top:4px">${esc(r.client_code)} · ${esc(r.category)} · for ${esc(r.warehouse_code)} · from ${esc(r.source_siding)}</div>
+    <div class="rkm"><span>Wagons <b>${r.wagons ? `${r.wagons_empty}/${r.wagons}` : r.planned_wagons}</b></span><span>MT <b>${n3(r.rr_mt || r.planned_mt)}</b></span><span>On platform <b>${n3(r.lot_mt)}</b></span></div>
+    ${['planned','wagons_updated'].includes(r.status) ? `<div class="muted">Expected ${r.expected_arrival ? dt(r.expected_arrival) : '—'}</div>` : ''}
+    ${clockBar(c.dc_used_pct, c.dc_running, 'Demurrage free time used')}${clockBar(c.wc_used_pct, c.wc_running, 'Wharfage free time used')}</button>`;
+}
+
+VIEWS.rk_board = async m => {
+  if(!S.loc){ m.innerHTML = '<div class="empty">No siding is assigned to you yet. Ask the administrator to add your siding.</div>'; return; }
+  const rows = await q('rk_rake_list', b => b.eq('siding_id', S.loc.id).order('created_at', {ascending:false}).limit(100));
+  const open = rows.filter(r => r.status!=='closed'), closed = rows.filter(r => r.status==='closed');
+  const alert = open.filter(r => (r.calc||{}).dc_running && (r.calc.dc_used_pct||0)>=75 || (r.calc||{}).wc_running && (r.calc.wc_used_pct||0)>=75);
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Rakes · ${esc(S.loc.code)}</h1>${can('rk_rake_create') ? '<button class="primary" id="rkPlan">+ Plan rake</button>' : ''}</div>
+    ${alert.length ? `<div class="warnbox"><b>Free time running out:</b> ${alert.map(r => esc(r.rake_no)).join(', ')}</div>` : ''}
+    <div class="rkgrid">${open.map(rakeCard).join('') || '<div class="empty">No open rakes. Plan one from the customer\'s intimation.</div>'}</div>
+    <div class="card"><h2>Closed rakes</h2>${table([{h:'Rake',f:r=>`<a href="#" data-rk="${r.id}"><b>${esc(r.rake_no)}</b></a>`},{h:'Customer',k:'client_code'},{h:'RR / FNR',f:r=>`${esc(r.rr_no||'')} / ${esc(r.fnr||'')}`},{h:'MT',n:1,f:r=>n3(r.rr_mt)},{h:'Placed',f:r=>dt(r.placed_at)},{h:'Closed',f:r=>dt(r.closed_at)}], closed.slice(0,40), 'No closed rakes yet.')}</div>`;
+  if($('rkPlan')) $('rkPlan').onclick = () => rkPlanForm(null, id => rkDetail(m, id));
+  m.querySelectorAll('[data-rk]').forEach(a => a.onclick = e => { e.preventDefault(); rkDetail(m, a.dataset.rk); });
+};
+
+function rkPlanForm(r, after){
+  const isNew = !r; r = r || {};
+  const whOpts = cid => opt(S.plants.filter(p => p.kind==='warehouse' && p.client_id===cid && S.links.some(l => l.plant_id===p.id && l.siding_id===S.loc.id)), 'id', p => `${p.code} · ${p.name}`, r.warehouse_id, 'Select warehouse');
+  modal(`<h2>${isNew ? 'Plan rake' : 'Edit intimation · ' + esc(r.rake_no)} at ${esc(S.loc.code)}</h2>
+    <p class="muted">Enter the customer's rake intimation. RR PDF and wagon sheet are added next.</p>
+    <div class="grid">
+      <div><label>Customer</label><select id="pC" ${r.status==='wagons_updated'?'disabled':''}>${opt(S.clients,'id','name', r.client_id, 'Select customer')}</select></div>
+      <div id="pCatW"><label>Material category</label><select id="pCat" ${r.status==='wagons_updated'?'disabled':''}></select></div>
+      <div><label>For our warehouse</label><select id="pW"></select></div>
+      <div><label>Coming from (loading siding)</label><input id="pS" value="${esc(r.source_siding||'')}" placeholder="e.g. UCPD"></div>
+      <div><label>Wagons</label><input id="pN" type="number" value="${r.planned_wagons||''}"></div>
+      <div><label>Rake quantity MT</label><input id="pQ" type="number" step="0.001" value="${r.planned_mt||''}"></div>
+      <div><label>Expected arrival</label><input id="pE" type="datetime-local" value="${r.expected_arrival ? localDT(r.expected_arrival) : ''}"></div>
+      <div style="grid-column:1/-1"><label>Note</label><input id="pNote" value="${esc(r.note||'')}"></div>
+    </div><p class="muted" id="pB"></p>
+    <div class="row" style="margin-top:10px"><button class="primary" id="pGo">${isNew ? 'Save rake' : 'Save changes'}</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  const upd = () => {
+    const cid = $('pC').value; const cats = S.cats.filter(c => c.client_id===cid && c.is_active);
+    $('pCat').innerHTML = opt(cats, 'id', c => `${c.name} (${c.code})`, r.category_id || (cats.length===1 ? cats[0].id : ''), cats.length===1 ? undefined : 'Select category');
+    $('pCatW').style.display = cats.length===1 ? 'none' : '';
+    $('pW').innerHTML = whOpts(cid);
+    const b = cid ? rkBearer(cid) : null; $('pB').innerHTML = cid ? (b ? bearerTxt(b) : '<span style="color:var(--alert)">Set who bears DC/WC for this customer in Master data before planning.</span>') + (cats.length ? '' : ' · <span style="color:var(--alert)">This customer has no material category yet.</span>') : '';
+  };
+  $('pC').onchange = () => { r.category_id = null; r.warehouse_id = null; upd(); }; upd();
+  $('pGo').onclick = e => act(e.target, async () => {
+    const p = {siding_id:S.loc.id, client_id:$('pC').value, category_id:$('pCat').value, warehouse_id:$('pW').value, source_siding:$('pS').value,
+               planned_wagons:+$('pN').value||null, planned_mt:+$('pQ').value||null, expected_arrival:isoDT($('pE').value), note:$('pNote').value};
+    const id = isNew ? await rpc('rk_rake_plan', {p}) : await rpc('rk_rake_edit', {p:{...p, id:r.id}});
+    closeModal(); after && after(id);
+  }, isNew ? 'Rake planned' : 'Intimation updated');
+}
+
+async function rkDetail(m, id){
+  const [r] = await q('rk_rake_list', b => b.eq('id', id));
+  if(!r){ m.innerHTML = '<div class="issues">Rake not found or not at your siding.</div>'; return; }
+  const [wagons, uslips, lot, diffs, msgs, events, tlines] = await Promise.all([
+    q('rk_wagons', b => b.eq('rake_id', id).order('sheet_sr')), q('rk_unload_slips', b => b.eq('rake_id', id).order('created_at')),
+    q('rk_lot_balance', b => b.eq('rake_id', id)), q('rk_platform_diffs', b => b.eq('rake_id', id).order('created_at')),
+    q('wh_messages', b => b.eq('rake_id', id).order('created_at')), q('rk_rake_events', b => b.eq('rake_id', id).order('at', {ascending:false})),
+    q('rk_truck_lines', b => b.eq('rake_id', id))]);
+  const wids = wagons.map(w => w.id);
+  const [phB, phA, phD, phW] = await Promise.all([evidenceCount('rk_wagon_before', wids), evidenceCount('rk_wagon_after', wids), evidenceCount('rk_wagon_damage', wids), evidenceCount('rk_waiver', [id])]);
+  const c = r.calc || {}; const si = rkIdx(r.status); const W = x => wagons.find(w => w.id===x);
+  const openSlip = wid => uslips.find(u => u.wagon_id===wid && u.status==='open');
+  const back = () => rkDetail(m, id);
+  const truckMt = wid => tlines.filter(l => l.wagon_id===wid && l.actual_mt!=null).reduce((a,l) => a + +l.actual_mt, 0);
+  const unlMt = wid => uslips.filter(u => u.wagon_id===wid && u.status==='returned').reduce((a,u) => a + +u.good_mt + +u.damaged_mt, 0);
+
+  let h = `<div class="row" style="justify-content:space-between"><h1>${esc(r.rake_no)} · ${esc(r.client_name)}</h1><button class="ghost sm" id="rkBack">All rakes</button></div>
+  <div class="steps">${RK_STEPS.map(([k,l],i) => `<span class="${i<si?'done':i===si?'cur':''}">${i<si?'✓ ':''}${esc(l)}</span>`).join('')}</div>
+  <div class="kpi"><div><span>RR / FNR</span><b style="font-size:15px">${esc(r.rr_no||'—')} / ${esc(r.fnr||'—')}</b></div><div><span>Batch</span><b>${esc(r.batch||'—')}</b></div>
+   <div><span>Wagons empty</span><b>${r.wagons ? `${r.wagons_empty}/${r.wagons}` : '—'}</b></div><div><span>Missing</span><b style="color:${r.wagons_missing?'var(--alert)':'inherit'}">${r.wagons_missing}</b></div>
+   <div><span>On platform MT</span><b>${n3(r.lot_mt)}</b></div><div><span>DC + WC (system)</span><b>${inr((+c.dc_calc||0) + (+c.wc_calc||0))}</b></div></div>`;
+
+  // intimation
+  h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Intimation</h2><div class="row">
+      ${['planned','wagons_updated'].includes(r.status) && can('rk_rake_edit') ? '<button class="ghost sm" id="rkEdit">Edit</button>' : ''}
+      ${['planned','wagons_updated'].includes(r.status) && can('rk_rake_delete') ? '<button class="ghost sm" id="rkDel">Delete</button>' : ''}</div></div>
+    <div class="grid"><div><label>From</label>${esc(r.source_siding)}</div><div><label>Placement siding</label>${esc(r.siding_code)}</div><div><label>For warehouse</label>${esc(r.warehouse_code)} · ${esc(r.warehouse_name)}</div>
+     <div><label>Category</label>${esc(r.category)}</div><div><label>Planned</label>${r.planned_wagons} wagons · ${n3(r.planned_mt)} MT</div><div><label>Expected</label>${r.expected_arrival?dt(r.expected_arrival):'—'}</div>
+     <div><label>DC / WC</label>${bearerTxt(r.dcwc_bearer)}</div>${r.note?`<div><label>Note</label>${esc(r.note)}</div>`:''}</div></div>`;
+
+  // RR + wagon sheet
+  if(['planned','wagons_updated'].includes(r.status) && can('rk_wagons_update')){
+    h += `<div class="card"><h2>${r.status==='planned' ? 'Add RR and wagon sheet' : 'Replace RR / wagon sheet'}</h2><div class="grid">
+      <div><label>RR PDF</label><input type="file" id="rkPdf" accept="application/pdf"></div>
+      <div><label>Wagon sheet</label><input type="file" id="rkSheet" accept=".xlsx,.xls,.csv"></div>
+      <div><label>Other destination's sheet (optional, duplicate check)</label><input type="file" id="rkSib" accept=".xlsx,.xls,.csv"></div></div>
+      <div class="grid" id="rkHead" style="margin-top:10px">
+      ${['rr_no:RR No','fnr:FNR','rr_date:RR date:date','railway_invoice_no:Railway invoice no','invoice_date:Invoice date:date','rr_wagon_count:Wagons (RR):number','rr_bags:Bags (RR):number','rr_mt:MT (RR):number'].map(x => { const [k,l,t] = x.split(':'); return `<div><label>${l}</label><input id="h_${k}" type="${t||'text'}" step="any" value="${esc(r[k]??'')}"></div>`; }).join('')}
+      </div><p class="muted" id="rkBatch"></p><div id="rkWagonsNew"></div><div id="rkIssues"></div>
+      <button class="primary" id="rkSaveW">Save wagons</button></div>`;
+  }
+  // arrival
+  if(r.status==='wagons_updated' && can('rk_arrival')){
+    h += `<div class="card"><h2>Mark arrival</h2><p class="muted">Untick wagons that were not placed. Free time and rates are what the railway gave for this rake.</p>
+      <div class="grid"><div><label>Arrived at siding</label><input type="datetime-local" id="aA" value="${localDT()}"></div><div><label>Placed</label><input type="datetime-local" id="aP" value="${localDT()}"></div>
+      <div><label>DC free time (hours)</label><input type="number" step="0.5" id="aDF"></div><div><label>WC free time (hours)</label><input type="number" step="0.5" id="aWF"></div>
+      <div><label>Penal DC in force?</label><select id="aPen"><option value="">Choose…</option><option value="false">No</option><option value="true">Yes</option></select></div>
+      <div><label>DC rate (₹ per wagon per hour)</label><input type="number" step="0.01" id="aDR"></div><div><label>WC rate (₹ per MT per hour)</label><input type="number" step="0.01" id="aWR"></div>
+      <div><label>Rate note</label><input id="aRN" placeholder="e.g. penal DC notice no."></div></div>
+      ${table([{h:'Placed',f:w=>`<input type="checkbox" data-pl="${w.id}" checked>`},{h:'Sr',k:'sheet_sr'},{h:'Wagon',k:'wagon_no'},{h:'Type',f:w=>esc(mat(w.material_id))},{h:'Position',f:w=>`<input type="number" data-pos="${w.id}" value="${w.sheet_sr}" style="width:90px;height:36px">`}], wagons)}
+      <button class="primary" id="aGo" style="margin-top:10px">Mark arrival</button></div>`;
+  }
+  // wagons
+  if(si >= rkIdx('arrived')){
+    h += `<div class="card"><h2>Wagons</h2>${table([
+      {h:'Pos',k:'position'},{h:'Wagon',f:w=>`<b>${esc(w.wagon_no)}</b>${w.late?' '+chip('late','warn'):''}<br><span class="muted">${esc(w.wagon_type||'')}</span>`},
+      {h:'Sheet',f:w=>`${esc(mat(w.material_id))} · ${w.sheet_bags} bags · ${n3(w.sheet_mt)} MT`},
+      {h:'Found',f:w=>w.found_material_id ? (w.found_material_id!==w.material_id ? chip(mat(w.found_material_id)+' ≠ sheet','bad') : esc(mat(w.found_material_id))) : ''},
+      {h:'Status',f:w=>w.status==='missing'?chip('missing','bad'):w.status==='empty'?chip('empty','ok'):w.status==='unloading'?chip('unloading','info'):chip(w.status)},
+      {h:'Received MT',n:1,f:w=>w.status==='empty' ? `${n3(w.actual_mt)} ${+w.diff_mt>0?chip('short '+n3(w.diff_mt),'bad'):+w.diff_mt<0?chip('excess '+n3(-w.diff_mt),'warn'):chip('tallies','ok')}` : w.status==='unloading' ? `<span class="muted">${n3(truckMt(w.id)+unlMt(w.id))} so far</span>` : ''},
+      {h:'Damage',f:w=>w.damage_note?chip(w.damage_note,'warn'):''},
+      {h:'Photos',f:w=>`<a href="#" data-ev="${w.id}">${phB[w.id]||0} before · ${phA[w.id]||0} after${phD[w.id]?' · '+phD[w.id]+' damage':''}</a>`},
+      {h:'',f:w=>{
+        if(r.status==='closed') return '';
+        if(w.status==='missing') return can('rk_arrival') && ['arrived','unloading','unloaded'].includes(r.status) ? `<button class="ghost sm" data-late="${w.id}">Arrived late</button>` : '';
+        if(w.status==='arrived') return can('rk_unload') ? `<button class="lime sm" data-ph="rk_wagon_before" data-w="${w.id}">📷 Before</button> <button class="primary sm" data-start="${w.id}" ${phB[w.id]?'':'disabled title="Take the before-unloading photo first"'}>Start unloading</button>` : '';
+        if(w.status==='unloading'){ const u = openSlip(w.id); let x = '';
+          if(can('rk_unload')) x += u ? `<button class="primary sm" data-uret="${u.id}">Return slip ${esc(u.slip_no.split('/').pop())}</button> ` : `<button class="ghost sm" data-uslip="${w.id}">Unloading slip</button> `;
+          if(can('rk_unload')) x += `<button class="ghost sm" data-dmg="${w.id}">Damage</button> `;
+          if(can('rk_wagon_close')) x += `<button class="lime sm" data-ph="rk_wagon_after" data-w="${w.id}">📷 After</button> <button class="ghost sm" data-empty="${w.id}" ${phA[w.id]?'':'disabled title="Take the empty-wagon photo first"'}>Mark empty</button>`;
+          return x; }
+        return '';
+      }}], wagons)}</div>`;
+    h += `<div class="card"><h2>Unloading slips</h2>${table([{h:'Slip',k:'slip_no'},{h:'Wagon',f:u=>esc((W(u.wagon_id)||{}).wagon_no)},{h:'Sardar',f:u=>esc(sardarName(u.sardar_id))},{h:'Company MT',n:1,f:u=>n3(u.company_mt)},
+      {h:'Good MT',n:1,f:u=>u.status==='returned'?n3(u.good_mt):''},{h:'Damaged MT',n:1,f:u=>u.status==='returned'&&+u.damaged_mt?n3(u.damaged_mt):''},{h:'Status',f:u=>chip(u.status, u.status==='returned'?'ok':u.status==='open'?'info':'')},
+      {h:'',f:u=>u.status==='open'?`<button class="ghost sm" data-uprint="${u.id}">Print</button> ${can('rk_unload')?`<button class="ghost sm" data-ucx="${u.id}">Cancel</button>`:''}`:''}], uslips, 'No unloading slips yet.')}</div>`;
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Platform lot</h2>${can('rk_truck') && ['arrived','unloading','unloaded','released'].includes(r.status) ? '<button class="primary sm" id="rkTruck">+ Load a truck</button>' : ''}</div>
+      ${table([{h:'Type',k:'material'},{h:'Condition',f:x=>x.kind==='damaged'?chip('damaged','bad'):chip('good','ok')},{h:'On platform MT',n:1,f:x=>n3(x.balance_mt)},{h:'On open trucks MT',n:1,f:x=>+x.reserved_mt?n3(x.reserved_mt):''},{h:'Free MT',n:1,f:x=>n3(x.available_mt)}], lot, 'Nothing unloaded to the platform yet.')}</div>`;
+  }
+  // times
+  if(si >= rkIdx('arrived')){
+    const T = [['arrived_at','Arrived'],['placed_at','Placed (DC clock starts)'],['unload_start_at','Unloading start'],['unload_complete_at','Unloading complete (DC clock stops)'],['release_rly_at','Release · railway'],['release_ops_at','Release · operational'],['clear_rly_at','Platform clear · railway (WC clock stops)'],['clear_ops_at','Platform clear · operational']];
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Times</h2><div class="row">
+      ${r.status==='unloaded' && can('rk_release_clear') ? '<button class="primary sm" id="rkRel">Record release</button>' : ''}
+      ${r.status==='released' && can('rk_release_clear') ? '<button class="primary sm" id="rkClr">Record platform clear</button>' : ''}
+      ${r.status!=='closed' && can('rk_times_edit') ? '<button class="ghost sm" id="rkTimes">Correct times</button>' : ''}</div></div>
+      <div class="grid">${T.map(([k,l]) => `<div><label>${esc(l)}</label>${r[k] ? dt(r[k]) : '<span class="muted">—</span>'}</div>`).join('')}</div></div>`;
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Demurrage (DC) and wharfage (WC)</h2>${r.status!=='closed' && can('rk_arrival') ? '<button class="ghost sm" id="rkTerms">Change free time / rates</button>' : ''}</div>
+      <p class="muted">${bearerTxt(r.dcwc_bearer)}. Measured on every rake whoever pays.${r.penal_dc ? ' ' + chip('Penal DC in force','bad') : ''}${r.rate_note ? ' · ' + esc(r.rate_note) : ''}</p>
+      ${clockBar(c.dc_used_pct, c.dc_running, `DC: ${c.dc_hours ?? '—'} h used of ${r.dc_free_hours ?? '—'} h free`)}${clockBar(c.wc_used_pct, c.wc_running, `WC: ${c.wc_hours ?? '—'} h used of ${r.wc_free_hours ?? '—'} h free`)}
+      <div class="grid" style="margin-top:12px"><div><label>DC calculated</label>${inr(c.dc_calc)} <span class="muted">(${c.dc_excess_hours||0} h × ${c.placed_wagons} wagons × ${inr(r.dc_rate)})</span></div>
+       <div><label>WC calculated</label>${inr(c.wc_calc)} <span class="muted">(${c.wc_excess_hours||0} h × ${n3(c.platform_mt)} MT × ${inr(r.wc_rate)})</span></div>
+       <div><label>Assessed (railway)</label>${r.charges_at ? `DC ${inr(r.dc_assessed)} · WC ${inr(r.wc_assessed)}` : '—'}</div>
+       <div><label>Waived</label>${r.charges_at ? `DC ${inr(r.dc_waived)} · WC ${inr(r.wc_waived)}${r.waiver_ref ? ' · ref ' + esc(r.waiver_ref) : ''}` : '—'}</div>
+       <div><label>Paid</label>${r.charges_at ? `DC ${inr(r.dc_paid)} · WC ${inr(r.wc_paid)}` : '—'}</div>
+       <div><label>Savings vs calculated</label>${r.charges_at ? `<b>${inr((+c.dc_calc||0) + (+c.wc_calc||0) - (+r.dc_paid||0) - (+r.wc_paid||0))}</b>` : '—'}</div></div>
+      ${r.status!=='closed' && can('rk_charges') ? `<div class="row" style="margin-top:10px"><button class="primary sm" id="rkChg">${r.charges_at ? 'Update DC/WC' : 'Enter DC/WC'}</button><button class="lime sm" id="rkWvPh">📷 Waiver document</button><a href="#" id="rkWvEv" class="muted">${phW[id]||0} waiver document(s)</a><button class="ghost sm" id="rkWvPrint">Print waiver request</button></div>` : ''}</div>`;
+  }
+  // platform difference
+  if(si >= rkIdx('unloaded')){
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Platform difference</h2>${['unloaded','released'].includes(r.status) && can('rk_platform_diff_close') && lot.some(x => Math.abs(+x.balance_mt) >= 0.0005) ? '<button class="primary sm" id="rkDiff">Close platform difference</button>' : ''}</div>
+      <p class="muted">Anything left on (or loaded beyond) the platform after the last truck. A shortage is recovered from the Sardar who loaded the last truck; the customer is paid its value; SSL bears the gap.</p>
+      ${table([{h:'Type',f:d=>esc(mat(d.material_id))},{h:'Condition',k:'kind'},{h:'Difference',n:1,f:d=>+d.diff_mt>0?chip('short '+n3(d.diff_mt),'bad'):chip('excess '+n3(-d.diff_mt),'warn')},{h:'Bags',n:1,k:'bags'},{h:'Sardar',f:d=>esc(sardarName(d.sardar_id))},
+        {h:'Recovery',n:1,f:d=>d.recovery_amount!=null?inr(d.recovery_amount):''},{h:'Paid to customer',n:1,f:d=>d.customer_value!=null?inr(d.customer_value):''},{h:'SSL net',n:1,f:d=>d.customer_value!=null?inr(d.customer_value-(d.recovery_amount||0)):''},
+        {h:'Status',f:d=>chip(d.status.replace('_',' '), d.status==='pending'?'bad':'ok')},{h:'',f:d=>d.status==='pending' && can('rk_recovery_settle') ? `<button class="primary sm" data-settle="${d.id}">Record recovery</button>` : d.settle_ref ? esc(d.settle_mode.replace('_',' ')+' · '+d.settle_ref) : ''}], diffs, 'No platform difference.')}</div>`;
+  }
+  // close
+  if(si >= rkIdx('released')){
+    const conds = [
+      [wagons.every(w => ['empty','missing'].includes(w.status)), 'Every placed wagon empty and settled'],
+      [!!(r.release_rly_at && r.release_ops_at), 'Rake release: railway and operational times'],
+      [!!(r.clear_rly_at && r.clear_ops_at) && !lot.some(x => Math.abs(+x.balance_mt) >= 0.0005), 'Platform clear: lot at zero, both times'],
+      [!diffs.some(d => d.status==='pending'), 'Platform shortage recovered from the Sardar and recorded'],
+      [!!r.charges_at, 'DC/WC assessed, waived and paid entered'],
+      [msgs.some(x => x.kind==='rake_closure'), 'Final shortage report drafted']];
+    h += `<div class="card"><h2>${r.status==='closed' ? 'Closed ' + dt(r.closed_at) : 'Close the rake'}</h2><div class="checks">${conds.map(([ok,l]) => `<div>${ok ? '✅' : '⬜'} ${esc(l)}</div>`).join('')}</div>
+      <div class="row" style="margin-top:10px">${r.status==='cleared' && can('rk_rake_close') ? `<button class="ghost sm" id="rkRep">${msgs.some(x => x.kind==='rake_closure') ? 'Redraft final report' : 'Draft final report'}</button><button class="primary sm" id="rkClose" ${conds.every(x => x[0]) ? '' : 'disabled'}>Close rake</button>` : ''}
+      ${r.status==='closed' && can('rk_rake_reopen') ? '<button class="ghost sm" id="rkReopen">Reopen</button>' : ''}</div></div>`;
+  }
+  h += `<div class="card"><h2>Customer emails</h2>${table([{h:'Kind',f:x=>chip(x.kind.replace(/_/g,' '))},{h:'Subject',k:'subject'},{h:'Status',f:x=>x.status==='sent'?chip('sent '+(x.sent_via||''),'ok'):chip('draft','warn')},{h:'',f:x=>`<button class="ghost sm" data-msg="${x.id}">Open</button>`}], msgs, 'No emails yet.')}</div>
+    <div class="card"><h2>History</h2>${table([{h:'When',f:x=>dt(x.at)},{h:'Event',f:x=>esc(x.event.replace(/_/g,' '))},{h:'Note',k:'note'}], events, 'Nothing yet.')}</div>`;
+  m.innerHTML = h;
+
+  // ----- wiring -----
+  $('rkBack').onclick = () => go();
+  if($('rkEdit')) $('rkEdit').onclick = () => rkPlanForm(r, back);
+  if($('rkDel')) $('rkDel').onclick = e => { if(confirm(`Delete ${r.rake_no}? This cannot be undone.`)) act(e.target, async () => { await rpc('rk_rake_delete', {p_rake:id}); go(); }, 'Rake deleted'); };
+  m.querySelectorAll('[data-ev]').forEach(a => a.onclick = e => { e.preventDefault(); showEvidenceAll(a.dataset.ev); });
+  m.querySelectorAll('[data-msg]').forEach(b => b.onclick = () => openMessage(msgs.find(x => x.id===b.dataset.msg), back));
+  m.querySelectorAll('[data-ph]').forEach(b => b.onclick = async () => { const w = W(b.dataset.w); await capture(b.dataset.ph, w.id, `Wagon ${w.wagon_no} · ${b.dataset.ph==='rk_wagon_before'?'before unloading':'empty after unloading'} · ${r.rake_no}`); back(); });
+
+  if($('rkSaveW')){
+    const F = {wagons:[], sibling:[], rrFile:null, sheetFile:null};
+    const head = () => { const o = {}; m.querySelectorAll('#rkHead input').forEach(i => { const k = i.id.slice(2); o[k] = i.type==='number' ? (i.value==='' ? null : +i.value) : i.value.trim(); }); return o; };
+    const payload = () => ({...head(), rake_id:id, wagons:F.wagons, sibling_wagons:F.sibling});
+    const known = new Set(S.materials.filter(x => x.client_id===r.client_id).map(x => x.code.toUpperCase()));
+    const draw = () => { $('rkWagonsNew').innerHTML = F.wagons.length ? table([{h:'Sr',k:'sr'},{h:'Wagon no',k:'wagon_no'},{h:'Wagon type',k:'wagon_type'},{h:'Bags',k:'bags',n:1},{h:'MT',f:w=>n3(w.mt),n:1},
+      {h:'Material type',f:w=>known.has((w.material||'').toUpperCase()) ? esc(w.material) : chip((w.material||'—')+' — not in this customer\'s types','bad')},{h:'Destination',k:'destination'}], F.wagons) : ''; };
+    const check = async () => {
+      const p = payload(); $('rkBatch').textContent = p.invoice_date ? `Batch will be ${batchOf(p.invoice_date)} (from invoice date)` : '';
+      if(!F.wagons.length) return;
+      const res = await rpc('rk_rake_check', {p});
+      $('rkIssues').innerHTML = (res.errors.length ? `<div class="issues"><b>Cannot save yet:</b><br>${res.errors.map(esc).join('<br>')}</div>` : `<div class="okbox">RR and wagon sheet tie: ${F.wagons.length} wagons, ${F.wagons.reduce((a,w)=>a+w.bags,0)} bags, ${n3(F.wagons.reduce((a,w)=>a+w.mt,0))} MT.</div>`)
+        + (res.warnings.length ? `<div class="warnbox"><b>Check:</b><br>${res.warnings.map(esc).join('<br>')}</div>` : '');
+    };
+    $('rkPdf').onchange = async e => { try{ F.rrFile = e.target.files[0]; const x = await parseRR(F.rrFile); Object.entries(x).forEach(([k,v]) => { if($('h_'+k) && v!=null) $('h_'+k).value = v; }); toast('RR read — please verify the fields'); check(); }catch(err){ toast('Could not read RR: '+err.message,'err',7000); } };
+    $('rkSheet').onchange = async e => { try{ F.sheetFile = e.target.files[0]; F.wagons = await parseWagonSheet(F.sheetFile); draw(); check(); }catch(err){ toast(err.message,'err',7000); } };
+    $('rkSib').onchange = async e => { try{ F.sibling = (await parseWagonSheet(e.target.files[0])).map(w => w.wagon_no); check(); }catch(err){ toast(err.message,'err'); } };
+    m.querySelectorAll('#rkHead input').forEach(i => i.onchange = check);
+    $('rkSaveW').onclick = e => act(e.target, async () => {
+      if(!F.wagons.length) throw new Error('Upload the wagon sheet');
+      const p = payload(); const stamp = Date.now();
+      if(F.rrFile){ const path = `rr/${r.siding_code}/${stamp}-${F.rrFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.rrFile); if(!u.error) p.rr_file_path = path; }
+      if(F.sheetFile){ const path = `rr/${r.siding_code}/${stamp}-${F.sheetFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.sheetFile); if(!u.error) p.sheet_file_path = path; }
+      const n = await rpc('rk_rake_wagons', {p}); back(); return n;
+    }, n => `${n} wagons saved`);
+  }
+  if($('aGo')) $('aGo').onclick = e => act(e.target, async () => {
+    const arr = wagons.filter(w => m.querySelector(`[data-pl="${w.id}"]`).checked).map(w => ({wagon_id:w.id, position:+m.querySelector(`[data-pos="${w.id}"]`).value}));
+    const num = i => $(i).value==='' ? null : +$(i).value;
+    const res = await rpc('rk_rake_arrive', {p:{rake_id:id, arrived_at:isoDT($('aA').value), placed_at:isoDT($('aP').value), dc_free_hours:num('aDF'), wc_free_hours:num('aWF'),
+      penal_dc:$('aPen').value==='' ? null : $('aPen').value==='true', dc_rate:num('aDR'), wc_rate:num('aWR'), rate_note:$('aRN').value, wagons:arr}});
+    back(); return res;
+  }, x => x==='arrived_partial' ? 'Arrival marked — missing-wagons email drafted' : 'Arrival marked');
+  m.querySelectorAll('[data-late]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.late);
+    modal(`<h2>Late wagon · ${esc(w.wagon_no)}</h2><div class="grid"><div><label>Placed at</label><input type="datetime-local" id="laAt" value="${localDT()}"></div><div><label>Position</label><input type="number" id="laPos"></div></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="laGo">Record</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('laGo').onclick = e => act(e.target, async () => { await rpc('rk_wagon_late_arrival', {p_wagon:w.id, p_at:isoDT($('laAt').value), p_position:+$('laPos').value||null}); closeModal(); back(); }, 'Recorded — late-wagon email drafted');
+  });
+  m.querySelectorAll('[data-start]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.start); const types = S.materials.filter(x => x.client_id===r.client_id && x.is_active);
+    modal(`<h2>Start unloading · ${esc(w.wagon_no)}</h2><p class="muted">Wagon sheet says <b>${esc(mat(w.material_id))}</b>. Record what is actually inside.</p>
+      <div class="grid"><div><label>Type found</label><select id="usM">${opt(types,'id',x=>x.code, w.material_id)}</select></div><div><label>Damage seen (optional)</label><input id="usD" placeholder="e.g. wet bags at door"></div></div>
+      <div class="row" style="margin-top:8px"><button class="lime sm" id="usCap">📷 Damage photo / video</button><span class="muted" id="usCapN">${phD[w.id]||0} taken</span></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="usGo">Start unloading</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('usCap').onclick = async () => { await capture('rk_wagon_damage', w.id, `Wagon ${w.wagon_no} · damage · ${r.rake_no}`, true); $('usCapN').textContent = (parseInt($('usCapN').textContent)+1) + ' taken'; };
+    $('usGo').onclick = e => act(e.target, async () => { const x = await rpc('rk_wagon_unload_start', {p_wagon:w.id, p_found_material:$('usM').value, p_damage_note:$('usD').value||null}); closeModal(); back(); return x; }, x => x==='mismatch' ? 'Unloading started — material mismatch email drafted' : 'Unloading started');
+  });
+  m.querySelectorAll('[data-dmg]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.dmg);
+    modal(`<h2>Damage · ${esc(w.wagon_no)}</h2><div class="field"><label>What is damaged</label><input id="dmN" value="${esc(w.damage_note||'')}"></div>
+      <div class="row"><button class="lime sm" id="dmCap">📷 Photo / video</button><span class="muted" id="dmCapN">${phD[w.id]||0} taken</span></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="dmGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('dmCap').onclick = async () => { await capture('rk_wagon_damage', w.id, `Wagon ${w.wagon_no} · damage · ${r.rake_no}`, true); $('dmCapN').textContent = (parseInt($('dmCapN').textContent)+1) + ' taken'; };
+    $('dmGo').onclick = e => act(e.target, async () => { await rpc('rk_wagon_damage', {p_wagon:w.id, p_note:$('dmN').value}); closeModal(); back(); }, 'Damage recorded');
+  });
+  m.querySelectorAll('[data-uslip]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.uslip);
+    modal(`<h2>Unloading slip · ${esc(w.wagon_no)}</h2><p class="muted">Wagon → platform. Company quantity ${w.sheet_bags} bags · ${n3(w.sheet_mt)} MT goes on the slip; labour writes the actual count.</p>
+      <div class="field"><label>Labour Sardar</label><select id="uS">${sardarOpts()}</select></div>
+      <div class="row"><button class="primary" id="uGo">Create & print</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('uGo').onclick = e => act(e.target, async () => { const sid = await rpc('rk_unload_slip_create', {p_wagon:w.id, p_sardar:$('uS').value}); const [u] = await q('rk_unload_slips', x => x.eq('id', sid)); closeModal(); printUnloadSlip(u, w, r); back(); }, 'Unloading slip created');
+  });
+  m.querySelectorAll('[data-uprint]').forEach(b => b.onclick = () => { const u = uslips.find(x => x.id===b.dataset.uprint); printUnloadSlip(u, W(u.wagon_id), r); });
+  m.querySelectorAll('[data-ucx]').forEach(b => b.onclick = () => act(b, async () => { await rpc('rk_unload_slip_cancel', {p_slip:b.dataset.ucx}); back(); }, 'Slip cancelled'));
+  m.querySelectorAll('[data-uret]').forEach(b => b.onclick = () => {
+    const u = uslips.find(x => x.id===b.dataset.uret); const w = W(u.wagon_id);
+    const bpm = w.sheet_mt ? w.sheet_bags / w.sheet_mt : 20;
+    modal(`<h2>Return unloading slip ${esc(u.slip_no)}</h2><p class="muted">${esc(w.wagon_no)} · company ${u.company_bags} bags · ${n3(u.company_mt)} MT. Enter what the labour counted onto the platform.</p>
+      <div class="grid"><div><label>Good bags</label><input id="rGB" type="number"></div><div><label>Good MT</label><input id="rGM" type="number" step="0.001"></div>
+      <div><label>Damaged bags</label><input id="rDB" type="number" value="0"></div><div><label>Damaged MT</label><input id="rDM" type="number" step="0.001" value="0"></div></div>
+      <p class="muted">MT fills from bags at ${bpm.toFixed(2)} bags/MT (wagon sheet); correct it if weighed.</p>
+      <div class="row" style="margin-top:10px"><button class="primary" id="rGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('rGB').oninput = () => $('rGM').value = $('rGB').value ? (+$('rGB').value / bpm).toFixed(3) : '';
+    $('rDB').oninput = () => $('rDM').value = $('rDB').value ? (+$('rDB').value / bpm).toFixed(3) : '0';
+    $('rGo').onclick = e => act(e.target, async () => { await rpc('rk_unload_slip_return', {p_slip:u.id, p_good_mt:+$('rGM').value||0, p_good_bags:$('rGB').value===''?null:+$('rGB').value, p_damaged_mt:+$('rDM').value||0, p_damaged_bags:$('rDB').value===''?null:+$('rDB').value}); closeModal(); back(); }, 'Slip returned');
+  });
+  m.querySelectorAll('[data-empty]').forEach(b => b.onclick = () => {
+    const w = W(b.dataset.empty); const got = truckMt(w.id) + unlMt(w.id);
+    if(!confirm(`Mark ${w.wagon_no} empty?\nWagon sheet ${n3(w.sheet_mt)} MT, received ${n3(got)} MT → ${got < w.sheet_mt ? 'short ' + n3(w.sheet_mt - got) : got > w.sheet_mt ? 'excess ' + n3(got - w.sheet_mt) : 'tallies'}.`)) return;
+    act(b, async () => { const x = await rpc('rk_wagon_close', {p_wagon:w.id}); back(); return x; }, x => x==='unloaded' ? 'All wagons empty — unloading complete' : 'Wagon settled');
+  });
+  if($('rkTruck')) $('rkTruck').onclick = () => rkTruckForm(r.client_id, () => rkDetail(m, id));
+  const twoTimes = (title, idA, idB, fn, okMsg) => {
+    modal(`<h2>${esc(title)}</h2><div class="grid"><div><label>Railway time</label><input type="datetime-local" id="${idA}" value="${localDT()}"></div><div><label>Operational time</label><input type="datetime-local" id="${idB}" value="${localDT()}"></div></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="ttGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('ttGo').onclick = e => act(e.target, async () => { await rpc(fn, {p_rake:id, p_rly_at:isoDT($(idA).value), p_ops_at:isoDT($(idB).value)}); closeModal(); back(); }, okMsg);
+  };
+  if($('rkRel')) $('rkRel').onclick = () => twoTimes('Rake release', 'relR', 'relO', 'rk_rake_release', 'Release recorded');
+  if($('rkClr')) $('rkClr').onclick = () => twoTimes('Platform clear', 'clrR', 'clrO', 'rk_platform_clear', 'Platform clear recorded');
+  if($('rkTimes')) $('rkTimes').onclick = () => {
+    const T = [['arrived_at','Arrived'],['placed_at','Placed'],['unload_start_at','Unloading start'],['unload_complete_at','Unloading complete'],['release_rly_at','Release · railway'],['release_ops_at','Release · operational'],['clear_rly_at','Platform clear · railway'],['clear_ops_at','Platform clear · operational']].filter(([k]) => r[k]);
+    modal(`<h2>Correct times · ${esc(r.rake_no)}</h2><div class="grid">${T.map(([k,l]) => `<div><label>${esc(l)}</label><input type="datetime-local" data-tk="${k}" value="${localDT(r[k])}"></div>`).join('')}</div>
+      <div class="field" style="margin-top:10px"><label>Reason (kept in history)</label><input id="tR"></div>
+      <div class="row"><button class="primary" id="tGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('tGo').onclick = e => act(e.target, async () => { const p = {}; document.querySelectorAll('[data-tk]').forEach(i => { if(i.value !== localDT(r[i.dataset.tk])) p[i.dataset.tk] = isoDT(i.value); });
+      if(!Object.keys(p).length) throw new Error('Nothing changed'); await rpc('rk_rake_set_times', {p_rake:id, p, p_reason:$('tR').value}); closeModal(); back(); }, 'Times corrected');
+  };
+  if($('rkTerms')) $('rkTerms').onclick = () => {
+    modal(`<h2>Free time and rates · ${esc(r.rake_no)}</h2><div class="grid"><div><label>DC free time (h)</label><input id="kDF" type="number" step="0.5" value="${r.dc_free_hours??''}"></div><div><label>WC free time (h)</label><input id="kWF" type="number" step="0.5" value="${r.wc_free_hours??''}"></div>
+      <div><label>Penal DC</label><select id="kP"><option value="false" ${!r.penal_dc?'selected':''}>No</option><option value="true" ${r.penal_dc?'selected':''}>Yes</option></select></div>
+      <div><label>DC rate (₹/wagon/h)</label><input id="kDR" type="number" step="0.01" value="${r.dc_rate??''}"></div><div><label>WC rate (₹/MT/h)</label><input id="kWR" type="number" step="0.01" value="${r.wc_rate??''}"></div>
+      <div><label>Rate note</label><input id="kN" value="${esc(r.rate_note||'')}"></div><div style="grid-column:1/-1"><label>Reason for change</label><input id="kR"></div></div>
+      <div class="row" style="margin-top:10px"><button class="primary" id="kGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('kGo').onclick = e => act(e.target, async () => { await rpc('rk_rake_terms', {p_rake:id, p:{dc_free_hours:+$('kDF').value, wc_free_hours:+$('kWF').value, penal_dc:$('kP').value==='true', dc_rate:+$('kDR').value, wc_rate:+$('kWR').value, rate_note:$('kN').value, reason:$('kR').value}}); closeModal(); back(); }, 'Updated');
+  };
+  if($('rkChg')) $('rkChg').onclick = () => {
+    const v = k => r[k] ?? '';
+    modal(`<h2>DC / WC · ${esc(r.rake_no)}</h2><p class="muted">Enter what the railway assessed, what it officially waived (with its reference) and what was paid. Use 0 where nil.</p>
+      <div class="grid"><div><label>DC assessed ₹</label><input id="c1" type="number" step="0.01" value="${v('dc_assessed')}"></div><div><label>DC waived ₹</label><input id="c2" type="number" step="0.01" value="${v('dc_waived')}"></div><div><label>DC paid ₹</label><input id="c3" type="number" step="0.01" value="${v('dc_paid')}"></div>
+      <div><label>WC assessed ₹</label><input id="c4" type="number" step="0.01" value="${v('wc_assessed')}"></div><div><label>WC waived ₹</label><input id="c5" type="number" step="0.01" value="${v('wc_waived')}"></div><div><label>WC paid ₹</label><input id="c6" type="number" step="0.01" value="${v('wc_paid')}"></div>
+      <div><label>Waiver reference (railway letter / order)</label><input id="c7" value="${esc(r.waiver_ref||'')}"></div><div style="grid-column:span 2"><label>Waiver grounds / note</label><input id="c8" value="${esc(r.waiver_note||'')}"></div></div>
+      <p class="muted">System calculation: DC ${inr(c.dc_calc)} · WC ${inr(c.wc_calc)}</p>
+      <div class="row"><button class="primary" id="cGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    const n = i => $(i).value==='' ? null : +$(i).value;
+    $('cGo').onclick = e => act(e.target, async () => { await rpc('rk_rake_charges', {p_rake:id, p:{dc_assessed:n('c1'), dc_waived:n('c2'), dc_paid:n('c3'), wc_assessed:n('c4'), wc_waived:n('c5'), wc_paid:n('c6'), waiver_ref:$('c7').value, waiver_note:$('c8').value}}); closeModal(); back(); }, 'DC/WC saved');
+  };
+  if($('rkWvPh')) $('rkWvPh').onclick = async () => { await capture('rk_waiver', id, `Waiver document · ${r.rake_no}`); back(); };
+  if($('rkWvEv')) $('rkWvEv').onclick = e => { e.preventDefault(); showEvidenceAll(id); };
+  if($('rkWvPrint')) $('rkWvPrint').onclick = () => printWin(`<div class="pg"><p>To<br>The Divisional Commercial Manager<br>__________________ Division</p><p>Date: ${new Date().toLocaleDateString('en-IN')}</p>
+    <p><b>Sub: Request for waiver of demurrage / wharfage — RR ${esc(r.rr_no||'')}, FNR ${esc(r.fnr||'')}, siding ${esc(r.siding_code)}</b></p>
+    <table><tr><th>Placed</th><td>${esc(dt(r.placed_at))}</td><th>Unloading complete</th><td>${esc(dt(r.unload_complete_at))}</td></tr><tr><th>Released</th><td>${esc(dt(r.release_rly_at))}</td><th>Platform clear</th><td>${esc(dt(r.clear_rly_at))}</td></tr>
+    <tr><th>Wagons</th><td>${c.placed_wagons}</td><th>Free time</th><td>DC ${r.dc_free_hours ?? '—'} h · WC ${r.wc_free_hours ?? '—'} h</td></tr><tr><th>DC assessed</th><td>${inr(r.dc_assessed)}</td><th>WC assessed</th><td>${inr(r.wc_assessed)}</td></tr></table>
+    <p>Grounds: ${esc(r.waiver_note || '________________________________________________')}</p><p>We request you to kindly waive the above charges.</p><p style="margin-top:50px">For S S Logistics<br><br>Authorised signatory</p></div>`);
+  if($('rkDiff')) $('rkDiff').onclick = () => {
+    const left = lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005);
+    modal(`<h2>Close platform difference · ${esc(r.rake_no)}</h2>${table([{h:'Type',k:'material'},{h:'Condition',k:'kind'},{h:'Left on platform MT',n:1,f:x=>n3(x.balance_mt)}], left)}
+      <p class="muted">Positive = shortage, recovered from the Sardar who loaded the last truck at the siding recovery rate. Negative = excess, recorded without recovery.</p>
+      <div class="field"><label>Note</label><input id="dfN"></div><div class="row"><button class="primary" id="dfGo">Close difference</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('dfGo').onclick = e => act(e.target, async () => { await rpc('rk_platform_diff_close', {p_rake:id, p_note:$('dfN').value||null}); closeModal(); back(); }, 'Platform difference closed');
+  };
+  m.querySelectorAll('[data-settle]').forEach(b => b.onclick = () => rkSettleForm(diffs.find(d => d.id===b.dataset.settle), back));
+  if($('rkRep')) $('rkRep').onclick = e => act(e.target, async () => { await rpc('rk_rake_final_email', {p_rake:id}); back(); }, 'Final report drafted — review and send it from Customer emails');
+  if($('rkClose')) $('rkClose').onclick = e => { if(confirm('Close this rake? It will be locked.')) act(e.target, async () => { await rpc('rk_rake_close', {p_rake:id}); back(); }, 'Rake closed'); };
+  if($('rkReopen')) $('rkReopen').onclick = () => { const why = prompt('Reason for reopening (kept in history)'); if(why) act(null, async () => { await rpc('rk_rake_reopen', {p_rake:id, p_reason:why}); back(); }, 'Rake reopened'); };
+}
+
+function rkSettleForm(d, after){
+  modal(`<h2>Record recovery</h2><p class="muted">${esc(mat(d.material_id))} short ${n3(d.diff_mt)} MT = ${d.bags} bags × ${inr(d.rate_per_bag)} = <b>${inr(d.recovery_amount)}</b> from ${esc(sardarName(d.sardar_id))}.</p>
+    <div class="grid"><div><label>Recovered by</label><select id="stM"><option value="bill_deduction">Deduction from Sardar's bill</option><option value="cash">Cash</option></select></div>
+    <div><label>Bill / receipt reference</label><input id="stR"></div><div><label>Value paid to customer ₹</label><input id="stV" type="number" step="0.01"></div></div>
+    <p class="muted" id="stG"></p><div class="row"><button class="primary" id="stGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('stV').oninput = () => $('stG').textContent = $('stV').value ? `SSL bears ${inr(+$('stV').value - (d.recovery_amount||0))}` : '';
+  $('stGo').onclick = e => act(e.target, async () => { await rpc('rk_recovery_settle', {p_diff:d.id, p_mode:$('stM').value, p_ref:$('stR').value, p_customer_value:$('stV').value===''?null:+$('stV').value}); closeModal(); after && after(); }, 'Recovery recorded');
+}
+
+function printUnloadSlip(u, w, r){
+  printWin(`<div class="pg"><h2>UNLOADING SLIP ${esc(u.slip_no)}</h2><div>${esc(r.siding_code)} · ${esc(r.rake_no)} · ${new Date().toLocaleString('en-IN')}</div>
+  <table><tr><th>Wagon</th><td><b>${esc(w.wagon_no)}</b></td><th>Customer</th><td>${esc(r.client_name)}</td></tr><tr><th>Type (sheet)</th><td>${esc(mat(w.material_id))}</td><th>Type found</th><td>${esc(mat(w.found_material_id))}</td></tr>
+  <tr><th>Company quantity</th><td colspan="3"><b>${u.company_bags} bags · ${n3(u.company_mt)} MT</b></td></tr><tr><th>Labour Sardar</th><td colspan="3">${esc(sardarName(u.sardar_id))}</td></tr>
+  <tr><th>Good bags counted</th><td></td><th>Damaged bags</th><td></td></tr></table>
+  <p style="margin-top:40px">Sardar signature ____________________ &nbsp;&nbsp; Staff signature ____________________</p></div>`);
+}
+function printTruckSlip(t, lines, rakes, wagons){
+  printWin(`<div class="pg"><h2>TRUCK LOADING SLIP ${esc(t.slip_no)}${t.is_damaged?' · DAMAGED BAGS':''}</h2><div>${esc(S.loc.code)} · ${new Date().toLocaleString('en-IN')}</div>
+  <table><tr><th>Truck</th><td>${esc(t.truck_no)} (${esc(t.truck_kind)})</td><th>Driver</th><td>${esc(t.driver_name||'')}</td></tr><tr><th>Ship-To</th><td colspan="3">${esc(t.ship_to_code)}</td></tr><tr><th>Labour Sardar</th><td colspan="3">${esc(sardarName(t.sardar_id))}</td></tr></table>
+  <table><tr><th>From</th><th>Type</th><th class="n">Planned MT</th><th class="n">Bags loaded</th><th class="n">MT loaded</th></tr>
+  ${lines.map(l => `<tr><td>${l.source==='wagon' ? 'Wagon ' + esc((wagons.find(w=>w.id===l.wagon_id)||{}).wagon_no) : 'Platform · ' + esc((rakes.find(x=>x.id===l.rake_id)||{}).rake_no)}</td><td>${esc(mat(l.material_id))}</td><td class="n">${n3(l.planned_mt)}</td><td></td><td></td></tr>`).join('')}</table>
+  <p style="margin-top:40px">Sardar signature ____________________ &nbsp;&nbsp; Staff signature ____________________</p></div>`);
+}
+
+async function rkTruckForm(clientId, after){
+  const rakes = (await q('rk_rake_list', b => b.eq('siding_id', S.loc.id))).filter(x => ['arrived','unloading','unloaded','released'].includes(x.status));
+  const clients = S.clients.filter(c => rakes.some(x => x.client_id===c.id));
+  if(!clients.length){ toast('No rake is being unloaded at this siding', 'warn'); return; }
+  const cid0 = clientId || clients[0].id;
+  modal(`<h2>Load a truck · ${esc(S.loc.code)}</h2><div class="grid">
+    <div><label>Customer</label><select id="tC">${opt(clients,'id','name',cid0)}</select></div>
+    <div><label>Labour Sardar</label><select id="tS">${sardarOpts()}</select></div>
+    <div><label>Truck kind</label><select id="tK"><option value="market">Market</option><option value="vendor">Vendor</option><option value="own">SSL own</option><option value="dealer">Dealer's own</option></select></div>
+    <div><label>Truck no</label><input id="tT" list="ownTrucks3"><datalist id="ownTrucks3">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
+    <div id="tVW" class="hide"><label>Vendor</label><select id="tV">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
+    <div><label>Driver</label><input id="tD"></div>
+    <div><label class="row" style="margin-top:18px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="tDmg"> Damaged bags (to our warehouse)</label></div>
+    <div style="grid-column:1/-1"><label>Ship-To</label><select id="tP"></select><div class="muted" id="tSo" style="margin-top:4px"></div></div></div>
+    <h2 style="margin-top:14px">Load from</h2><div class="row"><select id="tSrc" style="flex:1 1 260px"></select><button class="lime sm" id="tAdd">Add line</button></div>
+    <div id="tLines" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="tGo">Create & print slip</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  let wag = [], lotRows = []; const L = [];
+  const load = async () => {
+    const cid = $('tC').value; const mine = rakes.filter(x => x.client_id===cid);
+    [wag, lotRows] = mine.length ? await Promise.all([q('rk_wagons', b => b.in('rake_id', mine.map(x=>x.id)).eq('status','unloading').order('position')), q('rk_lot_balance', b => b.in('rake_id', mine.map(x=>x.id)))]) : [[],[]];
+    const dmg = $('tDmg').checked; const kind = dmg ? 'damaged' : 'good';
+    const src = [...(dmg ? [] : wag.map(w => ({v:'w:'+w.id, l:`Wagon ${w.wagon_no} · ${mat(w.found_material_id)} · ${(mine.find(x=>x.id===w.rake_id)||{}).rake_no}`}))),
+      ...lotRows.filter(x => x.kind===kind && +x.available_mt > 0).map(x => ({v:`p:${x.rake_id}:${x.material_id}`, l:`Platform · ${(mine.find(y=>y.id===x.rake_id)||{}).rake_no} · ${x.material} ${kind} · ${n3(x.available_mt)} MT free`}))];
+    $('tSrc').innerHTML = src.length ? src.map(x => `<option value="${esc(x.v)}">${esc(x.l)}</option>`).join('') : '<option value="">Nothing to load</option>';
+    const parties = S.parties.filter(p => p.client_id===cid && (!dmg || p.location_id));
+    $('tP').innerHTML = opt(parties, 'sap_code', p => `${p.party_name} · ${p.sap_code} · ${p.destination}${p.location_id?' (our warehouse)':''}`, '', 'Select Ship-To');
+    L.length = 0; drawL();
+  };
+  const drawL = () => { $('tLines').innerHTML = L.map((x,i) => `<div class="lineRow"><div>${esc(x.label)}</div><input type="number" step="0.001" placeholder="MT" data-lq="${i}" value="${x.planned_mt||''}"><button class="ghost sm" data-lx="${i}">✕</button></div>`).join('') || '<div class="muted">Add at least one wagon or platform line. One truck can load from several wagons and the platform.</div>';
+    document.querySelectorAll('[data-lq]').forEach(i => i.oninput = () => L[+i.dataset.lq].planned_mt = +i.value);
+    document.querySelectorAll('[data-lx]').forEach(b => b.onclick = () => { L.splice(+b.dataset.lx, 1); drawL(); }); };
+  $('tC').onchange = load; $('tDmg').onchange = load;
+  $('tK').onchange = () => $('tVW').classList.toggle('hide', $('tK').value!=='vendor');
+  $('tP').onchange = () => $('tSo').innerHTML = soldToLine($('tC').value, $('tP').value);
+  $('tAdd').onclick = () => { const v = $('tSrc').value; if(!v) return; const label = $('tSrc').selectedOptions[0].textContent; const [k,a,b2] = v.split(':');
+    if(L.some(x => x.key===v)) return toast('Already added', 'warn');
+    L.push(k==='w' ? {key:v, label, source:'wagon', wagon_id:a} : {key:v, label, source:'platform', rake_id:a, material_id:b2}); drawL(); };
+  await load();
+  $('tGo').onclick = e => act(e.target, async () => {
+    const own = $('tK').value==='own'; const tr = S.trucks.find(t => t.registration_no===$('tT').value.trim().toUpperCase());
+    if(own && !tr) throw new Error('Own truck not found in the truck master');
+    const p = {siding_id:S.loc.id, client_id:$('tC').value, sardar_id:$('tS').value, truck_kind:$('tK').value, truck_no:$('tT').value, truck_id:own?tr.id:null,
+      vendor_id:$('tK').value==='vendor'?$('tV').value||null:null, driver_name:$('tD').value, ship_to_code:$('tP').value, is_damaged:$('tDmg').checked,
+      lines:L.map(x => ({source:x.source, wagon_id:x.wagon_id, rake_id:x.rake_id, material_id:x.material_id, planned_mt:x.planned_mt}))};
+    const id = await rpc('rk_truck_create', {p}); closeModal();
+    const [t] = await q('rk_truck_slips', b => b.eq('id', id)); const lines = await q('rk_truck_lines', b => b.eq('truck_slip_id', id));
+    printTruckSlip(t, lines, rakes, wag); after && after(id);
+  }, 'Truck slip created');
+}
+
+VIEWS.rk_trucks = async m => {
+  if(!S.loc){ m.innerHTML = '<div class="empty">No siding assigned.</div>'; return; }
+  const [open, done] = await Promise.all([q('rk_truck_slips', b => b.eq('siding_id', S.loc.id).eq('status','open').order('created_at', {ascending:false})),
+    q('rk_truck_slips', b => b.eq('siding_id', S.loc.id).eq('status','dispatched').order('dispatched_at', {ascending:false}).limit(40))]);
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Trucks · ${esc(S.loc.code)}</h1>${can('rk_truck') ? '<button class="primary" id="tNew">+ Load a truck</button>' : ''}</div>
+    <div class="card"><h2>Loading now</h2>${table([{h:'Slip',f:t=>`<a href="#" data-t="${t.id}"><b>${esc(t.slip_no)}</b></a>`},{h:'Truck',f:t=>`<span class="plate">${esc(t.truck_no)}</span> ${chip(t.truck_kind)}${t.is_damaged?' '+chip('damaged','bad'):''}`},{h:'Customer',f:t=>esc(clientCode(t.client_id))},{h:'Ship-To',k:'ship_to_code'},{h:'Sardar',f:t=>esc(sardarName(t.sardar_id))},{h:'Started',f:t=>dt(t.created_at)},{h:'',f:t=>`<button class="primary sm" data-t="${t.id}">Open</button>`}], open, 'No trucks loading.')}</div>
+    <div class="card"><h2>Dispatched</h2>${table([{h:'Slip',f:t=>`<a href="#" data-t="${t.id}">${esc(t.slip_no)}</a>`},{h:'Truck',f:t=>`<span class="plate">${esc(t.truck_no)}</span>`},{h:'Ship-To',f:t=>esc(t.ship_to_code)+(t.to_location_id?' '+chip('our warehouse','info'):'')},{h:'Dispatched',f:t=>dt(t.dispatched_at)},{h:'',f:t=>`<button class="ghost sm" data-pc="${t.dispatch_id}">Challans</button>`}], done, 'No trucks yet.')}</div>`;
+  if($('tNew')) $('tNew').onclick = () => rkTruckForm(null, id => rkTruckDetail(m, id));
+  m.querySelectorAll('[data-t]').forEach(a => a.onclick = e => { e.preventDefault(); rkTruckDetail(m, a.dataset.t); });
+  m.querySelectorAll('[data-pc]').forEach(b => b.onclick = async () => { const ch = await q('wh_challans', x => x.eq('dispatch_id', b.dataset.pc)); printChallans(ch.map(c => c.id)); });
+};
+
+async function rkTruckDetail(m, id){
+  const [t] = await q('rk_truck_slips', b => b.eq('id', id)); const lines = await q('rk_truck_lines', b => b.eq('truck_slip_id', id));
+  const rakes = await q('rk_rakes', b => b.in('id', [...new Set(lines.map(l => l.rake_id))]));
+  const wagons = await q('rk_wagons', b => b.in('id', lines.filter(l => l.wagon_id).map(l => l.wagon_id).concat(['00000000-0000-0000-0000-000000000000'])));
+  const src = l => l.source==='wagon' ? 'Wagon ' + ((wagons.find(w => w.id===l.wagon_id)||{}).wagon_no||'') : 'Platform · ' + ((rakes.find(x => x.id===l.rake_id)||{}).rake_no||'');
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(t.slip_no)} · <span class="plate">${esc(t.truck_no)}</span> ${chip(t.truck_kind)}${t.is_damaged?' '+chip('damaged bags','bad'):''}</h1><button class="ghost sm" id="tBack">Back</button></div>
+    <div class="card"><div class="grid"><div><label>Customer</label>${esc(clientCode(t.client_id))}</div><div><label>Ship-To</label>${esc(t.ship_to_code)}${t.to_location_id?' '+chip('our warehouse · GRN','info'):''}</div><div><label>Sardar</label>${esc(sardarName(t.sardar_id))}</div><div><label>Driver</label>${esc(t.driver_name||'—')}</div><div><label>Status</label>${chip(t.status, t.status==='dispatched'?'ok':t.status==='open'?'info':'')}</div></div>
+    <div class="muted" style="margin-top:6px">${soldToLine(t.client_id, t.ship_to_code)}</div></div>
+    <div class="card"><h2>${t.status==='open' ? 'Labour-confirmed quantity' : 'Loaded'}</h2>${table([{h:'From',f:l=>esc(src(l))},{h:'Type',f:l=>esc(mat(l.material_id))},{h:'Planned MT',n:1,f:l=>n3(l.planned_mt)},
+      {h:'Bags loaded',n:1,f:l=>t.status==='open'?`<input type="number" data-lb="${l.id}" style="width:110px;height:36px">`:(l.actual_bags??'')},
+      {h:'MT loaded',n:1,f:l=>t.status==='open'?`<input type="number" step="0.001" data-lm="${l.id}" value="${n3(l.planned_mt)}" style="width:120px;height:36px">`:n3(l.actual_mt)}], lines)}
+    ${t.status==='open' ? `<div class="row" style="margin-top:10px"><button class="ghost sm" id="tPr">Print slip</button>${can('rk_truck') ? '<button class="primary" id="tConf">Labour confirmed → generate challans</button><button class="ghost sm" id="tCx">Cancel slip</button>' : ''}</div>
+      <p class="muted">The quantity the labour writes on the returned slip goes on the delivery challan.</p>` : t.status==='dispatched' ? `<button class="ghost sm" id="tCh" style="margin-top:10px">Print challans</button>` : ''}</div>`;
+  $('tBack').onclick = () => go();
+  if($('tPr')) $('tPr').onclick = () => printTruckSlip(t, lines, rakes, wagons);
+  const bpm = l => { const w = wagons.find(x => x.id===l.wagon_id); return w && +w.sheet_mt ? w.sheet_bags / w.sheet_mt : 20; };
+  m.querySelectorAll('[data-lb]').forEach(i => i.oninput = () => { const l = lines.find(x => x.id===i.dataset.lb); if(i.value) m.querySelector(`[data-lm="${l.id}"]`).value = (+i.value / bpm(l)).toFixed(3); });
+  if($('tConf')) $('tConf').onclick = e => act(e.target, async () => {
+    const p = lines.map(l => ({id:l.id, actual_mt:m.querySelector(`[data-lm="${l.id}"]`).value===''?null:+m.querySelector(`[data-lm="${l.id}"]`).value, actual_bags:m.querySelector(`[data-lb="${l.id}"]`).value===''?null:+m.querySelector(`[data-lb="${l.id}"]`).value}));
+    const n = await rpc('rk_truck_confirm', {p_slip:id, p_lines:p}); const [t2] = await q('rk_truck_slips', b => b.eq('id', id));
+    const ch = await q('wh_challans', b => b.eq('dispatch_id', t2.dispatch_id)); printChallans(ch.map(c => c.id)); rkTruckDetail(m, id); return n;
+  }, n => `${n} challan(s) generated`);
+  if($('tCx')) $('tCx').onclick = e => { if(confirm('Cancel this truck slip?')) act(e.target, async () => { await rpc('rk_truck_cancel', {p_slip:id}); go(); }, 'Cancelled'); };
+  if($('tCh')) $('tCh').onclick = async () => { const ch = await q('wh_challans', b => b.eq('dispatch_id', t.dispatch_id)); printChallans(ch.map(c => c.id)); };
+}
+
+VIEWS.rk_lots = async m => {
+  if(!S.loc){ m.innerHTML = '<div class="empty">No siding assigned.</div>'; return; }
+  const rakes = (await q('rk_rake_list', b => b.eq('siding_id', S.loc.id))).filter(x => x.status!=='closed');
+  const rows = rakes.length ? await q('rk_lot_balance', b => b.in('rake_id', rakes.map(x => x.id))) : [];
+  const rk = x => rakes.find(y => y.id===x.rake_id) || {};
+  m.innerHTML = `<h1>Platform lots · ${esc(S.loc.code)}</h1><p class="muted">Each rake keeps its own lot on the platform. A truck's platform line names the lot it draws from.</p>
+    <div class="kpi"><div><span>Good on platform MT</span><b>${n3(rows.filter(x=>x.kind==='good').reduce((a,x)=>a + +x.balance_mt,0))}</b></div><div><span>Damaged on platform MT</span><b style="color:var(--alert)">${n3(rows.filter(x=>x.kind==='damaged').reduce((a,x)=>a + +x.balance_mt,0))}</b></div></div>
+    <div class="card">${table([{h:'Rake',f:x=>`<b>${esc(rk(x).rake_no)}</b> ${rkChip(rk(x).status)}`},{h:'Customer',f:x=>esc(rk(x).client_code)},{h:'Type',k:'material'},{h:'Condition',f:x=>x.kind==='damaged'?chip('damaged','bad'):chip('good','ok')},{h:'On platform MT',n:1,f:x=>n3(x.balance_mt)},{h:'On open trucks MT',n:1,f:x=>+x.reserved_mt?n3(x.reserved_mt):''},{h:'Free MT',n:1,f:x=>n3(x.available_mt)}], rows.filter(x => Math.abs(+x.balance_mt) >= 0.0005 || +x.reserved_mt), 'Platform is clear.')}</div>`;
+};
+
+VIEWS.rk_recov = async m => {
+  const rows = await q('rk_recoveries', b => b.order('created_at', {ascending:false}).limit(200));
+  m.innerHTML = `<h1>Platform recoveries</h1><p class="muted">Platform shortage recovered from the Sardar who loaded the last truck; the customer is paid its value; SSL bears the gap.</p>
+    <div class="kpi"><div><span>Pending</span><b style="color:var(--alert)">${rows.filter(r=>r.status==='pending').length}</b></div><div><span>Recovered ₹</span><b>${inr(rows.filter(r=>r.status==='settled').reduce((a,r)=>a + +r.recovery_amount,0))}</b></div><div><span>SSL net cost ₹</span><b>${inr(rows.reduce((a,r)=>a + (+r.ssl_net_cost||0),0))}</b></div></div>
+    <div class="card">${table([{h:'Rake',k:'rake_no'},{h:'Siding',k:'siding'},{h:'Type',k:'material'},{h:'Difference',n:1,f:r=>+r.diff_mt>0?chip('short '+n3(r.diff_mt),'bad'):chip('excess '+n3(-r.diff_mt),'warn')},{h:'Sardar',k:'sardar'},{h:'Recovery',n:1,f:r=>r.recovery_amount!=null?inr(r.recovery_amount):''},{h:'Customer',n:1,f:r=>r.customer_value!=null?inr(r.customer_value):''},{h:'SSL net',n:1,f:r=>r.ssl_net_cost!=null?inr(r.ssl_net_cost):''},{h:'Status',f:r=>chip(r.status.replace('_',' '), r.status==='pending'?'bad':'ok')},
+      {h:'',f:r=>r.status==='pending' && can('rk_recovery_settle') ? `<button class="primary sm" data-st="${r.id}">Record recovery</button>` : ''}], rows, 'No platform differences.')}</div>`;
+  m.querySelectorAll('[data-st]').forEach(b => b.onclick = async () => { const [d] = await q('rk_platform_diffs', x => x.eq('id', b.dataset.st)); rkSettleForm(d, () => go()); });
+};
+
+const RK_REPORTS = {
+  'Rake register': ['rk_rake_list', b => b.order('created_at', {ascending:false}), r => ({rake:r.rake_no, siding:r.siding_code, customer:r.client_code, warehouse:r.warehouse_code, from:r.source_siding, status:r.status, rr_no:r.rr_no, fnr:r.fnr, batch:r.batch, wagons:r.wagons, rr_mt:r.rr_mt, placed_at:r.placed_at, unload_complete_at:r.unload_complete_at, release_rly_at:r.release_rly_at, clear_rly_at:r.clear_rly_at, closed_at:r.closed_at, on_platform_mt:r.lot_mt, bearer:r.dcwc_bearer})],
+  'Wagon settlement': ['rk_wagon_settlement', b => b.order('rake_no').order('position')],
+  'Material mismatch': ['rk_material_mismatch_report', b => b.order('rake_no')],
+  'Sardar work': ['rk_sardar_work', b => b.order('op_date', {ascending:false})],
+  'Platform recoveries': ['rk_recoveries', b => b.order('created_at', {ascending:false})],
+  'DC / WC and savings': ['rk_dcwc_report', b => b.order('placed_at', {ascending:false})],
+  'Siding scorecard': ['rk_siding_scorecard', b => b.order('month', {ascending:false})],
+  'Platform lot movements': ['rk_lot_moves', b => b.order('at', {ascending:false}).limit(500)],
+};
+VIEWS.rk_reports = async m => {
+  S.rkrep = S.rkrep || 'Rake register';
+  const [t, f, map] = RK_REPORTS[S.rkrep]; let rows = await q(t, f); if(map) rows = rows.map(map);
+  const hide = /(^id$|_id$)/;
+  const cols = rows.length ? Object.keys(rows[0]).filter(k => !hide.test(k)).map(k => ({h:k.replace(/_/g,' '), f:r => { const v = r[k]; if(/_at$/.test(k)) return dt(v); if(typeof v==='number' && /mt$/.test(k)) return n3(v); if(typeof v==='boolean') return v?'yes':''; return esc(v); }, n:/mt$|bags|amount|calc|paid|assessed|waived|savings|rate|value|cost|hours|rakes|pct/.test(k)})) : [];
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Rake reports</h1><div class="row"><select id="rkS" style="width:auto">${Object.keys(RK_REPORTS).map(k => `<option ${k===S.rkrep?'selected':''}>${k}</option>`).join('')}</select><button class="ghost sm" id="rkCsv">CSV</button></div></div>
+    <div class="card">${table(cols, rows, 'No rows.')}</div>`;
+  $('rkS').onchange = () => { S.rkrep = $('rkS').value; go(); };
+  $('rkCsv').onclick = () => csv(rows, S.rkrep.toLowerCase().replace(/[^a-z]+/g,'-'));
+};
+VIEWS.rk_setup = m => VIEWS.masters(m, 'rk');
+
 /* ============ MASTERS ============ */
 const MASTERS = {
-  'Customers': {t:'sys_clients', cols:['code','name','is_active'], form:[['code','Code (e.g. UTCL)'],['name','Customer name']]},
-  'Plants & warehouses': {t:'sys_plants', cols:['code','name','kind','client_id','parent_id','station_code','return_intimation','is_live'], form:[['kind','Type','sel',['plant','warehouse','siding']],['code','Plant code (e.g. 3W61)'],['name','Name'],['client_id','Customer (plant / warehouse)','client'],['parent_id','Inside plant (optional)','plant'],['station_code','Railway station code (siding)'],['return_intimation','Return intimation (warehouse)','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null} : r.kind==='plant' ? {...r, is_live:true} : r, note:'A warehouse is a kind of plant and uses the same plant code convention. A rake siding is shared by customers.'},
+  'Customers': {t:'sys_clients', cols:['code','name','dcwc_bearer','is_active'], edit:['name','dcwc_bearer'], form:[['code','Code (e.g. UTCL)'],['name','Customer name'],['dcwc_bearer','Railway DC/WC borne by','sel',['customer','ssl']]], note:'DC/WC borne by: "ssl" or "customer". A different arrangement at one siding is set in Rake Operations › Siding setup.'},
+  'Material categories': {t:'sys_material_categories', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Category code (CEMENT, ORE, SAND…)'],['name','Name']], note:'Material is two-level: Category → Type. Add the category first, then its types under Materials.'},
+  'Plants & warehouses': {t:'sys_plants', cols:['code','name','kind','client_id','parent_id','station_code','district_id','return_intimation','is_live'], form:[['kind','Type','sel',['plant','warehouse','siding']],['code','Plant code (e.g. 3W61)'],['name','Name'],['client_id','Customer (plant / warehouse)','client'],['parent_id','Inside plant (optional)','plant'],['station_code','Railway station code (siding)'],['district_id','District (required for a siding)','district'],['return_intimation','Return intimation (warehouse)','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null, parent_id:null} : r.kind==='plant' ? {...r, is_live:true} : r, note:'A warehouse is a kind of plant and uses the same plant code convention. A rake siding belongs to no customer: give its railway code and district; link warehouses to it in Rake Operations › Siding setup.'},
   'Vendors': {t:'sys_vendors', cols:['vendor_code','vendor_name','busy_name','is_active'], form:[['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
   'Own trucks': {t:'sys_trucks', cols:['registration_no','is_active'], form:[['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
-  'Materials': {wh:1, t:'wh_materials', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Short name (PSC, CHD, JALKAVACH…)'],['name','Name']], note:'Every material belongs to one customer. The same short name can exist for two customers.'},
+  'Materials': {t:'wh_materials', cols:['client_id','category_id','code','name','is_active'], form:[['client_id','Customer','client'],['category_id','Category','cat'],['code','Type (PSC, OPC, CHD…)'],['name','Name']], note:'Material type under a customer\'s category. If the customer has one category it is picked automatically. The same type name can exist for two customers.'},
   'SAP product mapping': {wh:1, t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
   'Sold-To parties': {t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], edit:['contact_phone','name'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
   'Ship-To parties': {t:'sys_ship_to', cols:['client_id','sold_to_id','sap_code','name','destination_id','location_id'], form:[['client_id','Customer','client'],['sold_to_id','Sold-To (buyer)','soldto'],['sap_code','SAP Ship-To code'],['name','Ship-To name'],['destination_id','Destination','dest'],['location_id','If this is our own warehouse','loc']], note:'Where the material goes. Belongs to one Sold-To and carries its destination.'},
@@ -1060,25 +1430,35 @@ const MASTERS = {
   'Labor rates': {wh:1, t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
   'Shortage recovery rates': {wh:1, t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
   'Labor contractors': {wh:1, t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Vendor','vendor'],['billing_cycle_days','Billing cycle (days)','num']]},
+  'Siding ↔ warehouse links': {grp:'rk', t:'sys_plant_sidings', cols:['siding_id','plant_id'], form:[['siding_id','Rake siding','siding'],['plant_id','Customer warehouse / plant','plantall']], note:'Which warehouses a siding feeds. The customers served by a siding come from these links.'},
+  'Labour Sardars': {grp:'rk', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor']], note:'A siding can have more than one Sardar. Add the Sardar in Master data › Vendors first.'},
+  'Sardar activity rates': {grp:'rk', t:'rk_labor_rates', cols:['sardar_id','activity','rate_per_mt','effective_from'], form:[['sardar_id','Sardar','sardar'],['activity','Activity','sel',['wagon_platform','platform_truck','wagon_truck']],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Per siding × Sardar × activity. Effective-dated: a change is a new row.'},
+  'Platform shortage recovery rate': {grp:'rk', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
+  'Customer DC/WC at a siding': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['note','Note']], upsert:'siding_id,client_id', note:'Only where it differs from the customer\'s normal arrangement.'},
   'Customer email settings': {wh:1, t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
 };
 VIEWS.whsetup = m => VIEWS.masters(m, true);
 VIEWS.masters = async (m, whOnly = false) => {
-  const keys = Object.keys(MASTERS).filter(k => !!MASTERS[k].wh === whOnly);
+  const grp = typeof whOnly==='string' ? whOnly : whOnly ? 'wh' : 'md'; whOnly = grp;
+  const keys = Object.keys(MASTERS).filter(k => (MASTERS[k].grp || (MASTERS[k].wh ? 'wh' : 'md')) === grp);
   if(!keys.includes(S.mst)) S.mst = keys[0]; const M = MASTERS[S.mst];
   const rows = await q(M.t, b => b.limit(500));
   const allLocs = await q('wh_locations'); const plants = await q('sys_plants');
   const [states, districts, dests, soldTos] = await Promise.all([q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
   const distLabel = d => d ? `${d.name} · ${(states.find(s=>s.id===d.state_id)||{}).name||''}` : '';
-  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id' || k==='parent_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='state_id') return esc((states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(districts.find(x=>x.id===v))); if(k==='destination_id'){ const x = dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`) : ''; } if(k==='sold_to_id'){ const x = soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; } if(k==='contact_phone' && !v) return chip('missing','bad'); return esc(v); };
+  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id' || k==='parent_id' || k==='siding_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='sardar_id') return esc(sardarName(v)); if(k==='category_id') return esc((S.cats.find(x=>x.id===v)||{}).code); if(k==='dcwc_bearer') return v==='ssl' ? chip('SSL','warn') : chip('customer'); if(k==='state_id') return esc((states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(districts.find(x=>x.id===v))); if(k==='destination_id'){ const x = dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`) : ''; } if(k==='sold_to_id'){ const x = soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; } if(k==='contact_phone' && !v) return chip('missing','bad'); return esc(v); };
   const input = ([k, l, t, o]) => { const sel = (arr) => `<select id="f_${k}"><option value=""></option>${arr}</select>`;
-    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plantall' ? sel(opt(plants.filter(x=>x.kind!=='siding'),'id',x=>`${x.code} · ${x.name}`)) : t==='plant' ? sel(opt(plants.filter(x=>x.kind==='plant'),'id',x=>`${x.code} · ${x.name}`)) : t==='state' ? sel(opt(states,'id','name')) : t==='district' ? sel(opt(districts,'id',distLabel)) : t==='dest' ? sel(opt(dests,'id',x=>`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`)) : t==='soldto' ? sel(opt(soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`)) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
+    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plantall' ? sel(opt(plants.filter(x=>x.kind!=='siding'),'id',x=>`${x.code} · ${x.name}`)) : t==='plant' ? sel(opt(plants.filter(x=>x.kind==='plant'),'id',x=>`${x.code} · ${x.name}`)) : t==='siding' ? sel(opt(plants.filter(x=>x.kind==='siding'),'id',x=>`${x.code} · ${x.name}`)) : t==='sardar' ? sel(opt(S.sardars.map(x=>({id:x.id, n:`${sardarName(x.id)} · ${(plants.find(p=>p.id===x.siding_id)||{}).code||''}`})),'id','n')) : t==='cat' ? sel(opt(S.cats,'id',x=>`${x.code} · ${clientCode(x.client_id)}`)) : t==='state' ? sel(opt(states,'id','name')) : t==='district' ? sel(opt(districts,'id',distLabel)) : t==='dest' ? sel(opt(dests,'id',x=>`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`)) : t==='soldto' ? sel(opt(soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`)) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
     return `<div><label>${esc(l)}</label>${el}</div>`; };
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${whOnly ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid">${M.form.map(input).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
   <div class="card">${table(M.cols.map(k => ({h:k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(M.edit ? [{h:'', f:r => `<button class="ghost sm" data-edit="${r.id}">Edit</button>`}] : []), rows)}</div>`;
   m.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { const r = rows.find(x=>x.id===b.dataset.edit); const upd = {}; for(const k of M.edit){ const v = prompt(k.replace(/_/g,' '), r[k]||''); if(v===null) return; upd[k] = v.trim(); } act(b, async () => { const {error} = await sb.from(M.t).update(upd).eq('id', r.id); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Saved'); });
   $('mS').onchange = () => { S.mst = $('mS').value; go(); };
+  if(M.t==='wh_materials'){ const upd = () => { const cid = $('f_client_id').value; const cs = S.cats.filter(c => c.client_id===cid && c.is_active);
+      $('f_category_id').innerHTML = cs.length ? opt(cs,'id',c=>`${c.name} (${c.code})`, cs.length===1 ? cs[0].id : '', cs.length===1 ? undefined : '') : '<option value="">Add a category for this customer first</option>';
+      $('f_category_id').parentElement.style.display = cs.length===1 ? 'none' : ''; };
+    $('f_client_id').onchange = upd; upd(); }
   $('mAdd').onclick = e => act(e.target, async () => {
     let r = {}; M.form.forEach(([k,,t]) => { const v = $('f_'+k).value; if(v!=='') r[k] = t==='num' ? +v : v; });
     if(M.extra) r = M.extra(r);
