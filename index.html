@@ -282,10 +282,21 @@ function batchOf(dateStr){ // WW-YY, week counted from 1 January (same rule as t
 function toast(msg, kind='ok', ms=3500){ const t=$('toast'); t.textContent=msg; t.className='toast show '+kind; clearTimeout(t._t); t._t=setTimeout(()=>t.className='toast '+kind, ms); }
 async function rpc(fn, args={}){ const {data, error} = await sb.rpc(fn, args); if(error) throw new Error(error.message); return data; }
 async function q(table, build = x => x){ const {data, error} = await build(sb.from(table).select('*')); if(error) throw new Error(error.message); return data || []; }
+// database wording → plain words
+function niceErr(m){
+  m = String(m || 'Something went wrong');
+  const d = m.match(/duplicate key value violates unique constraint "(?:[a-z]+_)*?([a-z_]+?)_key"/i);
+  if(d){ const f = d[1].replace(/^.*_(code|name|gstin|pan|registration_no|vendor_code|sap_code|email)$/, '$1').replace(/_/g,' ');
+    return `This ${f === 'pkey' ? 'record' : f} already exists. Find it in the list below and use Edit instead of adding it again.`; }
+  if(/duplicate key/i.test(m)) return 'This record already exists. Find it in the list and use Edit instead of adding it again.';
+  if(/violates foreign key/i.test(m)) return 'This record is linked to other records, so it cannot be changed or removed this way.';
+  if(/violates not-null constraint/i.test(m)){ const c = (m.match(/column "([a-z_]+)"/)||[])[1]; return `Please fill ${c ? c.replace(/_id$/,'').replace(/_/g,' ') : 'all required fields'}.`; }
+  return m;
+}
 async function act(btn, fn, okMsg){
   const label = btn ? btn.innerHTML : ''; if(btn){ btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
   try { const r = await fn(); if(okMsg) toast(typeof okMsg === 'function' ? okMsg(r) : okMsg); return r; }
-  catch(e){ toast(e.message, 'err', 7000); throw e; }
+  catch(e){ toast(niceErr(e.message), 'err', 7000); throw e; }
   finally { if(btn){ btn.disabled = false; btn.innerHTML = label; } }
 }
 function modal(html){ $('modalBox').innerHTML = html; $('modal').classList.remove('hide'); }
@@ -1527,7 +1538,7 @@ async function saveMaster(M, pre, root){
   let r = {}; M.form.forEach(([k,,t]) => { const v = root.querySelector('#'+pre+k).value; if(v!=='' && v!==ADD_NEW) r[k] = t==='num' ? +v : v; });
   if(M.extra) r = M.extra(r);
   const res = M.upsert ? await sb.from(M.t).upsert(r, {onConflict:M.upsert}).select() : await sb.from(M.t).insert(r).select();
-  if(res.error) throw new Error(res.error.message);
+  if(res.error) throw new Error(/duplicate key/i.test(res.error.message) && r.code ? `Code ${r.code} already exists. Find it in the list below and use Edit instead of adding it again.` : res.error.message);
   await loadMasters(); if(M.t==='sys_plants'){ S.me = await rpc('wh_me'); S.locs = S.me.locations; }
   return (res.data || [])[0] || null;
 }
