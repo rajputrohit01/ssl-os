@@ -264,7 +264,7 @@ const sb = supabase.createClient(SB_URL, SB_KEY);
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 /* ============ STATE + HELPERS ============ */
-const S = { states:[], districts:[], dests:[], soldTos:[], me:null, loc:null, tab:null, locs:[], clients:[], materials:[], contractors:[], parties:[], trucks:[], vendors:[], cats:[], sardars:[], links:[], terms:[], plants:[] };
+const S = { companies:[], states:[], districts:[], dests:[], soldTos:[], me:null, loc:null, tab:null, locs:[], clients:[], materials:[], contractors:[], parties:[], trucks:[], vendors:[], cats:[], sardars:[], links:[], terms:[], plants:[] };
 const $ = id => document.getElementById(id);
 const esc = v => v==null ? '' : String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const n3 = v => v==null||v==='' ? '' : Number(v).toFixed(3);
@@ -386,6 +386,7 @@ async function loadMasters(){
   [S.cats, S.sardars, S.links, S.terms, S.plants, S.states, S.districts, S.dests, S.soldTos] = await Promise.all([
     q('sys_material_categories', b => b.order('code')), q('rk_sardars'), q('sys_plant_sidings'), q('rk_siding_client_terms'), q('sys_plants', b => b.order('code')),
     q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
+  S.companies = await q('sys_companies', b => b.order('code'));
 }
 async function start(){
   const {data:{user}} = await sb.auth.getUser(); if(!user) return;
@@ -436,7 +437,7 @@ const MODULES = [
       if(can('wh_master_admin')){ t.push(['#','Setup']); t.push(['whsetup','Warehouse setup']); }
       return t;
     } },
-  { key:'md', name:'Master Data', icon:'masters', desc:'Customers, material categories and types, plants, warehouses and sidings, Sold-To and Ship-To parties, destinations, vendors, trucks',
+  { key:'md', name:'Master Data', icon:'masters', desc:'Our companies, customers, material categories and types, plants, warehouses and sidings, Sold-To and Ship-To parties, destinations, vendors, trucks',
     visible: () => can('wh_master_admin'), screens: () => [['#','Master data'],['masters','Masters']] },
   { key:'admin', name:'Users & Roles', icon:'users', desc:'Add users, set roles, permissions and locations',
     visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
@@ -1426,13 +1427,14 @@ VIEWS.rk_setup = m => VIEWS.masters(m, 'rk');
 
 /* ============ MASTERS ============ */
 const MASTERS = {
+  'Our companies': {t:'sys_companies', cols:['code','name','gstin','pan','state_id','busy_company','is_active'], form:[['code','Short code (e.g. SSL)'],['name','Company name'],['gstin','GSTIN'],['pan','PAN'],['state_id','State','state'],['address','Address'],['busy_company','Company name in BUSY']], labels:{gstin:'GSTIN', pan:'PAN', busy_company:'In BUSY'}, note:'SS Logistics group companies. Each warehouse, siding, own truck and vendor belongs to one of them; inter-company cash and billing use this.'},
   'Customers': {t:'sys_clients', cols:['code','name','is_active'], form:[['code','Code (e.g. UTCL)'],['name','Customer name']]},
   'Material categories': {t:'sys_material_categories', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Category code (CEMENT, ORE, SAND…)'],['name','Name']], note:'Material is two-level: Category → Type. Add the category first, then its types under Materials.'},
   'Plants': {t:'sys_plants', where:{kind:'plant'}, cols:['code','name','client_id','is_active'], form:[['client_id','Customer','client'],['code','Location code (e.g. HSP)'],['name','Plant name']], extra:r => ({...r, code:plantCode2(r), kind:'plant', is_live:true}), note:'Code is customer code + location code, e.g. UTC-HSP — type only HSP. Warehouses and rake sidings have their own lists.'},
-  'Warehouses': {t:'sys_plants', where:{kind:'warehouse'}, cols:['code','name','client_id','parent_id','return_intimation','responsibility_start','is_live'], form:[['client_id','Customer','client'],['code','Location code (e.g. HSP)'],['name','Warehouse name'],['parent_id','Inside plant (optional)','plant'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => ({...r, code:plantCode2(r), kind:'warehouse'}), labels:{parent_id:'Inside plant'}, note:'Code is customer code + location code, e.g. UTC-HSP — type only HSP. SSL-run warehouses. Return intimation: hard = no unloading of a dealer return until the customer is informed; soft = unload, flagged until informed.'},
-  'Sidings': {t:'sys_plants', where:{kind:'siding'}, cols:['code','name','district_id','is_active'], form:[['code','Railway code (e.g. HPO, DKAE)'],['name','Siding name'],['district_id','District','district']], extra:r => ({...r, kind:'siding', station_code:r.code, is_live:true}), labels:{code:'Railway code'}, note:'A rake siding belongs to no customer. Link the warehouses it feeds in Rake Operations › Siding setup.'},
-  'Vendors': {t:'sys_vendors', cols:['vendor_code','vendor_name','busy_name','is_active'], form:[['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
-  'Own trucks': {t:'sys_trucks', cols:['registration_no','is_active'], form:[['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
+  'Warehouses': {t:'sys_plants', where:{kind:'warehouse'}, cols:['code','name','company_id','client_id','parent_id','return_intimation','responsibility_start','is_live'], form:[['client_id','Customer','client'],['code','Location code (e.g. HSP)'],['name','Warehouse name'],['company_id','Run by (our company)','company'],['parent_id','Inside plant (optional)','plant'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => ({...r, code:plantCode2(r), kind:'warehouse'}), labels:{parent_id:'Inside plant'}, note:'Code is customer code + location code, e.g. UTC-HSP — type only HSP. SSL-run warehouses. Return intimation: hard = no unloading of a dealer return until the customer is informed; soft = unload, flagged until informed.'},
+  'Sidings': {t:'sys_plants', where:{kind:'siding'}, cols:['code','name','company_id','district_id','is_active'], form:[['code','Railway code (e.g. HPO, DKAE)'],['name','Siding name'],['company_id','Run by (our company)','company'],['district_id','District','district']], extra:r => ({...r, kind:'siding', station_code:r.code, is_live:true}), labels:{code:'Railway code'}, note:'A rake siding belongs to no customer. Link the warehouses it feeds in Rake Operations › Siding setup.'},
+  'Vendors': {t:'sys_vendors', cols:['company_id','vendor_code','vendor_name','busy_name','is_active'], form:[['company_id','Our company','company'],['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
+  'Own trucks': {t:'sys_trucks', cols:['company_id','registration_no','is_active'], form:[['company_id','Our company','company'],['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
   'Materials': {t:'wh_materials', cols:['client_id','category_id','code','name','is_active'], form:[['client_id','Customer','client'],['category_id','Category','cat'],['code','Type (PSC, OPC, CHD…)'],['name','Name']], note:'Material type under a customer\'s category. If the customer has one category it is picked automatically. The same type name can exist for two customers.'},
   'SAP product mapping': {wh:1, t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
   'Sold-To parties': {labels:{sap_code:'SAP Sold-To code'}, t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
@@ -1454,9 +1456,9 @@ VIEWS.whsetup = m => VIEWS.masters(m, true);
 // plant / warehouse code = <customer code>-<location code>, e.g. UTC-HSP
 const plantCode2 = r => { const cc = clientCode(r.client_id); const c = String(r.code||'').trim().toUpperCase(); return !cc || !c || c.startsWith(cc + '-') ? c : cc + '-' + c; };
 /* ---- "+ Add new" inside any master dropdown ---- */
-const ADD_FOR = {client:'Customers', mat:'Materials', loc:'Warehouses', vendor:'Vendors', plantall:'Warehouses', plant:'Plants', siding:'Sidings',
+const ADD_FOR = {company:'Our companies', client:'Customers', mat:'Materials', loc:'Warehouses', vendor:'Vendors', plantall:'Warehouses', plant:'Plants', siding:'Sidings',
   district:'Districts', dest:'Destinations', soldto:'Sold-To parties', shipto:'Ship-To parties', sardar:'Labour Sardars', cat:'Material categories'};
-const ADD_LABEL = {client:'customer', mat:'material type', loc:'warehouse', vendor:'vendor', plantall:'warehouse', plant:'plant', siding:'siding',
+const ADD_LABEL = {company:'company', client:'customer', mat:'material type', loc:'warehouse', vendor:'vendor', plantall:'warehouse', plant:'plant', siding:'siding',
   district:'district', dest:'destination', soldto:'Sold-To party', shipto:'Ship-To party', sardar:'Labour Sardar', cat:'material category'};
 const ADD_PRESET = {sardar:() => ({siding_id:S.loc && S.loc.kind==='siding' ? S.loc.id : ''})};
 const ADD_NEW = '__add__';
@@ -1466,6 +1468,7 @@ function typeOpts(t){
   const P = S.plants, pl = x => `${x.code} · ${x.name}`;
   switch(t){
     case 'client': return opt(S.clients,'id','name');
+    case 'company': return opt(S.companies.filter(c=>c.is_active),'id',c=>`${c.code} · ${c.name}`);
     case 'mat': return matOpts();
     case 'loc': return opt(P,'id',pl);
     case 'vendor': return opt(S.vendors,'id','vendor_name');
@@ -1542,7 +1545,7 @@ function quickAdd(t, done, preset){
 
 // what can be changed on an existing master row (codes and owners stay fixed: documents already carry them);
 // effective-dated rates are never edited — a change is a new row with a new date
-const EDIT_CFG = {'Customers':{lock:['code']}, 'Material categories':{lock:['client_id']}, 'Plants':{lock:['client_id','code']}, 'Warehouses':{lock:['client_id','code']},
+const EDIT_CFG = {'Our companies':{lock:['code']}, 'Customers':{lock:['code']}, 'Material categories':{lock:['client_id']}, 'Plants':{lock:['client_id','code']}, 'Warehouses':{lock:['client_id','code']},
   'Sidings':{lock:['code']}, 'Vendors':{lock:['vendor_code']}, 'Own trucks':{}, 'Materials':{lock:['client_id']}, 'SAP product mapping':{lock:['client_id']},
   'Sold-To parties':{lock:['client_id','sap_code']}, 'Ship-To parties':{lock:['client_id']}, 'Destinations':{}, 'Districts':{},
   'Labor contractors':{lock:['location_id','vendor_id']}, 'Labour Sardars':{lock:['siding_id','vendor_id']},
@@ -1579,7 +1582,7 @@ VIEWS.masters = async (m, whOnly = false) => {
   const plants = S.plants;
   const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((plants.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name);
     if(k==='plant_id' || k==='parent_id' || k==='siding_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='sardar_id') return esc(sardarName(v)); if(k==='category_id') return esc((S.cats.find(x=>x.id===v)||{}).code); if(k==='dcwc_bearer') return v==='ssl' ? chip('SSL','warn') : chip('customer');
-    if(k==='state_id') return esc((S.states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(S.districts.find(x=>x.id===v)));
+    if(k==='state_id') return esc((S.states.find(x=>x.id===v)||{}).name); if(k==='company_id') return esc((S.companies.find(x=>x.id===v)||{}).code); if(k==='district_id') return esc(distLabel(S.districts.find(x=>x.id===v)));
     if(k==='destination_id'){ const x = S.dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(S.districts.find(d=>d.id===x.district_id))}`) : ''; }
     if(k==='sold_to_id'){ const x = S.soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; }
     return esc(v); };
