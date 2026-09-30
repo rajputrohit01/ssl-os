@@ -295,8 +295,13 @@ const opt = (arr, val, lab, sel, blank) => (blank!==undefined ? `<option value="
 const clientCode = id => (S.clients.find(c=>c.id===id)||{}).code || '';
 const matOpts = (sel, blank, clientId) => opt(S.materials.filter(m=>m.is_active && (!clientId || m.client_id===clientId)), 'id', m => clientId ? m.code : `${m.code} · ${clientCode(m.client_id)}`, sel, blank);
 const contrOpts = () => opt(S.contractors.filter(c=>c.location_id===S.loc.id && c.is_active), 'id', 'vendor_name');
+// our own warehouses are chosen by plant code, never through a Ship-To party
+const ownWh = (clientId, opts = {}) => S.plants.filter(p => p.kind==='warehouse' && p.client_id===clientId && p.is_active !== false && p.id !== opts.exclude && (!opts.siding || S.links.some(l => l.plant_id===p.id && l.siding_id===opts.siding)));
+const destOpts = (clientId, opts = {}) => '<option value="">Select destination</option>'
+  + (opts.warehouseOnly ? '' : `<optgroup label="Dealer (Ship-To)">${opt(S.parties.filter(p=>p.client_id===clientId && !p.location_id), 'sap_code', p => `${p.party_name} · ${p.destination} · Sold-To ${p.sold_to_code}`)}</optgroup>`)
+  + `<optgroup label="Our warehouse (stock transfer, GRN)">${opt(ownWh(clientId, opts), 'code', p => `${p.code} · ${p.name}`)}</optgroup>`;
 const partyOpts = (clientId, sel) => opt(S.parties.filter(p=>p.client_id===clientId), 'sap_code', p => `${p.party_name} · ${p.destination} · Sold-To ${p.sold_to_code}${p.location_id?' (our warehouse)':''}`, sel, 'Select Ship-To');
-const soldToLine = (clientId, code) => { const p = S.parties.find(x=>x.client_id===clientId && x.sap_code===code); return p ? `Sold-To: <b>${esc(p.sold_to_name)}</b> (${esc(p.sold_to_code)}) · ${esc(p.sold_to_phone||'no phone')} · ${esc(p.destination)}, ${esc(p.district)}, ${esc(p.state)}` : ''; };
+const soldToLine = (clientId, code) => { const w = S.plants.find(x => x.kind==='warehouse' && x.client_id===clientId && x.code===code); if(w) return `Our warehouse <b>${esc(w.name)}</b> — received there against GRN`; const p = S.parties.find(x=>x.client_id===clientId && x.sap_code===code); return p ? `Sold-To: <b>${esc(p.sold_to_name)}</b> (${esc(p.sold_to_code)}) · ${esc(p.sold_to_phone||'no phone')} · ${esc(p.destination)}, ${esc(p.district)}, ${esc(p.state)}` : ''; };
 const chip = (txt, kind='') => `<span class="chip ${kind}">${esc(txt)}</span>`;
 function table(cols, rows, empty='Nothing here yet.'){
   if(!rows.length) return `<div class="empty">${esc(empty)}</div>`;
@@ -658,7 +663,7 @@ async function dispatchDetail(m, id){
   ${d.status==='loading' ? `<div class="card"><h2>Add loading slip</h2><div class="grid">
     <div style="grid-column:1/-1"><label>Load from</label><select id="sSrc">${sources.length ? sources.map(s=>`<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('') : '<option value="">No stock available</option>'}</select></div>
     <div><label>Quantity MT</label><input id="sQ" type="number" step="0.001"></div>
-    <div style="grid-column:span 2"><label>Ship-To</label><select id="sT">${partyOpts(d.client_id)}</select><div class="muted" id="sSoL" style="margin-top:4px"></div></div>
+    <div style="grid-column:span 2"><label>Destination</label><select id="sT">${destOpts(d.client_id, {exclude:S.loc.id})}</select><div class="muted" id="sSoL" style="margin-top:4px"></div></div>
     <div><label>Labor contractor</label><select id="sL">${contrOpts()}</select></div></div>
     <div class="row"><button class="lime" id="sGo">Add slip</button><button class="primary" id="dConf" ${slips.some(s=>s.status==='open')?'':'disabled'}>Truck loaded → generate challans</button></div>
     <p class="muted">If one batch is short, add a second slip from another batch. The in-charge is accountable if the batch loaded differs from the slip.</p></div>` : `<div class="okbox">Dispatched ${dt(d.dispatched_at)}</div>`}`;
@@ -686,7 +691,7 @@ function printSlip(s, d){
 async function printChallans(ids){
   const ch = await q('wh_challans', b => b.in('id', ids)); const lines = await q('wh_challan_lines', b => b.in('challan_id', ids));
   const disp = await q('wh_dispatches', b => b.in('id', [...new Set(ch.map(c=>c.dispatch_id))]));
-  printWin(ch.map(c => { const d = disp.find(x=>x.id===c.dispatch_id)||{}; const p = S.parties.find(x=>x.client_id===c.client_id && x.sap_code===c.ship_to_code)||{};
+  printWin(ch.map(c => { const d = disp.find(x=>x.id===c.dispatch_id)||{}; const w = S.plants.find(x=>x.id===c.to_location_id); const p = S.parties.find(x=>x.client_id===c.client_id && x.sap_code===c.ship_to_code) || (w ? {party_name:'SS Logistics · '+w.name, destination:w.code} : {});
     return `<div class="pg"><h2>${c.challan_no.startsWith('ADC')?'ADJUSTMENT CHALLAN (no physical movement)':c.is_damaged?'DELIVERY CHALLAN · DAMAGED BAGS':'DELIVERY CHALLAN'} ${esc(c.challan_no)}</h2><div>${esc(S.loc.code)} · ${new Date(c.created_at).toLocaleString('en-IN')}</div>
     <table><tr><th>Customer</th><td>${esc((S.clients.find(x=>x.id===c.client_id)||{}).name)}</td><th>Truck</th><td>${esc(d.truck_no||'—')}</td></tr>
     <tr><th>Sold-To</th><td>${esc(p.sold_to_name||'')} (${esc(c.sold_to_code||'')})</td><th>Contact</th><td>${esc(p.sold_to_phone||'')}</td></tr><tr><th>Ship-To</th><td>${esc(p.party_name||'')} (${esc(c.ship_to_code)})</td><th>Destination</th><td>${esc([p.destination,p.district,p.state].filter(Boolean).join(', '))}</td></tr><tr><th>Material</th><td colspan="3"><b>${esc(mat(c.material_id))}</b></td></tr></table>
@@ -1296,7 +1301,7 @@ async function rkTruckForm(clientId, after){
     <div id="tVW" class="hide"><label>Vendor</label><select id="tV">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
     <div><label>Driver</label><input id="tD"></div>
     <div><label class="row" style="margin-top:18px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="tDmg"> Damaged bags (to our warehouse)</label></div>
-    <div style="grid-column:1/-1"><label>Ship-To</label><select id="tP"></select><div class="muted" id="tSo" style="margin-top:4px"></div></div></div>
+    <div style="grid-column:1/-1"><label>Destination</label><select id="tP"></select><div class="muted" id="tSo" style="margin-top:4px"></div></div></div>
     <h2 style="margin-top:14px">Load from</h2><div class="row"><select id="tSrc" style="flex:1 1 260px"></select><button class="lime sm" id="tAdd">Add line</button></div>
     <div id="tLines" style="margin-top:10px"></div>
     <div class="row" style="margin-top:12px"><button class="primary" id="tGo">Create & print slip</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
@@ -1308,8 +1313,7 @@ async function rkTruckForm(clientId, after){
     const src = [...(dmg ? [] : wag.map(w => ({v:'w:'+w.id, l:`Wagon ${w.wagon_no} · ${mat(w.found_material_id)} · ${(mine.find(x=>x.id===w.rake_id)||{}).rake_no}`}))),
       ...lotRows.filter(x => x.kind===kind && +x.available_mt > 0).map(x => ({v:`p:${x.rake_id}:${x.material_id}`, l:`Platform · ${(mine.find(y=>y.id===x.rake_id)||{}).rake_no} · ${x.material} ${kind} · ${n3(x.available_mt)} MT free`}))];
     $('tSrc').innerHTML = src.length ? src.map(x => `<option value="${esc(x.v)}">${esc(x.l)}</option>`).join('') : '<option value="">Nothing to load</option>';
-    const parties = S.parties.filter(p => p.client_id===cid && (!dmg || p.location_id));
-    $('tP').innerHTML = opt(parties, 'sap_code', p => `${p.party_name} · ${p.destination} · Sold-To ${p.sold_to_code}${p.location_id?' (our warehouse)':''}`, '', 'Select Ship-To');
+    $('tP').innerHTML = destOpts(cid, {siding:S.loc.id, warehouseOnly:dmg});
     L.length = 0; drawL();
   };
   const drawL = () => { $('tLines').innerHTML = L.map((x,i) => `<div class="lineRow"><div>${esc(x.label)}</div><input type="number" step="0.001" placeholder="MT" data-lq="${i}" value="${x.planned_mt||''}"><button class="ghost sm" data-lx="${i}">✕</button></div>`).join('') || '<div class="muted">Add at least one wagon or platform line. One truck can load from several wagons and the platform.</div>';
@@ -1423,7 +1427,7 @@ const MASTERS = {
   'Materials': {t:'wh_materials', cols:['client_id','category_id','code','name','is_active'], form:[['client_id','Customer','client'],['category_id','Category','cat'],['code','Type (PSC, OPC, CHD…)'],['name','Name']], note:'Material type under a customer\'s category. If the customer has one category it is picked automatically. The same type name can exist for two customers.'},
   'SAP product mapping': {wh:1, t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
   'Sold-To parties': {labels:{sap_code:'SAP Sold-To code'}, t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], edit:['contact_phone','name'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
-  'Ship-To parties': {t:'sys_ship_to', cols:['client_id','sold_to_id','sap_code','name','destination_id','location_id'], form:[['client_id','Customer','client'],['sold_to_id','Sold-To (buyer)','soldto'],['name','Ship-To name'],['destination_id','Destination','dest'],['location_id','If this is our own warehouse','loc']], labels:{sap_code:'Ship-To code (auto)'}, note:'The Ship-To code is given by the system (Sold-To code + number). Where the material goes. Belongs to one Sold-To and carries its destination.'},
+  'Ship-To parties': {t:'sys_ship_to', cols:['client_id','sold_to_id','sap_code','name','destination_id'], form:[['client_id','Customer','client'],['sold_to_id','Sold-To (buyer)','soldto'],['name','Ship-To name'],['destination_id','Destination','dest']], labels:{sap_code:'Ship-To code (auto)'}, note:'The Ship-To code is given by the system (Sold-To code + number). Where the material goes. Belongs to one Sold-To and carries its destination.'},
   'Destinations': {t:'sys_destinations', cols:['name','district_id','pincode'], form:[['district_id','District (state)','district'],['name','Destination'],['pincode','PIN code']], note:'Every destination carries its district and state. Add the district first if it is not in the list.'},
   'Districts': {t:'sys_districts', cols:['state_id','name'], form:[['state_id','State','state'],['name','District']]},
   'Bag conversion': {wh:1, t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant / warehouse (blank = all)','plantall'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
