@@ -69,7 +69,7 @@
   .kpi div{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
   .kpi b{display:block;font-size:22px;font-variant-numeric:tabular-nums}
   .kpi span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--slate)}
-  .toast{position:fixed;left:16px;right:16px;bottom:20px;max-width:560px;margin:0 auto;z-index:60;padding:12px 16px;border-radius:12px;color:#fff;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.25);transform:translateY(160%);transition:transform .3s}
+  .toast{z-index:200!important;position:fixed;left:16px;right:16px;bottom:20px;max-width:560px;margin:0 auto;z-index:60;padding:12px 16px;border-radius:12px;color:#fff;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.25);transform:translateY(160%);transition:transform .3s}
   .toast{visibility:hidden} .toast.show{transform:translateY(0);visibility:visible} .toast.ok{background:var(--ok)} .toast.err{background:var(--alert)} .toast.warn{background:var(--amber)}
   .modal{position:fixed;inset:0;background:rgba(11,31,23,.5);z-index:40;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:30px 12px}
   .modal .box{background:#fff;border-radius:14px;max-width:760px;width:100%;padding:18px}
@@ -264,7 +264,7 @@ const sb = supabase.createClient(SB_URL, SB_KEY);
 if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
 /* ============ STATE + HELPERS ============ */
-const S = { me:null, loc:null, tab:null, locs:[], clients:[], materials:[], contractors:[], parties:[], trucks:[], vendors:[], cats:[], sardars:[], links:[], terms:[], plants:[] };
+const S = { states:[], districts:[], dests:[], soldTos:[], me:null, loc:null, tab:null, locs:[], clients:[], materials:[], contractors:[], parties:[], trucks:[], vendors:[], cats:[], sardars:[], links:[], terms:[], plants:[] };
 const $ = id => document.getElementById(id);
 const esc = v => v==null ? '' : String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const n3 = v => v==null||v==='' ? '' : Number(v).toFixed(3);
@@ -383,8 +383,9 @@ async function loadMasters(){
     q('sys_vendors', b => b.eq('is_active', true).order('vendor_name')),
   ]);
   S.trucks = await q('sys_trucks', b => b.eq('is_active', true).order('registration_no'));
-  [S.cats, S.sardars, S.links, S.terms, S.plants] = await Promise.all([
-    q('sys_material_categories', b => b.order('code')), q('rk_sardars'), q('sys_plant_sidings'), q('rk_siding_client_terms'), q('sys_plants', b => b.order('code'))]);
+  [S.cats, S.sardars, S.links, S.terms, S.plants, S.states, S.districts, S.dests, S.soldTos] = await Promise.all([
+    q('sys_material_categories', b => b.order('code')), q('rk_sardars'), q('sys_plant_sidings'), q('rk_siding_client_terms'), q('sys_plants', b => b.order('code')),
+    q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
 }
 async function start(){
   const {data:{user}} = await sb.auth.getUser(); if(!user) return;
@@ -634,10 +635,10 @@ VIEWS.dispatch = async m => {
     modal(`<h2>New truck at ${esc(S.loc.code)}</h2><div class="grid">
       <div><label>Truck kind</label><select id="nK"><option value="market">Market</option><option value="vendor">Vendor</option><option value="own">SSL own</option><option value="dealer">Dealer's own</option></select></div>
       <div><label>Truck no</label><input id="nT" list="ownTrucks2"><datalist id="ownTrucks2">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
-      <div id="nVW" class="hide"><label>Vendor</label><select id="nV">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
+      <div id="nVW" class="hide"><label>Vendor</label><select id="nV" data-mt="vendor">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
       <div><label>Driver</label><input id="nD"></div></div>
       <div class="row" style="margin-top:10px"><button class="primary" id="nGo">Start loading</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('nK').onchange = () => $('nVW').classList.toggle('hide', $('nK').value!=='vendor');
+    $('nK').onchange = () => $('nVW').classList.toggle('hide', $('nK').value!=='vendor'); $('nV')._opts = () => opt(S.vendors,'id','vendor_name','', 'Select vendor'); wireAdd($('modalBox'));
     $('nGo').onclick = e => act(e.target, async () => {
       const own = $('nK').value==='own'; const tr = S.trucks.find(t=>t.registration_no===$('nT').value.trim().toUpperCase());
       if(own && !tr) throw new Error('Own truck not found in the truck master');
@@ -663,7 +664,7 @@ async function dispatchDetail(m, id){
   ${d.status==='loading' ? `<div class="card"><h2>Add loading slip</h2><div class="grid">
     <div style="grid-column:1/-1"><label>Load from</label><select id="sSrc">${sources.length ? sources.map(s=>`<option value="${esc(s.key)}">${esc(s.label)}</option>`).join('') : '<option value="">No stock available</option>'}</select></div>
     <div><label>Quantity MT</label><input id="sQ" type="number" step="0.001"></div>
-    <div style="grid-column:span 2"><label>Destination</label><select id="sT">${destOpts(d.client_id, {exclude:S.loc.id})}</select><div class="muted" id="sSoL" style="margin-top:4px"></div></div>
+    <div style="grid-column:span 2"><label>Destination</label><select id="sT" data-mt="shipto" data-mv="sap_code">${destOpts(d.client_id, {exclude:S.loc.id})}</select><div class="muted" id="sSoL" style="margin-top:4px"></div></div>
     <div><label>Labor contractor</label><select id="sL">${contrOpts()}</select></div></div>
     <div class="row"><button class="lime" id="sGo">Add slip</button><button class="primary" id="dConf" ${slips.some(s=>s.status==='open')?'':'disabled'}>Truck loaded → generate challans</button></div>
     <p class="muted">If one batch is short, add a second slip from another batch. The in-charge is accountable if the batch loaded differs from the slip.</p></div>` : `<div class="okbox">Dispatched ${dt(d.dispatched_at)}</div>`}`;
@@ -672,6 +673,7 @@ async function dispatchDetail(m, id){
   m.querySelectorAll('[data-ps]').forEach(b => b.onclick = () => printSlip(slips.find(s=>s.id===b.dataset.ps), d));
   if(d.status!=='loading') return;
   $('sT').onchange = () => $('sSoL').innerHTML = soldToLine(d.client_id, $('sT').value);
+  $('sT')._opts = () => destOpts(d.client_id, {exclude:S.loc.id}); $('sT')._preset = () => ({client_id:d.client_id}); wireAdd(m);
   $('sGo').onclick = e => act(e.target, async () => {
     const [kind, a, bch] = $('sSrc').value.split(':'); if(!kind) throw new Error('Nothing to load from');
     const p = {dispatch_id:id, source: kind==='lot'?'platform_lot':kind, qty_mt:+$('sQ').value, ship_to_code:$('sT').value, contractor_id:$('sL').value};
@@ -970,8 +972,8 @@ function rkPlanForm(r, after){
   modal(`<h2>${isNew ? 'Plan rake' : 'Edit intimation · ' + esc(r.rake_no)} at ${esc(S.loc.code)}</h2>
     <p class="muted">Enter the customer's rake intimation. RR PDF and wagon sheet are added next.</p>
     <div class="grid">
-      <div><label>Customer</label><select id="pC" ${r.status==='wagons_updated'?'disabled':''}>${opt(S.clients,'id','name', r.client_id, 'Select customer')}</select></div>
-      <div id="pCatW"><label>Material category</label><select id="pCat" ${r.status==='wagons_updated'?'disabled':''}></select></div>
+      <div><label>Customer</label><select id="pC" data-mt="client" ${r.status==='wagons_updated'?'disabled':''}>${opt(S.clients,'id','name', r.client_id, 'Select customer')}</select></div>
+      <div id="pCatW"><label>Material category</label><select id="pCat" data-mt="cat" ${r.status==='wagons_updated'?'disabled':''}></select></div>
       <div><label>For our warehouse</label><select id="pW"></select></div>
       <div><label>Coming from (loading siding)</label><input id="pS" value="${esc(r.source_siding||'')}" placeholder="e.g. UCPD"></div>
       <div><label>Wagons</label><input id="pN" type="number" value="${r.planned_wagons||''}"></div>
@@ -982,12 +984,14 @@ function rkPlanForm(r, after){
     <div class="row" style="margin-top:10px"><button class="primary" id="pGo">${isNew ? 'Save rake' : 'Save changes'}</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
   const upd = () => {
     const cid = $('pC').value; const cats = S.cats.filter(c => c.client_id===cid && c.is_active);
-    $('pCat').innerHTML = opt(cats, 'id', c => `${c.name} (${c.code})`, r.category_id || (cats.length===1 ? cats[0].id : ''), cats.length===1 ? undefined : 'Select category');
+    $('pCat').innerHTML = opt(cats, 'id', c => `${c.name} (${c.code})`, r.category_id || (cats.length===1 ? cats[0].id : ''), cats.length===1 ? undefined : 'Select category') + addOpt('cat'); $('pCat').dataset.prev = $('pCat').value;
     $('pCatW').style.display = cats.length===1 ? 'none' : '';
     $('pW').innerHTML = whOpts(cid);
     const b = cid ? rkBearer(cid) : null; $('pB').innerHTML = cid ? (b ? bearerTxt(b) : '<span style="color:var(--alert)">Set who bears DC/WC for this customer at this siding in Siding setup before planning.</span>') + (cats.length ? '' : ' · <span style="color:var(--alert)">This customer has no material category yet.</span>') : '';
   };
   $('pC').onchange = () => { r.category_id = null; r.warehouse_id = null; upd(); }; upd();
+  $('pCat')._opts = () => opt(S.cats.filter(c => c.client_id===$('pC').value && c.is_active), 'id', c => `${c.name} (${c.code})`, undefined, 'Select category');
+  $('pCat')._preset = () => ({client_id:$('pC').value}); wireAdd($('modalBox'));
   $('pGo').onclick = e => act(e.target, async () => {
     const p = {siding_id:S.loc.id, client_id:$('pC').value, category_id:$('pCat').value, warehouse_id:$('pW').value, source_siding:$('pS').value,
                planned_wagons:+$('pN').value||null, planned_mt:+$('pQ').value||null, expected_arrival:isoDT($('pE').value), note:$('pNote').value};
@@ -1186,8 +1190,9 @@ async function rkDetail(m, id){
   m.querySelectorAll('[data-uslip]').forEach(b => b.onclick = () => {
     const w = W(b.dataset.uslip);
     modal(`<h2>Unloading slip · ${esc(w.wagon_no)}</h2><p class="muted">Wagon → platform. Company quantity ${w.sheet_bags} bags · ${n3(w.sheet_mt)} MT goes on the slip; labour writes the actual count.</p>
-      <div class="field"><label>Labour Sardar</label><select id="uS">${sardarOpts()}</select></div>
+      <div class="field"><label>Labour Sardar</label><select id="uS" data-mt="sardar">${sardarOpts()}</select></div>
       <div class="row"><button class="primary" id="uGo">Create & print</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('uS')._opts = () => sardarOpts(); wireAdd($('modalBox'));
     $('uGo').onclick = e => act(e.target, async () => { const sid = await rpc('rk_unload_slip_create', {p_wagon:w.id, p_sardar:$('uS').value}); const [u] = await q('rk_unload_slips', x => x.eq('id', sid)); closeModal(); printUnloadSlip(u, w, r); back(); }, 'Unloading slip created');
   });
   m.querySelectorAll('[data-uprint]').forEach(b => b.onclick = () => { const u = uslips.find(x => x.id===b.dataset.uprint); printUnloadSlip(u, W(u.wagon_id), r); });
@@ -1295,13 +1300,13 @@ async function rkTruckForm(clientId, after){
   const cid0 = clientId || clients[0].id;
   modal(`<h2>Load a truck · ${esc(S.loc.code)}</h2><div class="grid">
     <div><label>Customer</label><select id="tC">${opt(clients,'id','name',cid0)}</select></div>
-    <div><label>Labour Sardar</label><select id="tS">${sardarOpts()}</select></div>
+    <div><label>Labour Sardar</label><select id="tS" data-mt="sardar">${sardarOpts()}</select></div>
     <div><label>Truck kind</label><select id="tK"><option value="market">Market</option><option value="vendor">Vendor</option><option value="own">SSL own</option><option value="dealer">Dealer's own</option></select></div>
     <div><label>Truck no</label><input id="tT" list="ownTrucks3"><datalist id="ownTrucks3">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
-    <div id="tVW" class="hide"><label>Vendor</label><select id="tV">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
+    <div id="tVW" class="hide"><label>Vendor</label><select id="tV" data-mt="vendor">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
     <div><label>Driver</label><input id="tD"></div>
     <div><label class="row" style="margin-top:18px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="tDmg"> Damaged bags (to our warehouse)</label></div>
-    <div style="grid-column:1/-1"><label>Destination</label><select id="tP"></select><div class="muted" id="tSo" style="margin-top:4px"></div></div></div>
+    <div style="grid-column:1/-1"><label>Destination</label><select id="tP" data-mt="shipto" data-mv="sap_code"></select><div class="muted" id="tSo" style="margin-top:4px"></div></div></div>
     <h2 style="margin-top:14px">Load from</h2><div class="row"><select id="tSrc" style="flex:1 1 260px"></select><button class="lime sm" id="tAdd">Add line</button></div>
     <div id="tLines" style="margin-top:10px"></div>
     <div class="row" style="margin-top:12px"><button class="primary" id="tGo">Create & print slip</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
@@ -1313,13 +1318,15 @@ async function rkTruckForm(clientId, after){
     const src = [...(dmg ? [] : wag.map(w => ({v:'w:'+w.id, l:`Wagon ${w.wagon_no} · ${mat(w.found_material_id)} · ${(mine.find(x=>x.id===w.rake_id)||{}).rake_no}`}))),
       ...lotRows.filter(x => x.kind===kind && +x.available_mt > 0).map(x => ({v:`p:${x.rake_id}:${x.material_id}`, l:`Platform · ${(mine.find(y=>y.id===x.rake_id)||{}).rake_no} · ${x.material} ${kind} · ${n3(x.available_mt)} MT free`}))];
     $('tSrc').innerHTML = src.length ? src.map(x => `<option value="${esc(x.v)}">${esc(x.l)}</option>`).join('') : '<option value="">Nothing to load</option>';
-    $('tP').innerHTML = destOpts(cid, {siding:S.loc.id, warehouseOnly:dmg});
+    $('tP').innerHTML = destOpts(cid, {siding:S.loc.id, warehouseOnly:dmg}) + (dmg ? '' : addOpt('shipto')); $('tP').dataset.prev = '';
     L.length = 0; drawL();
   };
   const drawL = () => { $('tLines').innerHTML = L.map((x,i) => `<div class="lineRow"><div>${esc(x.label)}</div><input type="number" step="0.001" placeholder="MT" data-lq="${i}" value="${x.planned_mt||''}"><button class="ghost sm" data-lx="${i}">✕</button></div>`).join('') || '<div class="muted">Add at least one wagon or platform line. One truck can load from several wagons and the platform.</div>';
     document.querySelectorAll('[data-lq]').forEach(i => i.oninput = () => L[+i.dataset.lq].planned_mt = +i.value);
     document.querySelectorAll('[data-lx]').forEach(b => b.onclick = () => { L.splice(+b.dataset.lx, 1); drawL(); }); };
   $('tC').onchange = load; $('tDmg').onchange = load;
+  $('tS')._opts = () => sardarOpts(); $('tP')._opts = () => destOpts($('tC').value, {siding:S.loc.id, warehouseOnly:$('tDmg').checked});
+  $('tP')._preset = () => ({client_id:$('tC').value}); wireAdd($('modalBox'));
   $('tK').onchange = () => $('tVW').classList.toggle('hide', $('tK').value!=='vendor');
   $('tP').onchange = () => $('tSo').innerHTML = soldToLine($('tC').value, $('tP').value);
   $('tAdd').onclick = () => { const v = $('tSrc').value; if(!v) return; const label = $('tSrc').selectedOptions[0].textContent; const [k,a,b2] = v.split(':');
@@ -1442,34 +1449,111 @@ const MASTERS = {
   'Customer email settings': {wh:1, t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
 };
 VIEWS.whsetup = m => VIEWS.masters(m, true);
+/* ---- "+ Add new" inside any master dropdown ---- */
+const ADD_FOR = {client:'Customers', mat:'Materials', loc:'Plants & warehouses', vendor:'Vendors', plantall:'Plants & warehouses', plant:'Plants & warehouses', siding:'Plants & warehouses',
+  district:'Districts', dest:'Destinations', soldto:'Sold-To parties', shipto:'Ship-To parties', sardar:'Labour Sardars', cat:'Material categories'};
+const ADD_LABEL = {client:'customer', mat:'material type', loc:'plant / warehouse / siding', vendor:'vendor', plantall:'plant / warehouse', plant:'plant', siding:'siding',
+  district:'district', dest:'destination', soldto:'Sold-To party', shipto:'Ship-To party', sardar:'Labour Sardar', cat:'material category'};
+const ADD_PRESET = {siding:() => ({kind:'siding'}), plant:() => ({kind:'plant'}), sardar:() => ({siding_id:S.loc && S.loc.kind==='siding' ? S.loc.id : ''})};
+const ADD_NEW = '__add__';
+const masterPerm = M => M.grp==='rk' ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin');
+const distLabel = d => d ? `${d.name} · ${(S.states.find(x=>x.id===d.state_id)||{}).name||''}` : '';
+function typeOpts(t){
+  const P = S.plants, pl = x => `${x.code} · ${x.name}`;
+  switch(t){
+    case 'client': return opt(S.clients,'id','name');
+    case 'mat': return matOpts();
+    case 'loc': return opt(P,'id',pl);
+    case 'vendor': return opt(S.vendors,'id','vendor_name');
+    case 'plantall': return opt(P.filter(x=>x.kind!=='siding'),'id',pl);
+    case 'plant': return opt(P.filter(x=>x.kind==='plant'),'id',pl);
+    case 'siding': return opt(P.filter(x=>x.kind==='siding'),'id',pl);
+    case 'sardar': return opt(S.sardars.map(x=>({id:x.id, n:`${sardarName(x.id)} · ${(P.find(p=>p.id===x.siding_id)||{}).code||''}`})),'id','n');
+    case 'cat': return opt(S.cats,'id',x=>`${x.code} · ${clientCode(x.client_id)}`);
+    case 'state': return opt(S.states,'id','name');
+    case 'district': return opt(S.districts,'id',distLabel);
+    case 'dest': return opt(S.dests,'id',x=>`${x.name} · ${distLabel(S.districts.find(d=>d.id===x.district_id))}`);
+    case 'soldto': return opt(S.soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`);
+  }
+}
+const addOpt = t => ADD_FOR[t] && masterPerm(MASTERS[ADD_FOR[t]]) ? `<option value="${ADD_NEW}">+ Add new ${esc(ADD_LABEL[t])}…</option>` : '';
+function masterInput([k,l,t,o], pre){
+  const id = pre + k;
+  if(t==='sel') return `<div><label>${esc(l)}</label><select id="${id}">${o.map(x=>`<option>${x}</option>`).join('')}</select></div>`;
+  const to = typeOpts(t);
+  if(to !== undefined) return `<div><label>${esc(l)}</label><select id="${id}" data-mt="${t}"><option value=""></option>${to}${addOpt(t)}</select></div>`;
+  return `<div><label>${esc(l)}</label><input id="${id}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any"></div>`;
+}
+// makes every <select data-mt="…"> inside root offer "+ Add new"; s._opts may give its own option list, data-mv the value column
+function wireAdd(root){
+  root.querySelectorAll('select[data-mt]').forEach(s => {
+    if(s._wired) return; s._wired = true;
+    if(!s.querySelector(`option[value="${ADD_NEW}"]`)) s.insertAdjacentHTML('beforeend', addOpt(s.dataset.mt));
+    s.dataset.prev = s.value;
+    s.addEventListener('change', () => {
+      if(s.value !== ADD_NEW){ s.dataset.prev = s.value; return; }
+      s.value = s.dataset.prev || '';
+      quickAdd(s.dataset.mt, row => {
+        const t = s.dataset.mt;
+        s.innerHTML = (s._opts ? s._opts() : '<option value=""></option>' + typeOpts(t)) + addOpt(t);
+        s.value = row ? row[s.dataset.mv || 'id'] : ''; s.dataset.prev = s.value;
+        s.dispatchEvent(new Event('change'));
+      }, s._preset ? s._preset() : null);
+    });
+  });
+}
+function setupMasterForm(M, pre, root){
+  const el = k => root.querySelector('#' + pre + k);
+  if(M.t==='wh_materials' && el('client_id')){
+    const upd = () => { const cid = el('client_id').value; const cs = S.cats.filter(c => c.client_id===cid && c.is_active);
+      el('category_id').innerHTML = (cs.length ? opt(cs,'id',c=>`${c.name} (${c.code})`, cs.length===1 ? cs[0].id : '', cs.length===1 ? undefined : '') : '<option value="">Add a category for this customer</option>') + addOpt('cat');
+      el('category_id').dataset.prev = el('category_id').value;
+      el('category_id').parentElement.style.display = cs.length===1 ? 'none' : ''; };
+    el('category_id')._opts = () => opt(S.cats.filter(c => c.client_id===el('client_id').value && c.is_active),'id',c=>`${c.name} (${c.code})`, undefined, '');
+    el('category_id')._preset = () => ({client_id:el('client_id').value});
+    el('client_id').addEventListener('change', upd); upd();
+  }
+  if(M.t==='sys_ship_to' && el('sold_to_id')) el('sold_to_id')._preset = () => ({client_id:el('client_id').value});
+}
+async function saveMaster(M, pre, root){
+  let r = {}; M.form.forEach(([k,,t]) => { const v = root.querySelector('#'+pre+k).value; if(v!=='' && v!==ADD_NEW) r[k] = t==='num' ? +v : v; });
+  if(M.extra) r = M.extra(r);
+  const res = M.upsert ? await sb.from(M.t).upsert(r, {onConflict:M.upsert}).select() : await sb.from(M.t).insert(r).select();
+  if(res.error) throw new Error(res.error.message);
+  await loadMasters(); if(M.t==='sys_plants'){ S.me = await rpc('wh_me'); S.locs = S.me.locations; }
+  return (res.data || [])[0] || null;
+}
+function quickAdd(t, done, preset){
+  const M = MASTERS[ADD_FOR[t]]; S.qaN = (S.qaN||0) + 1; const pre = 'qa' + S.qaN + '_';
+  const ov = document.createElement('div'); ov.className = 'modal'; ov.style.zIndex = 70 + S.qaN;
+  ov.innerHTML = `<div class="box"><h2>Add ${esc(ADD_LABEL[t])}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid">${M.form.map(f => masterInput(f, pre)).join('')}</div>
+    <div class="row" style="margin-top:12px"><button class="primary" data-qs>Save</button><button class="ghost" data-qc>Cancel</button></div></div>`;
+  document.body.appendChild(ov);
+  Object.entries({...(ADD_PRESET[t] ? ADD_PRESET[t]() : {}), ...(preset||{})}).forEach(([k,v]) => { const el = ov.querySelector('#'+pre+k); if(el && v) el.value = v; });
+  setupMasterForm(M, pre, ov); wireAdd(ov);
+  ov.querySelector('[data-qc]').onclick = () => ov.remove();
+  ov.querySelector('[data-qs]').onclick = e => act(e.target, async () => { const row = await saveMaster(M, pre, ov); ov.remove(); done && done(row); }, 'Added');
+}
+
 VIEWS.masters = async (m, whOnly = false) => {
-  const grp = typeof whOnly==='string' ? whOnly : whOnly ? 'wh' : 'md'; whOnly = grp;
+  const grp = typeof whOnly==='string' ? whOnly : whOnly ? 'wh' : 'md';
   const keys = Object.keys(MASTERS).filter(k => (MASTERS[k].grp || (MASTERS[k].wh ? 'wh' : 'md')) === grp);
   if(!keys.includes(S.mst)) S.mst = keys[0]; const M = MASTERS[S.mst];
   const rows = await q(M.t, b => b.limit(500));
-  const allLocs = await q('wh_locations'); const plants = await q('sys_plants');
-  const [states, districts, dests, soldTos] = await Promise.all([q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
-  const distLabel = d => d ? `${d.name} · ${(states.find(s=>s.id===d.state_id)||{}).name||''}` : '';
-  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((allLocs.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name); if(k==='plant_id' || k==='parent_id' || k==='siding_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='sardar_id') return esc(sardarName(v)); if(k==='category_id') return esc((S.cats.find(x=>x.id===v)||{}).code); if(k==='dcwc_bearer') return v==='ssl' ? chip('SSL','warn') : chip('customer'); if(k==='state_id') return esc((states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(districts.find(x=>x.id===v))); if(k==='destination_id'){ const x = dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`) : ''; } if(k==='sold_to_id'){ const x = soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; } if(k==='contact_phone' && !v) return chip('missing','bad'); return esc(v); };
-  const input = ([k, l, t, o]) => { const sel = (arr) => `<select id="f_${k}"><option value=""></option>${arr}</select>`;
-    const el = t==='client' ? sel(opt(S.clients,'id','name')) : t==='mat' ? sel(matOpts()) : t==='loc' ? sel(opt(allLocs,'id','code')) : t==='vendor' ? sel(opt(S.vendors,'id','vendor_name')) : t==='plantall' ? sel(opt(plants.filter(x=>x.kind!=='siding'),'id',x=>`${x.code} · ${x.name}`)) : t==='plant' ? sel(opt(plants.filter(x=>x.kind==='plant'),'id',x=>`${x.code} · ${x.name}`)) : t==='siding' ? sel(opt(plants.filter(x=>x.kind==='siding'),'id',x=>`${x.code} · ${x.name}`)) : t==='sardar' ? sel(opt(S.sardars.map(x=>({id:x.id, n:`${sardarName(x.id)} · ${(plants.find(p=>p.id===x.siding_id)||{}).code||''}`})),'id','n')) : t==='cat' ? sel(opt(S.cats,'id',x=>`${x.code} · ${clientCode(x.client_id)}`)) : t==='state' ? sel(opt(states,'id','name')) : t==='district' ? sel(opt(districts,'id',distLabel)) : t==='dest' ? sel(opt(dests,'id',x=>`${x.name} · ${distLabel(districts.find(d=>d.id===x.district_id))}`)) : t==='soldto' ? sel(opt(soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`)) : t==='sel' ? `<select id="f_${k}">${o.map(x=>`<option>${x}</option>`).join('')}</select>` : `<input id="f_${k}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any">`;
-    return `<div><label>${esc(l)}</label>${el}</div>`; };
+  const plants = S.plants;
+  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((plants.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name);
+    if(k==='plant_id' || k==='parent_id' || k==='siding_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='sardar_id') return esc(sardarName(v)); if(k==='category_id') return esc((S.cats.find(x=>x.id===v)||{}).code); if(k==='dcwc_bearer') return v==='ssl' ? chip('SSL','warn') : chip('customer');
+    if(k==='state_id') return esc((S.states.find(x=>x.id===v)||{}).name); if(k==='district_id') return esc(distLabel(S.districts.find(x=>x.id===v)));
+    if(k==='destination_id'){ const x = S.dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(S.districts.find(d=>d.id===x.district_id))}`) : ''; }
+    if(k==='sold_to_id'){ const x = S.soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; }
+    return esc(v); };
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
-  <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid">${M.form.map(input).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
+  <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid" id="mForm">${M.form.map(f => masterInput(f, 'f_')).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
   <div class="card">${table(M.cols.map(k => ({h:(M.labels||{})[k] || k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(M.edit ? [{h:'', f:r => `<button class="ghost sm" data-edit="${r.id}">Edit</button>`}] : []), rows)}</div>`;
   m.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { const r = rows.find(x=>x.id===b.dataset.edit); const upd = {}; for(const k of M.edit){ const v = prompt(k.replace(/_/g,' '), r[k]||''); if(v===null) return; upd[k] = v.trim(); } act(b, async () => { const {error} = await sb.from(M.t).update(upd).eq('id', r.id); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Saved'); });
   $('mS').onchange = () => { S.mst = $('mS').value; go(); };
-  if(M.t==='wh_materials'){ const upd = () => { const cid = $('f_client_id').value; const cs = S.cats.filter(c => c.client_id===cid && c.is_active);
-      $('f_category_id').innerHTML = cs.length ? opt(cs,'id',c=>`${c.name} (${c.code})`, cs.length===1 ? cs[0].id : '', cs.length===1 ? undefined : '') : '<option value="">Add a category for this customer first</option>';
-      $('f_category_id').parentElement.style.display = cs.length===1 ? 'none' : ''; };
-    $('f_client_id').onchange = upd; upd(); }
-  $('mAdd').onclick = e => act(e.target, async () => {
-    let r = {}; M.form.forEach(([k,,t]) => { const v = $('f_'+k).value; if(v!=='') r[k] = t==='num' ? +v : v; });
-    if(M.extra) r = M.extra(r);
-    const {error} = M.upsert ? await sb.from(M.t).upsert(r, {onConflict:M.upsert}) : await sb.from(M.t).insert(r);
-    if(error) throw new Error(error.message);
-    await loadMasters(); if(M.t==='sys_plants'){ S.me = await rpc('wh_me'); } go();
-  }, 'Saved');
+  setupMasterForm(M, 'f_', $('mForm')); wireAdd($('mForm'));
+  $('mAdd').onclick = e => act(e.target, async () => { await saveMaster(M, 'f_', $('mForm')); go(); }, 'Saved');
 };
 /* ============ MY PROFILE ============ */
 VIEWS.profile = async m => {
