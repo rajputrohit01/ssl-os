@@ -931,7 +931,7 @@ const plantCode = id => (S.plants.find(p => p.id===id)||{}).code || '';
 const localDT = d => { const x = d ? new Date(d) : new Date(); return new Date(x.getTime() - x.getTimezoneOffset()*60000).toISOString().slice(0,16); };
 const isoDT = v => v ? new Date(v).toISOString() : null;
 const bearerTxt = b => b==='ssl' ? 'SSL bears DC/WC' : b==='customer' ? 'Customer bears DC/WC' : 'DC/WC bearer not set';
-const rkBearer = (clientId) => { const t = S.terms.find(x => x.siding_id===S.loc.id && x.client_id===clientId); return t ? t.dcwc_bearer : (S.clients.find(c => c.id===clientId)||{}).dcwc_bearer; };
+const rkBearer = (clientId) => (S.terms.find(x => x.siding_id===S.loc.id && x.client_id===clientId) || {}).dcwc_bearer;
 function clockBar(pct, running, label){
   if(pct==null) return '';
   const c = pct>=90 ? 'var(--alert)' : pct>=75 ? '#D97F06' : pct>=50 ? '#B89400' : 'var(--moss)';
@@ -980,7 +980,7 @@ function rkPlanForm(r, after){
     $('pCat').innerHTML = opt(cats, 'id', c => `${c.name} (${c.code})`, r.category_id || (cats.length===1 ? cats[0].id : ''), cats.length===1 ? undefined : 'Select category');
     $('pCatW').style.display = cats.length===1 ? 'none' : '';
     $('pW').innerHTML = whOpts(cid);
-    const b = cid ? rkBearer(cid) : null; $('pB').innerHTML = cid ? (b ? bearerTxt(b) : '<span style="color:var(--alert)">Set who bears DC/WC for this customer in Master data before planning.</span>') + (cats.length ? '' : ' · <span style="color:var(--alert)">This customer has no material category yet.</span>') : '';
+    const b = cid ? rkBearer(cid) : null; $('pB').innerHTML = cid ? (b ? bearerTxt(b) : '<span style="color:var(--alert)">Set who bears DC/WC for this customer at this siding in Siding setup before planning.</span>') + (cats.length ? '' : ' · <span style="color:var(--alert)">This customer has no material category yet.</span>') : '';
   };
   $('pC').onchange = () => { r.category_id = null; r.warehouse_id = null; upd(); }; upd();
   $('pGo').onclick = e => act(e.target, async () => {
@@ -1415,7 +1415,7 @@ VIEWS.rk_setup = m => VIEWS.masters(m, 'rk');
 
 /* ============ MASTERS ============ */
 const MASTERS = {
-  'Customers': {t:'sys_clients', cols:['code','name','dcwc_bearer','is_active'], edit:['name','dcwc_bearer'], form:[['code','Code (e.g. UTCL)'],['name','Customer name'],['dcwc_bearer','Railway DC/WC borne by','sel',['customer','ssl']]], note:'DC/WC borne by: "ssl" or "customer". A different arrangement at one siding is set in Rake Operations › Siding setup.'},
+  'Customers': {t:'sys_clients', cols:['code','name','is_active'], form:[['code','Code (e.g. UTCL)'],['name','Customer name']]},
   'Material categories': {t:'sys_material_categories', cols:['client_id','code','name','is_active'], form:[['client_id','Customer','client'],['code','Category code (CEMENT, ORE, SAND…)'],['name','Name']], note:'Material is two-level: Category → Type. Add the category first, then its types under Materials.'},
   'Plants & warehouses': {t:'sys_plants', cols:['code','name','kind','client_id','parent_id','station_code','district_id','return_intimation','is_live'], form:[['kind','Type','sel',['plant','warehouse','siding']],['code','Plant code (e.g. 3W61)'],['name','Name'],['client_id','Customer (plant / warehouse)','client'],['parent_id','Inside plant (optional)','plant'],['station_code','Railway station code (siding)'],['district_id','District (required for a siding)','district'],['return_intimation','Return intimation (warehouse)','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => r.kind==='siding' ? {...r, is_live:true, client_id:null, parent_id:null} : r.kind==='plant' ? {...r, is_live:true} : r, note:'A warehouse is a kind of plant and uses the same plant code convention. A rake siding belongs to no customer: give its railway code and district; link warehouses to it in Rake Operations › Siding setup.'},
   'Vendors': {t:'sys_vendors', cols:['vendor_code','vendor_name','busy_name','is_active'], form:[['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
@@ -1434,7 +1434,7 @@ const MASTERS = {
   'Labour Sardars': {grp:'rk', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor']], note:'A siding can have more than one Sardar. Add the Sardar in Master data › Vendors first.'},
   'Sardar activity rates': {grp:'rk', t:'rk_labor_rates', cols:['sardar_id','activity','rate_per_mt','effective_from'], form:[['sardar_id','Sardar','sardar'],['activity','Activity','sel',['wagon_platform','platform_truck','wagon_truck']],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Per siding × Sardar × activity. Effective-dated: a change is a new row.'},
   'Platform shortage recovery rate': {grp:'rk', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
-  'Customer DC/WC at a siding': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['note','Note']], upsert:'siding_id,client_id', note:'Only where it differs from the customer\'s normal arrangement.'},
+  'Customer DC/WC bearer': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['note','Note']], upsert:'siding_id,client_id', note:'Required for every customer served at the siding: who bears railway demurrage and wharfage.'},
   'Customer email settings': {wh:1, t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
 };
 VIEWS.whsetup = m => VIEWS.masters(m, true);
