@@ -1588,9 +1588,17 @@ VIEWS.masters = async (m, whOnly = false) => {
     return esc(v); };
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid" id="mForm">${M.form.map(f => masterInput(f, 'f_')).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
-  <div class="card">${table(M.cols.map(k => ({h:(M.labels||{})[k] || k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(EDIT_CFG[S.mst] && masterPerm(M) ? [{h:'', f:r => EDIT_CFG[S.mst].remove ? `<button class="ghost sm" data-rm="${rows.indexOf(r)}">Remove</button>` : `<button class="ghost sm" data-edit="${rows.indexOf(r)}">Edit</button>`}] : []), rows)}</div>
+  <div class="card">${table(M.cols.map(k => ({h:(M.labels||{})[k] || k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(EDIT_CFG[S.mst] && masterPerm(M) ? [{h:'', f:r => EDIT_CFG[S.mst].remove ? `<button class="ghost sm" data-rm="${rows.indexOf(r)}">Remove</button>` : `<button class="ghost sm" data-edit="${rows.indexOf(r)}">Edit</button>` + (S.me.admin && r.id ? ` <button class="danger sm" data-del="${rows.indexOf(r)}">Delete</button>` : '')}] : []), rows)}</div>
   ${!EDIT_CFG[S.mst] && /rate|conversion/i.test(S.mst) ? '<p class="muted">Rates are effective-dated: to change one, add a new row with a new effective date.</p>' : ''}`;
   m.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editMaster(S.mst, rows[+b.dataset.edit], () => go()));
+  m.querySelectorAll('[data-del]').forEach(b => b.onclick = () => {
+    const r = rows[+b.dataset.del]; const label = r.code || r.name || r.vendor_name || r.registration_no || r.sap_product_code || 'this record';
+    if(!confirm(`Delete ${label} permanently? This cannot be undone. If it is used anywhere, set it Inactive instead.`)) return;
+    act(b, async () => { const {data, error} = await sb.from(M.t).delete().eq('id', r.id).select();
+      if(error) throw new Error(/foreign key/i.test(error.message) ? `${label} is used in other records and cannot be deleted. Edit it and set it Inactive instead.` : error.message);
+      if(!data || !data.length) throw new Error('Only the Administrator can delete');
+      await loadMasters(); if(M.t==='sys_plants'){ S.me = await rpc('wh_me'); S.locs = S.me.locations; } go(); }, 'Deleted');
+  });
   m.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { if(!confirm('Remove this link?')) return; const r = rows[+b.dataset.rm]; act(b, async () => { let qb = sb.from(M.t).delete(); EDIT_CFG[S.mst].key.forEach(k => qb = qb.eq(k, r[k])); const {error} = await qb; if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Removed'); });
   $('mS').onchange = () => { S.mst = $('mS').value; go(); };
   setupMasterForm(M, 'f_', $('mForm')); wireAdd($('mForm'));
