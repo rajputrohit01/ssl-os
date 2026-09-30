@@ -1435,7 +1435,7 @@ const MASTERS = {
   'Own trucks': {t:'sys_trucks', cols:['registration_no','is_active'], form:[['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
   'Materials': {t:'wh_materials', cols:['client_id','category_id','code','name','is_active'], form:[['client_id','Customer','client'],['category_id','Category','cat'],['code','Type (PSC, OPC, CHD…)'],['name','Name']], note:'Material type under a customer\'s category. If the customer has one category it is picked automatically. The same type name can exist for two customers.'},
   'SAP product mapping': {wh:1, t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
-  'Sold-To parties': {labels:{sap_code:'SAP Sold-To code'}, t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], edit:['contact_phone','name'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
+  'Sold-To parties': {labels:{sap_code:'SAP Sold-To code'}, t:'sys_sold_to', cols:['client_id','sap_code','name','contact_phone','is_active'], form:[['client_id','Customer','client'],['sap_code','SAP Sold-To code'],['name','Party name (buyer)'],['contact_phone','Contact number']], note:'The buyer. Contact number is mandatory. One Sold-To can have many Ship-To parties.'},
   'Ship-To parties': {t:'sys_ship_to', cols:['client_id','sold_to_id','sap_code','name','destination_id'], form:[['client_id','Customer','client'],['sold_to_id','Sold-To (buyer)','soldto'],['name','Ship-To name'],['destination_id','Destination','dest']], labels:{sap_code:'Ship-To code (auto)'}, note:'The Ship-To code is given by the system (Sold-To code + number). Where the material goes. Belongs to one Sold-To and carries its destination.'},
   'Destinations': {t:'sys_destinations', cols:['name','district_id','pincode'], form:[['district_id','District (state)','district'],['name','Destination'],['pincode','PIN code']], note:'Every destination carries its district and state. Add the district first if it is not in the list.'},
   'Districts': {t:'sys_districts', cols:['state_id','name'], form:[['state_id','State','state'],['name','District']]},
@@ -1484,6 +1484,7 @@ const addOpt = t => ADD_FOR[t] && masterPerm(MASTERS[ADD_FOR[t]]) ? `<option val
 function masterInput([k,l,t,o], pre){
   const id = pre + k;
   if(t==='sel') return `<div><label>${esc(l)}</label><select id="${id}">${o.map(x=>`<option>${x}</option>`).join('')}</select></div>`;
+  if(t==='active') return `<div><label>${esc(l)}</label><select id="${id}"><option value="true">Active</option><option value="false">Inactive (hidden from new entries)</option></select></div>`;
   const to = typeOpts(t);
   if(to !== undefined) return `<div><label>${esc(l)}</label><select id="${id}" data-mt="${t}"><option value=""></option>${to}${addOpt(t)}</select></div>`;
   return `<div><label>${esc(l)}</label><input id="${id}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any"></div>`;
@@ -1539,6 +1540,37 @@ function quickAdd(t, done, preset){
   ov.querySelector('[data-qs]').onclick = e => act(e.target, async () => { const row = await saveMaster(M, pre, ov); ov.remove(); done && done(row); }, 'Added');
 }
 
+// what can be changed on an existing master row (codes and owners stay fixed: documents already carry them);
+// effective-dated rates are never edited — a change is a new row with a new date
+const EDIT_CFG = {'Customers':{lock:['code']}, 'Material categories':{lock:['client_id']}, 'Plants':{lock:['client_id','code']}, 'Warehouses':{lock:['client_id','code']},
+  'Sidings':{lock:['code']}, 'Vendors':{lock:['vendor_code']}, 'Own trucks':{}, 'Materials':{lock:['client_id']}, 'SAP product mapping':{lock:['client_id']},
+  'Sold-To parties':{lock:['client_id','sap_code']}, 'Ship-To parties':{lock:['client_id']}, 'Destinations':{}, 'Districts':{},
+  'Labor contractors':{lock:['location_id','vendor_id']}, 'Labour Sardars':{lock:['siding_id','vendor_id']},
+  'Customer DC/WC bearer':{key:['siding_id','client_id'], lock:['siding_id','client_id']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}};
+function editMaster(key, row, after){
+  const M = MASTERS[key], C = EDIT_CFG[key], lock = C.lock || []; S.qaN = (S.qaN||0) + 1; const pre = 'ed' + S.qaN + '_';
+  const fields = M.form.concat(M.cols.includes('is_active') ? [['is_active','Status','active']] : []);
+  const ov = document.createElement('div'); ov.className = 'modal'; ov.style.zIndex = 70 + S.qaN;
+  ov.innerHTML = `<div class="box"><h2>Edit ${esc(key.replace(/s$/,'').replace(/ie$/,'y').toLowerCase())}</h2><div class="grid">${fields.map(f => masterInput(f, pre)).join('')}</div>
+    ${lock.length ? `<p class="muted">${esc(lock.map(k => (fields.find(f=>f[0]===k)||[k,k])[1]).join(', '))} cannot be changed once documents use them.</p>` : ''}
+    <div class="row" style="margin-top:12px"><button class="primary" data-es>Save</button><button class="ghost" data-ec>Cancel</button></div></div>`;
+  document.body.appendChild(ov);
+  const el = k => ov.querySelector('#' + pre + k);
+  setupMasterForm(M, pre, ov);
+  fields.forEach(([k]) => { const e = el(k); if(!e) return; e.value = row[k]==null ? '' : String(row[k]); e.dataset.prev = e.value; if(lock.includes(k)) e.disabled = true; });
+  if(M.t==='wh_materials' && el('category_id')){ el('category_id').parentElement.style.display = ''; el('category_id').value = row.category_id; }
+  wireAdd(ov);
+  ov.querySelector('[data-ec]').onclick = () => ov.remove();
+  ov.querySelector('[data-es]').onclick = e => act(e.target, async () => {
+    let r = {}; fields.forEach(([k,,t]) => { const v = el(k).value; if(v===ADD_NEW) return; r[k] = v==='' ? null : t==='num' ? +v : t==='active' ? v==='true' : v; });
+    if(M.extra) r = M.extra(r);
+    lock.concat(C.key||[]).forEach(k => delete r[k]); delete r.kind;
+    let qb = sb.from(M.t).update(r); (C.key || ['id']).forEach(k => qb = qb.eq(k, row[k]));
+    const {error} = await qb; if(error) throw new Error(error.message);
+    await loadMasters(); if(M.t==='sys_plants'){ S.me = await rpc('wh_me'); S.locs = S.me.locations; }
+    ov.remove(); after && after();
+  }, 'Saved');
+}
 VIEWS.masters = async (m, whOnly = false) => {
   const grp = typeof whOnly==='string' ? whOnly : whOnly ? 'wh' : 'md';
   const keys = Object.keys(MASTERS).filter(k => (MASTERS[k].grp || (MASTERS[k].wh ? 'wh' : 'md')) === grp);
@@ -1553,8 +1585,10 @@ VIEWS.masters = async (m, whOnly = false) => {
     return esc(v); };
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid" id="mForm">${M.form.map(f => masterInput(f, 'f_')).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
-  <div class="card">${table(M.cols.map(k => ({h:(M.labels||{})[k] || k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(M.edit ? [{h:'', f:r => `<button class="ghost sm" data-edit="${r.id}">Edit</button>`}] : []), rows)}</div>`;
-  m.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => { const r = rows.find(x=>x.id===b.dataset.edit); const upd = {}; for(const k of M.edit){ const v = prompt(k.replace(/_/g,' '), r[k]||''); if(v===null) return; upd[k] = v.trim(); } act(b, async () => { const {error} = await sb.from(M.t).update(upd).eq('id', r.id); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Saved'); });
+  <div class="card">${table(M.cols.map(k => ({h:(M.labels||{})[k] || k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(EDIT_CFG[S.mst] && masterPerm(M) ? [{h:'', f:r => EDIT_CFG[S.mst].remove ? `<button class="ghost sm" data-rm="${rows.indexOf(r)}">Remove</button>` : `<button class="ghost sm" data-edit="${rows.indexOf(r)}">Edit</button>`}] : []), rows)}</div>
+  ${!EDIT_CFG[S.mst] && /rate|conversion/i.test(S.mst) ? '<p class="muted">Rates are effective-dated: to change one, add a new row with a new effective date.</p>' : ''}`;
+  m.querySelectorAll('[data-edit]').forEach(b => b.onclick = () => editMaster(S.mst, rows[+b.dataset.edit], () => go()));
+  m.querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { if(!confirm('Remove this link?')) return; const r = rows[+b.dataset.rm]; act(b, async () => { let qb = sb.from(M.t).delete(); EDIT_CFG[S.mst].key.forEach(k => qb = qb.eq(k, r[k])); const {error} = await qb; if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Removed'); });
   $('mS').onchange = () => { S.mst = $('mS').value; go(); };
   setupMasterForm(M, 'f_', $('mForm')); wireAdd($('mForm'));
   $('mAdd').onclick = e => act(e.target, async () => { await saveMaster(M, 'f_', $('mForm')); go(); }, 'Saved');
