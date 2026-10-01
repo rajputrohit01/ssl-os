@@ -44,6 +44,7 @@
   input:focus,select:focus,textarea:focus{outline:none;border-color:var(--moss);background:#fff}
   input[type=checkbox]{width:20px;height:20px}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+  table.rgrid td input{width:100%}
   .field{margin-bottom:12px}
   button{height:var(--tap);border:0;border-radius:10px;font-size:15px;font-weight:800;cursor:pointer;padding:0 16px;font-family:inherit}
   .primary{background:var(--deep);color:#fff} .primary:disabled{background:#A9B4AE}
@@ -1969,11 +1970,63 @@ function editMaster(key, row, after){
     ov.remove(); after && after();
   }, 'Saved');
 }
+/* ---------- rate grids: many rates in one go, one effective date for all ---------- */
+const BULK = {
+  'Labor rates': {scopeKey:'location_id', scopeLabel:'Location', scopes:() => S.plants.filter(p => ['warehouse','siding'].includes(p.kind) && p.is_active !== false),
+    rowKey:'material_id', rowHead:'Material type', rows:loc => S.materials.filter(x => x.is_active && (!loc.client_id || x.client_id===loc.client_id)).map(x => ({id:x.id, label:x.code + (loc.client_id ? '' : ' · ' + clientCode(x.client_id))})),
+    colKey:'activity', cols:[['unloading','Unloading'],['loading','Loading'],['paltai','Paltai']], addRow:['mat','+ Add material type', loc => ({client_id:loc.client_id||''})]},
+  'Sardar activity rates': {scopeKey:'siding_id', scopeLabel:'Siding', scopes:() => S.plants.filter(p => p.kind==='siding' && p.is_active !== false),
+    rowKey:'sardar_id', rowHead:'Labour Sardar', rows:sd => S.sardars.filter(x => x.siding_id===sd.id && x.is_active).map(x => ({id:x.id, label:sardarName(x.id)})),
+    colKey:'activity', cols:[['wagon_platform','Wagon → platform'],['platform_truck','Platform → truck'],['wagon_truck','Wagon → truck']], addRow:['sardar','+ Add Sardar', sd => ({siding_id:sd.id})], rowScope:'siding'},
+};
+async function bulkRates(m, key, rows){
+  const B = BULK[key], M = MASTERS[key]; const scopes = B.scopes();
+  S.bulkScope = S.bulkScope || {}; let sc = scopes.find(x => x.id===S.bulkScope[key]) || (S.loc && scopes.find(x => x.id===S.loc.id)) || scopes[0];
+  const sameScope = r => B.rowScope==='siding' ? (S.sardars.find(x => x.id===r.sardar_id)||{}).siding_id===sc.id : r[B.scopeKey]===sc.id;
+  const mine = sc ? rows.filter(sameScope) : [];
+  const td = today(); const rr = sc ? B.rows(sc) : [];
+  const cur = (rid, col) => mine.filter(x => x[B.rowKey]===rid && x[B.colKey]===col && x.effective_from <= td).sort((a,b) => b.effective_from.localeCompare(a.effective_from))[0];
+  const next = (rid, col) => mine.filter(x => x[B.rowKey]===rid && x[B.colKey]===col && x.effective_from > td).sort((a,b) => a.effective_from.localeCompare(b.effective_from))[0];
+  const cell = (rid, col) => { const c = cur(rid, col), n = next(rid, col);
+    return `<div style="text-align:right">` + (c ? `<b>${inr(c.rate_per_mt)}</b><div class="muted" style="font-size:12px">since ${d8(c.effective_from)}</div>` : '<span class="muted">—</span>') + (n ? `<div style="font-size:12px;margin-top:2px">${chip('from ' + d8(n.effective_from) + ': ' + inr(n.rate_per_mt), 'info')}</div>` : '') + '</div>'; };
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(key)}</h1><select id="mS" style="width:auto">${Object.keys(MASTERS).filter(k => (MASTERS[k].grp || (MASTERS[k].wh ? 'wh' : 'md')) === (M.grp || (M.wh ? 'wh' : 'md'))).map(k=>`<option ${k===key?'selected':''}>${k}</option>`).join('')}</select></div>
+  ${M.note ? `<p class="muted">${esc(M.note)}</p>` : ''}
+  <div class="card"><div class="row" style="align-items:flex-end">
+      <div style="flex:1 1 240px"><label>${esc(B.scopeLabel)}</label><select id="brS">${opt(scopes, 'id', x => `${x.code} · ${x.name}`, sc && sc.id)}</select></div>
+      <div style="flex:0 1 200px"><label>Effective from (all lines)</label><input type="date" id="brD" value="${td}"></div>
+      <button class="ghost sm" id="brAddRow">${esc(B.addRow[1])}</button></div>
+    ${!sc ? '<div class="empty">Add a location first.</div>' : !rr.length ? `<div class="empty">Nothing to rate here yet. Use "${esc(B.addRow[1])}".</div>` : `
+    <div class="tbl" style="margin-top:10px"><table class="rgrid"><thead><tr><th>${esc(B.rowHead)}</th>${B.cols.map(([,l]) => `<th class="n">${esc(l)} ₹/MT</th>`).join('')}</tr></thead><tbody>
+      ${rr.map(r => `<tr><td data-label="${esc(B.rowHead)}"><b>${esc(r.label)}</b></td>${B.cols.map(([c,l]) => { const k = cur(r.id, c);
+        return `<td class="n" data-label="${esc(l)}"><input type="number" step="0.01" min="0" inputmode="decimal" data-br="${r.id}|${c}" placeholder="${k ? 'now ' + (+k.rate_per_mt).toFixed(2) : 'rate'}" style="max-width:130px;height:40px;text-align:right"></td>`; }).join('')}</tr>`).join('')}
+    </tbody></table></div>
+    <div class="row" style="margin-top:10px"><button class="primary" id="brGo">Save rates</button><span class="muted" id="brN">Fill only the rates that are new or changing. Blank = no change.</span></div>`}</div>
+  ${sc && rr.length ? `<div class="card"><h2>Rates at ${esc(sc.code)} today</h2><div class="tbl"><table class="rgrid"><thead><tr><th>${esc(B.rowHead)}</th>${B.cols.map(([,l]) => `<th class="n">${esc(l)}</th>`).join('')}</tr></thead><tbody>
+    ${rr.map(r => `<tr><td data-label="${esc(B.rowHead)}">${esc(r.label)}</td>${B.cols.map(([c,l]) => `<td class="n" data-label="${esc(l)}">${cell(r.id, c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <details style="margin-top:10px"><summary>Rate history at ${esc(sc.code)} (${mine.length})</summary>${table([{h:B.rowHead, f:x => esc((rr.find(r => r.id===x[B.rowKey])||{label:'—'}).label)},{h:'Activity', f:x => esc((B.cols.find(c => c[0]===x[B.colKey])||[,x[B.colKey]])[1])},{h:'Rate ₹/MT', n:1, f:x => inr(x.rate_per_mt)},{h:'From', f:x => d8(x.effective_from)}],
+      mine.slice().sort((a,b) => b.effective_from.localeCompare(a.effective_from)), 'No rates yet.')}</details></div>` : ''}`;
+  $('mS').onchange = () => { S.mst = $('mS').value; go(); };
+  $('brS').onchange = () => { S.bulkScope[key] = $('brS').value; go(); };
+  $('brAddRow').onclick = () => quickAdd(B.addRow[0], () => go(), B.addRow[2](sc || {}));
+  const count = () => { const n = [...m.querySelectorAll('[data-br]')].filter(i => i.value !== '').length; if($('brN')) $('brN').textContent = n ? `${n} rate(s) will be saved from ${d8($('brD').value)}.` : 'Fill only the rates that are new or changing. Blank = no change.'; };
+  m.querySelectorAll('[data-br]').forEach(i => i.oninput = count); if($('brD')) $('brD').onchange = count;
+  if($('brGo')) $('brGo').onclick = e => act(e.target, async () => {
+    const d = $('brD').value; if(!d) throw new Error('Choose the effective date');
+    const ins = [...m.querySelectorAll('[data-br]')].filter(i => i.value !== '').map(i => { const [rid, c] = i.dataset.br.split('|'); if(+i.value < 0) throw new Error('Rates cannot be negative');
+      return {...(B.rowScope==='siding' ? {} : {[B.scopeKey]: sc.id}), [B.rowKey]: rid, [B.colKey]: c, rate_per_mt: +i.value, effective_from: d}; });
+    if(!ins.length) throw new Error('Enter at least one rate');
+    const clash = ins.filter(x => mine.some(y => y[B.rowKey]===x[B.rowKey] && y[B.colKey]===x[B.colKey] && y.effective_from===d));
+    if(clash.length) throw new Error(`${clash.length} rate(s) already start on ${d8(d)}. Rates are effective-dated: choose another date.`);
+    const {error} = await sb.from(M.t).insert(ins); if(error) throw new Error(error.message);
+    go(); return ins.length;
+  }, n => `${n} rate(s) saved from ${d8($('brD') ? $('brD').value : '')}`);
+}
 VIEWS.masters = async (m, whOnly = false) => {
   const grp = typeof whOnly==='string' ? whOnly : whOnly ? 'wh' : 'md';
   const keys = Object.keys(MASTERS).filter(k => (MASTERS[k].grp || (MASTERS[k].wh ? 'wh' : 'md')) === grp);
   if(!keys.includes(S.mst)) S.mst = keys[0]; const M = MASTERS[S.mst];
-  const rows = await q(M.t, b => { Object.entries(M.where||{}).forEach(([k,v]) => b = b.eq(k, v)); return b.limit(500); });
+  const rows = await q(M.t, b => { Object.entries(M.where||{}).forEach(([k,v]) => b = b.eq(k, v)); return b.limit(BULK[S.mst] ? 5000 : 500); });
+  if(BULK[S.mst]) return bulkRates(m, S.mst, rows);
   const plants = S.plants;
   const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(k==='is_live') return v ? chip('Live','ok') : chip('Opening stock pending','warn'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((plants.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name);
     if(k==='plant_id' || k==='parent_id' || k==='siding_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='sardar_id') return esc(sardarName(v)); if(k==='category_id') return esc((S.cats.find(x=>x.id===v)||{}).code); if(k==='dcwc_bearer') return v==='ssl' ? chip('SSL','warn') : chip('customer');
