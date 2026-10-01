@@ -1332,7 +1332,7 @@ async function rkDetail(m, id){
   if(r.status==='wagons_updated' && can('rk_arrival')){
     h += `<div class="card"><h2>Mark arrival</h2><p class="muted">Untick wagons that were not placed. Free time and rates are what the railway gave for this rake.</p>
       <div class="grid"><div><label>Arrived at siding</label><input type="datetime-local" id="aA" value="${localDT()}"></div><div><label>Placed</label><input type="datetime-local" id="aP" value="${localDT()}"></div>
-      <div><label>DC free time (hours)</label><input type="number" step="0.5" id="aDF"></div><div><label>WC free time (hours)</label><input type="number" step="0.5" id="aWF"></div>
+      <div><label>DC free time ends (date &amp; time)</label><input type="datetime-local" id="aDF"></div><div><label>WC free time ends (date &amp; time)</label><input type="datetime-local" id="aWF"></div>
       <div><label>Penal DC in force?</label><select id="aPen"><option value="">Choose…</option><option value="false">No</option><option value="true">Yes</option></select></div>
       <div><label>DC rate (₹ per wagon per hour)</label><input type="number" step="0.01" id="aDR"></div><div><label>WC rate (₹ per MT per hour)</label><input type="number" step="0.01" id="aWR"></div>
       <div><label>Rate note</label><input id="aRN" placeholder="e.g. penal DC notice no."></div></div>
@@ -1376,7 +1376,7 @@ async function rkDetail(m, id){
       <div class="grid">${T.map(([k,l]) => `<div><label>${esc(l)}</label>${r[k] ? dt(r[k]) : '<span class="muted">—</span>'}</div>`).join('')}</div></div>`;
     h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Demurrage (DC) and wharfage (WC)</h2>${r.status!=='closed' && can('rk_arrival') ? '<button class="ghost sm" id="rkTerms">Change free time / rates</button>' : ''}</div>
       <p class="muted">${bearerTxt(r.dcwc_bearer)}. Measured on every rake whoever pays.${r.penal_dc ? ' ' + chip('Penal DC in force','bad') : ''}${r.rate_note ? ' · ' + esc(r.rate_note) : ''}</p>
-      ${clockBar(c.dc_used_pct, c.dc_running, `DC: ${c.dc_hours ?? '—'} h used of ${r.dc_free_hours ?? '—'} h free`)}${clockBar(c.wc_used_pct, c.wc_running, `WC: ${c.wc_hours ?? '—'} h used of ${r.wc_free_hours ?? '—'} h free`)}
+      ${clockBar(c.dc_used_pct, c.dc_running, `DC: ${c.dc_hours ?? '—'} h used · free till ${r.dc_free_until ? dt(r.dc_free_until) : (r.dc_free_hours != null ? r.dc_free_hours + ' h' : '—')}`)}${clockBar(c.wc_used_pct, c.wc_running, `WC: ${c.wc_hours ?? '—'} h used · free till ${r.wc_free_until ? dt(r.wc_free_until) : (r.wc_free_hours != null ? r.wc_free_hours + ' h after unloading' : 'not entered')}`)}
       <div class="grid" style="margin-top:12px"><div><label>DC calculated</label>${inr(c.dc_calc)} <span class="muted">(${c.dc_excess_hours||0} h × ${c.placed_wagons} wagons × ${inr(r.dc_rate)})</span></div>
        <div><label>WC calculated</label>${inr(c.wc_calc)} <span class="muted">(${c.wc_excess_hours||0} h × ${n3(c.platform_mt)} MT × ${inr(r.wc_rate)})</span></div>
        <div><label>Assessed (railway)</label>${r.charges_at ? `DC ${inr(r.dc_assessed)} · WC ${inr(r.wc_assessed)}` : '—'}</div>
@@ -1481,7 +1481,7 @@ async function rkDetail(m, id){
   if($('aGo')) $('aGo').onclick = e => act(e.target, async () => {
     const arr = wagons.filter(w => m.querySelector(`[data-pl="${w.id}"]`).checked).map(w => ({wagon_id:w.id, position:+m.querySelector(`[data-pos="${w.id}"]`).value}));
     const num = i => $(i).value==='' ? null : +$(i).value;
-    const res = await rpc('rk_rake_arrive', {p:{rake_id:id, arrived_at:isoDT($('aA').value), placed_at:isoDT($('aP').value), dc_free_hours:num('aDF'), wc_free_hours:num('aWF'),
+    const res = await rpc('rk_rake_arrive', {p:{rake_id:id, arrived_at:isoDT($('aA').value), placed_at:isoDT($('aP').value), dc_free_until:isoDT($('aDF').value), wc_free_until:isoDT($('aWF').value),
       penal_dc:$('aPen').value==='' ? null : $('aPen').value==='true', dc_rate:num('aDR'), wc_rate:num('aWR'), rate_note:$('aRN').value, wagons:arr}});
     back(); return res;
   }, x => x==='arrived_partial' ? 'Arrival marked — missing-wagons email drafted' : 'Arrival marked');
@@ -1552,12 +1552,12 @@ async function rkDetail(m, id){
       if(!Object.keys(p).length) throw new Error('Nothing changed'); await rpc('rk_rake_set_times', {p_rake:id, p, p_reason:$('tR').value}); closeModal(); back(); }, 'Times corrected');
   };
   if($('rkTerms')) $('rkTerms').onclick = () => {
-    modal(`<h2>Free time and rates · ${esc(r.rake_no)}</h2><div class="grid"><div><label>DC free time (h)</label><input id="kDF" type="number" step="0.5" value="${r.dc_free_hours??''}"></div><div><label>WC free time (h)</label><input id="kWF" type="number" step="0.5" value="${r.wc_free_hours??''}"></div>
+    modal(`<h2>Free time and rates · ${esc(r.rake_no)}</h2><div class="grid"><div><label>DC free time ends</label><input id="kDF" type="datetime-local" value="${r.dc_free_until ? localDT(r.dc_free_until) : ''}"></div><div><label>WC free time ends</label><input id="kWF" type="datetime-local" value="${r.wc_free_until ? localDT(r.wc_free_until) : ''}"></div>
       <div><label>Penal DC</label><select id="kP"><option value="false" ${!r.penal_dc?'selected':''}>No</option><option value="true" ${r.penal_dc?'selected':''}>Yes</option></select></div>
       <div><label>DC rate (₹/wagon/h)</label><input id="kDR" type="number" step="0.01" value="${r.dc_rate??''}"></div><div><label>WC rate (₹/MT/h)</label><input id="kWR" type="number" step="0.01" value="${r.wc_rate??''}"></div>
       <div><label>Rate note</label><input id="kN" value="${esc(r.rate_note||'')}"></div><div style="grid-column:1/-1"><label>Reason for change</label><input id="kR"></div></div>
       <div class="row" style="margin-top:10px"><button class="primary" id="kGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('kGo').onclick = e => act(e.target, async () => { await rpc('rk_rake_terms', {p_rake:id, p:{dc_free_hours:+$('kDF').value, wc_free_hours:+$('kWF').value, penal_dc:$('kP').value==='true', dc_rate:+$('kDR').value, wc_rate:+$('kWR').value, rate_note:$('kN').value, reason:$('kR').value}}); closeModal(); back(); }, 'Updated');
+    $('kGo').onclick = e => act(e.target, async () => { await rpc('rk_rake_terms', {p_rake:id, p:{dc_free_until:isoDT($('kDF').value), wc_free_until:isoDT($('kWF').value), penal_dc:$('kP').value==='true', dc_rate:+$('kDR').value, wc_rate:+$('kWR').value, rate_note:$('kN').value, reason:$('kR').value}}); closeModal(); back(); }, 'Updated');
   };
   if($('rkChg')) $('rkChg').onclick = () => {
     const v = k => r[k] ?? '';
@@ -1575,7 +1575,7 @@ async function rkDetail(m, id){
   if($('rkWvPrint')) $('rkWvPrint').onclick = () => printWin(`<div class="pg"><p>To<br>The Divisional Commercial Manager<br>__________________ Division</p><p>Date: ${new Date().toLocaleDateString('en-IN')}</p>
     <p><b>Sub: Request for waiver of demurrage / wharfage — RR ${esc(r.rr_no||'')}, FNR ${esc(r.fnr||'')}, siding ${esc(r.siding_code)}</b></p>
     <table><tr><th>Placed</th><td>${esc(dt(r.placed_at))}</td><th>Unloading complete</th><td>${esc(dt(r.unload_complete_at))}</td></tr><tr><th>Released</th><td>${esc(dt(r.release_rly_at))}</td><th>Platform clear</th><td>${esc(dt(r.clear_rly_at))}</td></tr>
-    <tr><th>Wagons</th><td>${c.placed_wagons}</td><th>Free time</th><td>DC ${r.dc_free_hours ?? '—'} h · WC ${r.wc_free_hours ?? '—'} h</td></tr><tr><th>DC assessed</th><td>${inr(r.dc_assessed)}</td><th>WC assessed</th><td>${inr(r.wc_assessed)}</td></tr></table>
+    <tr><th>Wagons</th><td>${c.placed_wagons}</td><th>Free time ends</th><td>DC ${r.dc_free_until ? dt(r.dc_free_until) : (r.dc_free_hours ?? '—') + ' h'} · WC ${r.wc_free_until ? dt(r.wc_free_until) : (r.wc_free_hours ?? '—') + ' h'}</td></tr><tr><th>DC assessed</th><td>${inr(r.dc_assessed)}</td><th>WC assessed</th><td>${inr(r.wc_assessed)}</td></tr></table>
     <p>Grounds: ${esc(r.waiver_note || '________________________________________________')}</p><p>We request you to kindly waive the above charges.</p><p style="margin-top:50px">For S S Logistics<br><br>Authorised signatory</p></div>`);
   if($('rkDiff')) $('rkDiff').onclick = () => {
     const left = lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005);
