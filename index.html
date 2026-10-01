@@ -1287,6 +1287,20 @@ function rkPlanForm(r, after){
   }, isNew ? 'Rake planned' : 'Intimation updated');
 }
 
+/* ---------- corrections (permission rk_correct): reason, preview of what changes, then save ---------- */
+function corrModal(title, body, kind, id, payload, after){
+  modal(`<h2>Correct · ${esc(title)}</h2>${body}
+    <div class="field" style="margin-top:10px"><label>Reason for the correction (kept in the rake history)</label><input id="crR"></div>
+    <div id="crPrev"></div>
+    <div class="row" style="margin-top:10px"><button class="ghost" id="crPv">Preview changes</button><button class="primary" id="crGo">Save correction</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  const run = async preview => rpc('rk_correct', {p_kind:kind, p_id:id, p:payload(), p_reason:$('crR').value, p_preview:preview});
+  const show = res => { const ch = res.changes || [];
+    $('crPrev').innerHTML = `<div class="${ch.length ? 'warnbox' : 'okbox'}" style="margin-top:10px"><b>${ch.length ? (res.preview ? 'This will change:' : 'Changed:') : 'Nothing changes.'}</b>
+      ${ch.length ? table([{h:'What',k:'item'},{h:'Before',f:x=>esc(x.before ?? '—')},{h:'After',f:x=>esc(x.after ?? '—')}], ch) : ''}</div>`; };
+  $('crPv').onclick = e => act(e.target, async () => show(await run(true)));
+  $('crGo').onclick = e => act(e.target, async () => { const res = await run(false); closeModal(); after && after(); return res; }, res => `Corrected · ${(res.changes||[]).length} item(s) updated`);
+}
+const corrList = ev => ev.event==='corrected' && ev.detail && ev.detail.changes ? `<details><summary>${(ev.detail.changes||[]).length} change(s)</summary>${(ev.detail.changes||[]).map(x => `<div class="muted">${esc(x.item)}: ${esc(x.before ?? '—')} → ${esc(x.after ?? '—')}</div>`).join('')}</details>` : '';
 async function rkDetail(m, id){
   const [r] = await q('rk_rake_list', b => b.eq('id', id));
   if(!r){ m.innerHTML = '<div class="issues">Rake not found or not at your siding.</div>'; return; }
@@ -1341,7 +1355,8 @@ async function rkDetail(m, id){
   }
   // wagons
   if(si >= rkIdx('arrived')){
-    h += `<div class="card"><h2>Wagons</h2>${table([
+    const canC = can('rk_correct') && r.status!=='closed';
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Wagons</h2>${canC ? '<button class="ghost sm" id="rkCorrArr">Correct arrival (placed / positions)</button>' : ''}</div>${table([
       {h:'Pos',k:'position'},{h:'Wagon',f:w=>`<b>${esc(w.wagon_no)}</b>${w.late?' '+chip('late','warn'):''}<br><span class="muted">${esc(w.wagon_type||'')}</span>`},
       {h:'Sheet',f:w=>`${esc(mat(w.material_id))} · ${w.sheet_bags} bags · ${n3(w.sheet_mt)} MT`},
       {h:'Found',f:w=>w.found_material_id ? (w.found_material_id!==w.material_id ? chip(mat(w.found_material_id)+' ≠ sheet','bad') : esc(mat(w.found_material_id))) : ''},
@@ -1349,7 +1364,7 @@ async function rkDetail(m, id){
       {h:'Received MT',n:1,f:w=>w.status==='empty' ? `${n3(w.actual_mt)} ${+w.diff_mt>0?chip('short '+n3(w.diff_mt),'bad'):+w.diff_mt<0?chip('excess '+n3(-w.diff_mt),'warn'):chip('tallies','ok')}` : w.status==='unloading' ? `<span class="muted">${n3(truckMt(w.id)+unlMt(w.id))} so far</span>` : ''},
       {h:'Damage',f:w=>w.damage_note?chip(w.damage_note,'warn'):''},
       {h:'Photos',f:w=>`<a href="#" data-ev="${w.id}">${phB[w.id]||0} before · ${phA[w.id]||0} after${phD[w.id]?' · '+phD[w.id]+' damage':''}</a>`},
-      {h:'',f:w=>{
+      {h:'',f:w=>(canC && ['unloading','empty'].includes(w.status) ? `<button class="ghost sm" data-cw="${w.id}">Correct</button> ` : '') + (()=>{
         if(r.status==='closed') return '';
         if(w.status==='missing') return can('rk_arrival') && ['arrived','unloading','unloaded'].includes(r.status) ? `<button class="ghost sm" data-late="${w.id}">Arrived late</button>` : '';
         if(w.status==='arrived') return can('rk_unload') ? `<button class="lime sm" data-ph="rk_wagon_before" data-w="${w.id}">📷 Before</button> <button class="primary sm" data-start="${w.id}" ${phB[w.id]?'':'disabled title="Take the before-unloading photo first"'}>Start unloading</button>` : '';
@@ -1359,10 +1374,10 @@ async function rkDetail(m, id){
           if(can('rk_wagon_close')) x += `<button class="lime sm" data-ph="rk_wagon_after" data-w="${w.id}">📷 After</button> <button class="ghost sm" data-empty="${w.id}" ${phA[w.id]?'':'disabled title="Take the empty-wagon photo first"'}>Mark empty</button>`;
           return x; }
         return '';
-      }}], wagons)}</div>`;
+      })()}], wagons)}</div>`;
     h += `<div class="card"><h2>Unloading slips</h2>${table([{h:'Slip',k:'slip_no'},{h:'Wagon',f:u=>esc((W(u.wagon_id)||{}).wagon_no)},{h:'Sardar',f:u=>esc(sardarName(u.sardar_id))},{h:'Company MT',n:1,f:u=>n3(u.company_mt)},
       {h:'Good MT',n:1,f:u=>u.status==='returned'?n3(u.good_mt):''},{h:'Damaged MT',n:1,f:u=>u.status==='returned'&&+u.damaged_mt?n3(u.damaged_mt):''},{h:'Status',f:u=>chip(u.status, u.status==='returned'?'ok':u.status==='open'?'info':'')},
-      {h:'',f:u=>u.status==='open'?`<button class="ghost sm" data-uprint="${u.id}">Print</button> ${can('rk_unload')?`<button class="ghost sm" data-ucx="${u.id}">Cancel</button>`:''}`:''}], uslips, 'No unloading slips yet.')}</div>`;
+      {h:'',f:u=>(u.status==='open'?`<button class="ghost sm" data-uprint="${u.id}">Print</button> ${can('rk_unload')?`<button class="ghost sm" data-ucx="${u.id}">Cancel</button>`:''}`:'') + (canC && u.status!=='cancelled' ? ` <button class="ghost sm" data-cu="${u.id}">Correct</button>` : '')}], uslips, 'No unloading slips yet.')}</div>`;
     h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Platform lot</h2>${can('rk_truck') && ['arrived','unloading','unloaded','released'].includes(r.status) ? '<button class="primary sm" id="rkTruck">+ Load a truck</button>' : ''}</div>
       ${table([{h:'Platform lot',f:x=>`<b>Platform-Sr ${x.sheet_sr ?? ''} · ${esc(x.wagon_no||'')}</b>`},{h:'Type',k:'material'},{h:'Condition',f:x=>x.kind==='damaged'?chip('damaged','bad'):chip('good','ok')},{h:'On platform MT',n:1,f:x=>n3(x.balance_mt)},{h:'On open trucks MT',n:1,f:x=>+x.reserved_mt?n3(x.reserved_mt):''},{h:'Free MT',n:1,f:x=>n3(x.available_mt)}], lot.slice().sort((a,b)=>(a.sheet_sr||0)-(b.sheet_sr||0)), 'Nothing unloaded to the platform yet.')}</div>`;
   }
@@ -1391,7 +1406,7 @@ async function rkDetail(m, id){
       <p class="muted">Anything left on (or loaded beyond) the platform after the last truck. A shortage is recovered from the Sardar who loaded the last truck; the customer is paid its value; SSL bears the gap.</p>
       ${table([{h:'Platform lot',f:d=>'Platform-' + esc(wagLabel(wagons.find(w=>w.id===d.wagon_id)))},{h:'Type',f:d=>esc(mat(d.material_id))},{h:'Condition',k:'kind'},{h:'Difference',n:1,f:d=>+d.diff_mt>0?chip('short '+n3(d.diff_mt),'bad'):chip('excess '+n3(-d.diff_mt),'warn')},{h:'Bags',n:1,k:'bags'},{h:'Sardar',f:d=>esc(sardarName(d.sardar_id))},
         {h:'Recovery',n:1,f:d=>d.recovery_amount!=null?inr(d.recovery_amount):''},{h:'Paid to customer',n:1,f:d=>d.customer_value!=null?inr(d.customer_value):''},{h:'SSL net',n:1,f:d=>d.customer_value!=null?inr(d.customer_value-(d.recovery_amount||0)):''},
-        {h:'Status',f:d=>chip(d.status.replace('_',' '), d.status==='pending'?'bad':'ok')},{h:'',f:d=>d.status==='pending' && can('rk_recovery_settle') ? `<button class="primary sm" data-settle="${d.id}">Record recovery</button>` : d.settle_ref ? esc(d.settle_mode.replace('_',' ')+' · '+d.settle_ref) : ''}], diffs, 'No platform difference.')}</div>`;
+        {h:'Status',f:d=>chip(d.status.replace('_',' '), d.status==='pending'?'bad':'ok')},{h:'',f:d=>d.status==='pending' && can('rk_recovery_settle') ? `<button class="primary sm" data-settle="${d.id}">Record recovery</button>` : d.settle_ref ? esc(d.settle_mode.replace('_',' ')+' · '+d.settle_ref) + (can('rk_correct') && r.status!=='closed' && d.status==='settled' ? ` <button class="ghost sm" data-unset="${d.id}">Reverse settlement</button>` : '') : ''}], diffs, 'No platform difference.')}</div>`;
   }
   // close
   if(si >= rkIdx('released')){
@@ -1407,7 +1422,7 @@ async function rkDetail(m, id){
       ${r.status==='closed' && can('rk_rake_reopen') ? '<button class="ghost sm" id="rkReopen">Reopen</button>' : ''}</div></div>`;
   }
   h += `<div class="card"><h2>Customer emails</h2>${table([{h:'Kind',f:x=>chip(x.kind.replace(/_/g,' '))},{h:'Subject',k:'subject'},{h:'Status',f:x=>x.status==='sent'?chip('sent '+(x.sent_via||''),'ok'):chip('draft','warn')},{h:'',f:x=>`<button class="ghost sm" data-msg="${x.id}">Open</button>`}], msgs, 'No emails yet.')}</div>
-    <div class="card"><h2>History</h2>${table([{h:'When',f:x=>dt(x.at)},{h:'Event',f:x=>esc(x.event.replace(/_/g,' '))},{h:'Note',k:'note'}], events, 'Nothing yet.')}</div>`;
+    <div class="card"><h2>History</h2>${table([{h:'When',f:x=>dt(x.at)},{h:'Event',f:x=>esc(x.event.replace(/_/g,' '))},{h:'Note',f:x=>esc(x.note||'') + corrList(x)}], events, 'Nothing yet.')}</div>`;
   m.innerHTML = h;
 
   // ----- wiring -----
@@ -1536,6 +1551,27 @@ async function rkDetail(m, id){
     act(b, async () => { const x = await rpc('rk_wagon_close', {p_wagon:w.id}); back(); return x; }, x => x==='unloaded' ? 'All wagons empty — unloading complete' : 'Wagon settled');
   });
   if($('rkTruck')) $('rkTruck').onclick = () => rkTruckForm(r.client_id, () => rkDetail(m, id));
+  // ----- corrections -----
+  if($('rkCorrArr')) $('rkCorrArr').onclick = () => corrModal(r.rake_no + ' arrival', `<p class="muted">Tick wagons that were placed. A wagon already unloading or emptied cannot be marked missing. Free time and rates: use "Change free time / rates".</p>
+    ${table([{h:'Placed',f:w=>`<input type="checkbox" data-cpl="${w.id}" ${w.status!=='missing'?'checked':''} ${['unloading','empty'].includes(w.status)?'disabled':''}>`},{h:'Sr',k:'sheet_sr'},{h:'Wagon',k:'wagon_no'},{h:'Status',k:'status'},{h:'Position',f:w=>`<input type="number" data-cpos="${w.id}" value="${w.position ?? ''}" style="width:90px;height:36px">`}], wagons)}`,
+    'arrival', id, () => ({wagons: wagons.map(w => ({wagon_id:w.id, placed:document.querySelector(`[data-cpl="${w.id}"]`).checked, position:document.querySelector(`[data-cpos="${w.id}"]`).value}))}), back);
+  m.querySelectorAll('[data-cw]').forEach(b => b.onclick = () => { const w = W(b.dataset.cw);
+    corrModal(`wagon Sr ${w.sheet_sr} · ${w.wagon_no}`, `<div class="grid">
+      <div><label>Type found in wagon</label><select id="cwM">${opt(S.materials.filter(x => x.client_id===r.client_id && x.is_active), 'id', 'code', w.found_material_id)}</select></div>
+      <div><label>Damage note</label><input id="cwD" value="${esc(w.damage_note||'')}"></div>
+      ${w.status==='empty' ? `<div><label class="row" style="margin-top:18px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="cwR"> Reopen: wagon is not empty yet</label></div>` : ''}</div>
+      <p class="muted">Changing the type also changes the trucks and challans loaded from this wagon and its platform lot, and redrafts the mismatch email.</p>`,
+      'wagon', w.id, () => ({found_material_id:$('cwM').value, damage_note:$('cwD').value, reopen:!!($('cwR') && $('cwR').checked)}), back); });
+  m.querySelectorAll('[data-cu]').forEach(b => b.onclick = () => { const u = uslips.find(x => x.id===b.dataset.cu); const w = W(u.wagon_id);
+    corrModal(`unloading slip ${u.slip_no} · wagon Sr ${w.sheet_sr} ${w.wagon_no}`, `<div class="grid">
+      <div><label>Labour Sardar</label><select id="cuS">${sardarOpts(u.sardar_id)}</select></div>
+      ${u.status==='returned' ? `<div><label>Good MT</label><input id="cuG" type="number" step="0.001" value="${u.good_mt??''}"></div><div><label>Good bags</label><input id="cuGB" type="number" value="${u.good_bags??''}"></div>
+      <div><label>Damaged MT</label><input id="cuD" type="number" step="0.001" value="${u.damaged_mt??0}"></div><div><label>Damaged bags</label><input id="cuDB" type="number" value="${u.damaged_bags??''}"></div>` : ''}
+      <div><label class="row" style="margin-top:18px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="cuV"> Void this slip (entered by mistake)</label></div></div>
+      <p class="muted">The wagon's platform lot, its settlement, the Sardar's work and any closed platform difference are recalculated.</p>`,
+      'unload_slip', u.id, () => ({sardar_id:$('cuS').value, void:$('cuV').checked, ...(u.status==='returned' ? {good_mt:$('cuG').value, good_bags:$('cuGB').value, damaged_mt:$('cuD').value, damaged_bags:$('cuDB').value} : {})}), back); });
+  m.querySelectorAll('[data-unset]').forEach(b => b.onclick = () => corrModal('platform recovery settlement', '<p>The recovery goes back to <b>pending</b>; record it again after the correction.</p>', 'recovery', b.dataset.unset, () => ({}), back));
+
   const twoTimes = (title, idA, idB, fn, okMsg) => {
     modal(`<h2>${esc(title)}</h2><div class="grid"><div><label>Railway time</label><input type="datetime-local" id="${idA}" value="${localDT()}"></div><div><label>Operational time</label><input type="datetime-local" id="${idB}" value="${localDT()}"></div></div>
       <div class="row" style="margin-top:12px"><button class="primary" id="ttGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
@@ -1703,7 +1739,8 @@ async function rkTruckDetail(m, id){
       {h:'Bags loaded',n:1,f:l=>t.status==='open'?`<input type="number" data-lb="${l.id}" style="width:110px;height:36px">`:(l.actual_bags??'')},
       {h:'MT loaded',n:1,f:l=>t.status==='open'?`<input type="number" step="0.001" data-lm="${l.id}" value="${n3(l.planned_mt)}" style="width:120px;height:36px">`:n3(l.actual_mt)}], lines)}
     ${t.status==='open' ? `<div class="row" style="margin-top:10px"><button class="ghost sm" id="tPr">Print slip</button>${can('rk_truck') ? '<button class="primary" id="tConf">Labour confirmed → generate challans</button><button class="ghost sm" id="tCx">Cancel slip</button>' : ''}</div>
-      <p class="muted">The quantity the labour writes on the returned slip goes on the delivery challan.</p>` : t.status==='dispatched' ? `<button class="ghost sm" id="tCh" style="margin-top:10px">Print challans</button>` : ''}</div>`;
+      <p class="muted">The quantity the labour writes on the returned slip goes on the delivery challan.</p>` : t.status==='dispatched' ? `<button class="ghost sm" id="tCh" style="margin-top:10px">Print challans</button>` : ''}
+    ${can('rk_correct') && t.status!=='cancelled' ? '<button class="ghost sm" id="tCorr" style="margin-top:10px">Correct this truck slip</button>' : ''}</div>`;
   $('tBack').onclick = () => go();
   if($('tPr')) $('tPr').onclick = () => printTruckSlip(t, lines, rakes);
   const bpm = l => { const w = wagons.find(x => x.id===(l.wagon_id || l.lot_wagon_id)); return w && +w.sheet_mt ? w.sheet_bags / w.sheet_mt : 20; };
@@ -1715,6 +1752,30 @@ async function rkTruckDetail(m, id){
   }, n => `${n} challan(s) generated`);
   if($('tCx')) $('tCx').onclick = e => { if(confirm('Cancel this truck slip?')) act(e.target, async () => { await rpc('rk_truck_cancel', {p_slip:id}); go(); }, 'Cancelled'); };
   if($('tCh')) $('tCh').onclick = async () => { const ch = await q('wh_challans', b => b.eq('dispatch_id', t.dispatch_id)); printChallans(ch.map(c => c.id)); };
+  if($('tCorr')) $('tCorr').onclick = async () => {
+    const rkIds = [...new Set(lines.map(l => l.rake_id))];
+    const pool = await q('rk_wagons', b => b.in('rake_id', rkIds).in('status', ['unloading','empty']).order('sheet_sr'));
+    const disp = t.status==='dispatched';
+    const srcSel = l => { const cur = l.wagon_id || l.lot_wagon_id; const same = pool.filter(w => w.found_material_id===l.material_id);
+      return `<select data-csrc="${l.id}" style="height:36px">${same.map(w => `<option value="${w.id}" ${w.id===cur?'selected':''}>${l.source==='wagon'?'Wagon ':'Platform-'}Sr ${w.sheet_sr} · ${esc(w.wagon_no)}</option>`).join('')}</select>`; };
+    corrModal(`truck slip ${t.slip_no}`, `<div class="grid">
+      <div><label>Truck no</label><input id="ctT" value="${esc(t.truck_no)}"></div>
+      ${t.truck_kind==='vendor' ? `<div><label>Vendor</label><select id="ctV">${opt(S.vendors,'id','vendor_name',t.vendor_id)}</select></div>` : ''}
+      <div><label>Driver</label><input id="ctD" value="${esc(t.driver_name||'')}"></div>
+      <div><label>Labour Sardar</label><select id="ctS">${sardarOpts(t.sardar_id)}</select></div>
+      <div style="grid-column:1/-1"><label>Destination</label><select id="ctP">${destOpts(t.client_id, {siding:t.siding_id, warehouseOnly:t.is_damaged})}</select></div></div>
+      <h2 style="margin-top:12px">Lines</h2>${table([{h:'From',f:srcSel},{h:'Type',f:l=>esc(mat(l.material_id))},
+        {h:disp?'MT loaded':'Planned MT',n:1,f:l=>`<input type="number" step="0.001" data-cq="${l.id}" value="${disp ? (l.actual_mt??'') : l.planned_mt}" style="width:110px;height:36px">`},
+        ...(disp ? [{h:'Bags',n:1,f:l=>`<input type="number" data-cb="${l.id}" value="${l.actual_bags??''}" style="width:100px;height:36px">`}] : [])], lines)}
+      <label class="row" style="margin-top:10px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="ctX"> Void this truck slip${disp ? ' and its challans' : ''} (entered by mistake)</label>
+      <p class="muted">Challans, platform lots, wagon settlements and any closed platform difference are recalculated. Blocked if the challan is already received at our warehouse (GRN) or tagged to a SAP invoice.</p>`,
+      'truck_slip', t.id, () => ({truck_no:$('ctT').value, driver_name:$('ctD').value, sardar_id:$('ctS').value, ship_to_code:$('ctP').value, void:$('ctX').checked,
+        ...($('ctV') ? {vendor_id:$('ctV').value} : {}),
+        lines: lines.map(l => { const v = document.querySelector(`[data-csrc="${l.id}"]`).value; const qv = document.querySelector(`[data-cq="${l.id}"]`).value;
+          return {id:l.id, ...(l.source==='wagon' ? {wagon_id:v} : {lot_wagon_id:v}), ...(disp ? {actual_mt:qv, actual_bags:(document.querySelector(`[data-cb="${l.id}"]`)||{}).value ?? ''} : {planned_mt:qv})}; })}),
+      () => rkTruckDetail(m, id));
+    $('ctP').value = t.ship_to_code;
+  };
 }
 
 VIEWS.rk_lots = async m => {
