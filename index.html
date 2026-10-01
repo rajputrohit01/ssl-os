@@ -868,7 +868,7 @@ const FT_STEPS = [
   ['fastag',    'FASTag',                 'FASTag ID', false]];
 const FT_STEP = Object.fromEntries(FT_STEPS.map(s => [s[0], {n:s[1], doc:s[2], exp:s[3]}]));
 const FT_EXTRA = {gps:[['provider','GPS provider']], fastag:[['installed_by','Installed by (bank / agent)']], body:[['body_type','Body type (e.g. 24 ft high-side)']]};
-const FT_ORDER_ST = {pending_approval:['waiting for MP approval','warn'], approved:['approved · place with dealer','info'], rejected:['rejected','bad'], placed:['placed with dealer','ok'], cancelled:['cancelled','']};
+const FT_ORDER_ST = {pending_approval:['waiting for MP approval','warn'], approved:['approved','info'], rejected:['rejected','bad'], placed:['approved · awaiting truck invoices','ok'], cancelled:['cancelled','']};
 const FT_EMI_ST = {due:['due','info'], paid:['paid (NACH)','ok'], bounced:['BOUNCED','bad'], repaid:['bounced · repaid','warn']};
 const ftModel = id => { const x = (S.ftModels||[]).find(m => m.id===id); return x ? `${x.make} ${x.model}` : ''; };
 const ftVendor = id => (S.vendors.find(v => v.id===id)||{}).vendor_name || '';
@@ -930,15 +930,14 @@ VIEWS.ft_orders = async m => {
   const rows = await q('ft_order_list', b => { b = b.order('order_date', {ascending:false}).order('order_no', {ascending:false}).limit(300);
     return S.ftOF==='open' ? b.in('status', ['pending_approval','approved','placed']) : S.ftOF==='all' ? b : b.eq('status', S.ftOF); });
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Purchase orders</h1>${can('ft_entry') ? '<button class="primary sm" id="ftoAdd">+ New order</button>' : ''}</div>
-  <p class="muted">Raise the order → the Managing Partner approves → place it with the dealer → enter each truck as its dealer invoice arrives. One invoice = one truck.</p>
-  <div class="row"><select id="ftoF" style="width:auto">${[['open','Open orders'],['pending_approval','Waiting for MP'],['placed','Placed with dealer'],['rejected','Rejected'],['cancelled','Cancelled'],['all','All']].map(([v,l]) => `<option value="${v}" ${v===S.ftOF?'selected':''}>${l}</option>`).join('')}</select></div>
+  <p class="muted">Raise the order with its dealer → the Managing Partner approves → enter each truck as its dealer invoice arrives. One invoice = one truck.</p>
+  <div class="row"><select id="ftoF" style="width:auto">${[['open','Open orders'],['pending_approval','Waiting for MP'],['placed','Approved · awaiting invoices'],['rejected','Rejected'],['cancelled','Cancelled'],['all','All']].map(([v,l]) => `<option value="${v}" ${v===S.ftOF?'selected':''}>${l}</option>`).join('')}</select></div>
   <div class="card">${table([{h:'Order',f:o=>`<b>${esc(o.order_no)}</b><div class="muted">${d8(o.order_date)}</div>`},{h:'Company',k:'company_code'},{h:'Model',f:o=>esc(o.make + ' ' + o.model)},{h:'Qty',n:1,k:'qty'},{h:'Rate',n:1,f:o=>inr(o.rate)},
     {h:'TCS / TCR',f:o=>`TCS ${o.tcs_mode}${+o.tcs_amount ? ' ' + inr(o.tcs_amount) : ''}<br>TCR ${o.tcr_mode}${+o.tcr_amount ? ' ' + inr(o.tcr_amount) : ''}`},{h:'Dealer',f:o=>esc(o.dealer||'')},
     {h:'Trucks',f:o=>`${o.invoiced}/${o.qty} invoiced · ${o.ready} ready`},{h:'Status',f:o=>chip(...FT_ORDER_ST[o.status]) + (o.reject_reason ? `<div class="muted">${esc(o.reject_reason)}</div>` : '')},
     {h:'',f:o=>[
       o.status==='pending_approval' && can('ft_order_approve') ? `<button class="lime sm" data-ok="${o.id}">Approve</button> <button class="danger sm" data-no="${o.id}">Reject</button>` : '',
       ['pending_approval','rejected'].includes(o.status) && can('ft_entry') ? `<button class="ghost sm" data-ed="${o.id}">Edit</button>` : '',
-      o.status==='approved' && can('ft_entry') ? `<button class="primary sm" data-pl="${o.id}">Place with dealer</button>` : '',
       o.status==='placed' && o.invoiced < o.qty && can('ft_entry') ? `<button class="primary sm" data-inv="${o.id}">+ Truck invoice</button>` : '',
       !['cancelled','rejected'].includes(o.status) && !o.invoiced && can('ft_entry') ? `<button class="ghost sm" data-cx="${o.id}">Cancel</button>` : ''].filter(Boolean).join(' ')}], rows, 'No orders.')}</div>`;
   $('ftoF').onchange = () => { S.ftOF = $('ftoF').value; go(); };
@@ -951,12 +950,6 @@ VIEWS.ft_orders = async m => {
     act(b, async () => { await rpc('ft_order_decide', {p_id:b.dataset.no, p_approve:false, p_reason:why}); go(); }, 'Rejected'); });
   m.querySelectorAll('[data-cx]').forEach(b => b.onclick = () => { const why = prompt('Reason for cancelling:'); if(why===null) return;
     act(b, async () => { await rpc('ft_order_cancel', {p_id:b.dataset.cx, p_reason:why}); go(); }, 'Cancelled'); });
-  m.querySelectorAll('[data-pl]').forEach(b => b.onclick = () => { const o = R(b.dataset.pl);
-    modal(`<h2>Place ${esc(o.order_no)} with the dealer</h2><p>${o.qty} × ${esc(o.make + ' ' + o.model)} at ${inr(o.rate)}</p>
-      <div class="field"><label>Dealer</label><select id="plD" data-mt="vendor" data-vt="dealer">${vendOpts(o.dealer_id, 'dealer')}</select></div>
-      <div class="row" style="margin-top:12px"><button class="primary" id="plGo">Placed</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('plD')._opts = () => vendOpts(null, 'dealer'); wireAdd($('modalBox'));
-    $('plGo').onclick = e => act(e.target, async () => { if(!$('plD').value) throw new Error('Choose the dealer'); await rpc('ft_order_place', {p_id:o.id, p_dealer:$('plD').value}); closeModal(); go(); }, 'Order placed'); });
   m.querySelectorAll('[data-inv]').forEach(b => b.onclick = () => ftInvoiceForm(R(b.dataset.inv)));
 };
 function ftOrderForm(o){
@@ -971,7 +964,7 @@ function ftOrderForm(o){
     <div class="field"><label>TCS amount per truck ₹</label><input type="number" min="0" step="0.01" id="foTcsA" value="${o ? o.tcs_amount : ''}"></div>
     <div class="field"><label>TCR (temporary registration charge)</label><select id="foTcr"><option value="included">Included (dealer does temporary registration)</option><option value="excluded">Excluded (we arrange it)</option></select></div>
     <div class="field"><label>TCR amount per truck ₹</label><input type="number" min="0" step="0.01" id="foTcrA" value="${o ? o.tcr_amount : ''}"></div>
-    <div class="field"><label>Dealer (if known)</label><select id="foDl" data-mt="vendor" data-vt="dealer">${vendOpts(o && o.dealer_id, 'dealer')}</select></div>
+    <div class="field"><label>Dealer</label><select id="foDl" data-mt="vendor" data-vt="dealer">${vendOpts(o && o.dealer_id, 'dealer')}</select></div>
     <div class="field"><label>Note</label><input id="foN" value="${esc(o && o.note || '')}"></div>
   </div><p class="muted" id="foT"></p>
   <div class="row" style="margin-top:12px"><button class="primary" id="foGo">${o ? 'Save & send for approval again' : 'Send for MP approval'}</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
@@ -980,6 +973,7 @@ function ftOrderForm(o){
   const tot = () => { const q1 = +$('foQ').value || 0, r = +$('foR').value || 0; $('foT').textContent = q1 && r ? `Order value ${inr(q1 * r)}${$('foTcs').value==='excluded' ? ' + TCS ' + inr(q1 * (+$('foTcsA').value||0)) : ''}${$('foTcr').value==='excluded' ? ' + TCR arranged by us' : ''}.` : ''; };
   ['foQ','foR','foTcs','foTcsA','foTcr'].forEach(i => $(i).addEventListener('input', tot)); ['foTcs','foTcr'].forEach(i => $(i).addEventListener('change', tot)); tot();
   $('foGo').onclick = e => act(e.target, async () => {
+    if(!$('foDl').value) throw new Error('Choose the dealer');
     await rpc('ft_order_save', {p_id: o ? o.id : null, p: {order_date:$('foD').value, company_id:$('foC').value || null, model_id:$('foM').value || null, qty:$('foQ').value, rate:$('foR').value,
       tcs_mode:$('foTcs').value, tcs_amount:$('foTcsA').value, tcr_mode:$('foTcr').value, tcr_amount:$('foTcrA').value, dealer_id:$('foDl').value || null, note:$('foN').value}});
     closeModal(); go(); }, 'Sent to the Managing Partner for approval');
