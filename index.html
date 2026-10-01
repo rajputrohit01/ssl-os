@@ -1407,7 +1407,13 @@ VIEWS.ft_import = async m => {
     const f = $('fiFile').files[0]; if(!f) throw new Error('Choose the filled Excel file');
     const wb = XLSX.read(await f.arrayBuffer(), {cellDates:true}); const rows = ftImportRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:true}));
     if(!rows.length) throw new Error('No truck rows found (registration_no column is needed).');
-    const res = await rpc('ft_import', {p_rows:rows}); await loadMasters();
+    const res = {imported:0, updated:0, errors:[]};
+    for(let i = 0; i < rows.length; i += 100){
+      $('fiOut').innerHTML = `<p class="muted">Importing ${Math.min(i + 100, rows.length)} of ${rows.length}…</p>`;
+      const r = await rpc('ft_import', {p_rows:rows.slice(i, i + 100)});
+      res.imported += r.imported; res.updated += r.updated; res.errors.push(...r.errors.map(e => ({...e, row:e.row + i})));
+    }
+    await loadMasters();
     $('fiOut').innerHTML = `<p><b>${res.imported}</b> new truck(s) · <b>${res.updated}</b> existing truck(s) updated · of ${rows.length} row(s). <a href="#fl/ft_gaps">See what is still missing</a></p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Registration',k:'registration_no'},{h:'Problem',k:'error'}], res.errors) : '');
     return res; }, r => `${r.imported} new, ${r.updated} updated`);
 };
@@ -1544,8 +1550,15 @@ VIEWS.vn_import = async m => {
     const wb = XLSX.read(await f.arrayBuffer()); const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:false});
     const rows = raw.map(r => { const o = {}; Object.entries(r).forEach(([k,v]) => { const key = String(k).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); if(v!==null && String(v).trim()!=='') o[key] = String(v).trim(); }); return o; }).filter(o => o.vendor_name || o.pan);
     if(!rows.length) throw new Error('No vendor rows found. Use the template columns.');
-    const res = await rpc('vn_import', {p_rows:rows}); await loadMasters();
-    $('viOut').innerHTML = `<p><b>${res.created}</b> created · <b>${res.updated}</b> existing PAN(s) updated · of ${rows.length} row(s).</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Vendor',k:'vendor_name'},{h:'Problem',k:'error'}], res.errors) : '');
+    // large masters go in batches of 250 rows (keeps each call well inside the server time limit)
+    const res = {created:0, updated:0, errors:[]};
+    for(let i = 0; i < rows.length; i += 250){
+      $('viOut').innerHTML = `<p class="muted">Importing ${Math.min(i + 250, rows.length)} of ${rows.length}…</p>`;
+      const r = await rpc('vn_import', {p_rows:rows.slice(i, i + 250)});
+      res.created += r.created; res.updated += r.updated; res.errors.push(...r.errors.map(e => ({...e, row:e.row + i})));
+    }
+    await loadMasters();
+    $('viOut').innerHTML = `<p><b>${res.created}</b> created · <b>${res.updated}</b> existing PAN(s) updated · of ${rows.length} row(s).</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Code',k:'vendor_code'},{h:'Vendor',k:'vendor_name'},{h:'Problem',k:'error'}], res.errors) : '');
     return res; }, r => `${r.created} vendor(s) created`);
 };
 
