@@ -1636,7 +1636,7 @@ async function rkTruckForm(clientId, after){
     <h2 style="margin-top:14px">Load from</h2><div class="row"><select id="tSrc" style="flex:1 1 260px"></select><button class="lime sm" id="tAdd">Add line</button></div>
     <div id="tLines" style="margin-top:10px"></div>
     <div class="row" style="margin-top:12px"><button class="primary" id="tGo">Create & print slip</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-  let wag = [], lotRows = []; const L = [];
+  let wag = [], lotRows = [], fillSrc = () => {}; const L = [];
   const load = async () => {
     const cid = $('tC').value; const mine = rakes.filter(x => x.client_id===cid);
     [wag, lotRows] = mine.length ? await Promise.all([q('rk_wagons', b => b.in('rake_id', mine.map(x=>x.id)).in('status',['arrived','unloading']).order('position')), q('rk_lot_balance', b => b.in('rake_id', mine.map(x=>x.id)))]) : [[],[]];
@@ -1648,14 +1648,16 @@ async function rkTruckForm(clientId, after){
     const lotOpts = lotRows.filter(x => x.kind===kind && +x.available_mt > 0).sort((a,b) => (a.sheet_sr||0) - (b.sheet_sr||0))
       .map(x => ({v:`p:${x.wagon_id}:${x.rake_id}`, l:`Platform-Sr ${x.sheet_sr} · ${x.wagon_no} · ${x.material} ${kind} · ${n3(x.available_mt)} MT free · ${rn(x.rake_id)}`}));
     const og = (lab, arr) => arr.length ? `<optgroup label="${esc(lab)}">${arr.map(x => `<option value="${esc(x.v)}" ${x.dis?'disabled':''}>${esc(x.l)}</option>`).join('')}</optgroup>` : '';
-    $('tSrc').innerHTML = (wagOpts.length || lotOpts.length) ? og('Direct from wagon', wagOpts) + og('From platform (lot of each wagon)', lotOpts) : '<option value="">Nothing to load</option>';
-    if($('tSrc').selectedOptions[0] && $('tSrc').selectedOptions[0].disabled){ const f = [...$('tSrc').options].find(o => !o.disabled); if(f) $('tSrc').value = f.value; }
+    // lines already added are taken out of the list until removed again
+    fillSrc = () => { const used = new Set(L.map(x => x.key)); const w2 = wagOpts.filter(x => !used.has(x.v)), l2 = lotOpts.filter(x => !used.has(x.v));
+      $('tSrc').innerHTML = (w2.some(x => !x.dis) || l2.length) ? og('Direct from wagon', w2) + og('From platform (lot of each wagon)', l2) : '<option value="">Nothing more to load</option>';
+      const f = [...$('tSrc').options].find(o => !o.disabled && o.value); if(f) $('tSrc').value = f.value; };
     $('tP').innerHTML = destOpts(cid, {siding:S.loc.id, warehouseOnly:dmg}) + (dmg ? '' : addOpt('shipto')); $('tP').dataset.prev = '';
-    L.length = 0; drawL();
+    L.length = 0; drawL(); fillSrc();
   };
   const drawL = () => { $('tLines').innerHTML = L.map((x,i) => `<div class="lineRow"><div>${esc(x.label)}</div><input type="number" step="0.001" placeholder="MT" data-lq="${i}" value="${x.planned_mt||''}"><button class="ghost sm" data-lx="${i}">✕</button></div>`).join('') || '<div class="muted">Add at least one line: a wagon being unloaded, or the platform lot of a wagon (Platform-wagon no). One truck can load from several wagons and several platform lots.</div>';
     document.querySelectorAll('[data-lq]').forEach(i => i.oninput = () => L[+i.dataset.lq].planned_mt = +i.value);
-    document.querySelectorAll('[data-lx]').forEach(b => b.onclick = () => { L.splice(+b.dataset.lx, 1); drawL(); }); };
+    document.querySelectorAll('[data-lx]').forEach(b => b.onclick = () => { L.splice(+b.dataset.lx, 1); drawL(); fillSrc(); }); };
   $('tC').onchange = load; $('tDmg').onchange = load;
   $('tS')._opts = () => sardarOpts(); $('tP')._opts = () => destOpts($('tC').value, {siding:S.loc.id, warehouseOnly:$('tDmg').checked});
   $('tP')._preset = () => ({client_id:$('tC').value}); wireAdd($('modalBox'));
@@ -1663,7 +1665,7 @@ async function rkTruckForm(clientId, after){
   $('tP').onchange = () => $('tSo').innerHTML = soldToLine($('tC').value, $('tP').value);
   $('tAdd').onclick = () => { const v = $('tSrc').value; if(!v) return; const label = $('tSrc').selectedOptions[0].textContent; const [k,a,b2] = v.split(':');
     if(L.some(x => x.key===v)) return toast('Already added', 'warn');
-    L.push(k==='w' ? {key:v, label, source:'wagon', wagon_id:a} : {key:v, label, source:'platform', lot_wagon_id:a, rake_id:b2}); drawL(); };
+    L.push(k==='w' ? {key:v, label, source:'wagon', wagon_id:a} : {key:v, label, source:'platform', lot_wagon_id:a, rake_id:b2}); drawL(); fillSrc(); };
   await load();
   $('tGo').onclick = e => act(e.target, async () => {
     const own = $('tK').value==='own'; const tr = S.trucks.find(t => t.registration_no===$('tT').value.trim().toUpperCase());
