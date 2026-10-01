@@ -398,6 +398,7 @@ async function loadMasters(){
     q('sys_material_categories', b => b.order('code')), q('rk_sardars'), q('sys_plant_sidings'), q('rk_siding_client_terms'), q('sys_plants', b => b.order('code')),
     q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
   S.companies = await q('sys_companies', b => b.order('code'));
+  S.aliases = await q('rk_material_aliases');
 }
 async function start(){
   const {data:{user}} = await sb.auth.getUser(); if(!user) return;
@@ -1420,10 +1421,44 @@ async function rkDetail(m, id){
   if($('rkSaveW')){
     const F = {wagons:[], sibling:[], rrFile:null, sheetFile:null};
     const head = () => { const o = {}; m.querySelectorAll('#rkHead input').forEach(i => { const k = i.id.slice(2); o[k] = i.type==='number' ? (i.value==='' ? null : +i.value) : i.value.trim(); }); return o; };
-    const payload = () => ({...head(), rake_id:id, wagons:F.wagons, sibling_wagons:F.sibling});
-    const known = new Set(S.materials.filter(x => x.client_id===r.client_id).map(x => x.code.toUpperCase()));
-    const draw = () => { $('rkWagonsNew').innerHTML = F.wagons.length ? table([{h:'Sr',k:'sr'},{h:'Wagon no',k:'wagon_no'},{h:'Wagon type',k:'wagon_type'},{h:'Bags',k:'bags',n:1},{h:'MT',f:w=>n3(w.mt),n:1},
-      {h:'Material type',f:w=>known.has((w.material||'').toUpperCase()) ? esc(w.material) : chip((w.material||'—')+' — not in this customer\'s types','bad')},{h:'Destination',k:'destination'}], F.wagons) : ''; };
+    const payload = () => ({...head(), rake_id:id, wagons:F.wagons.map(({sheet_material, ...w}) => w), sibling_wagons:F.sibling});
+    // wagon-sheet material names → our material types (remembered per customer in Wagon sheet material names)
+    const cMats = () => S.materials.filter(x => x.client_id===r.client_id && x.is_active);
+    const known = () => new Set(cMats().map(x => x.code.toUpperCase()));
+    const U = v => (v||'').trim().toUpperCase();
+    const aliasCode = name => { const a = (S.aliases||[]).find(x => x.client_id===r.client_id && x.sheet_name===U(name)); return a ? (cMats().find(x => x.id===a.material_id)||{}).code : null; };
+    const applyNames = () => F.wagons.forEach(w => { if(w.sheet_material===undefined) w.sheet_material = w.material; const k = known(); if(k.has(U(w.sheet_material))) { w.material = cMats().find(x => U(x.code)===U(w.sheet_material)).code; return; } const c = F.pick[U(w.sheet_material)] || aliasCode(w.sheet_material); w.material = c || w.sheet_material; });
+    F.pick = {};
+    const draw = () => {
+      applyNames(); const k = known();
+      const unknown = [...new Set(F.wagons.filter(w => !k.has(U(w.material))).map(w => U(w.sheet_material)))].filter(Boolean);
+      const mapped = [...new Set(F.wagons.filter(w => U(w.sheet_material) !== U(w.material) && k.has(U(w.material))).map(w => U(w.sheet_material)))];
+      S.addClient = r.client_id;
+      const matSel = n => `<select data-map="${esc(n)}" data-mt="mat" data-mv="code" style="width:auto;min-width:200px"><option value="">Choose our material type</option>${opt(cMats(), 'code', x => x.code + (x.name && x.name!==x.code ? ' · ' + x.name : ''), F.pick[n])}</select>`;
+      $('rkWagonsNew').innerHTML = (unknown.length || mapped.length ? `<div class="warnbox"><b>Material names in the wagon sheet</b><br>
+          ${unknown.map(n => `<div class="row" style="margin:6px 0">"${esc(n)}" in the sheet = ${matSel(n)} <span class="muted">${F.wagons.filter(w => U(w.sheet_material)===n).length} wagon(s)</span></div>`).join('')}
+          ${mapped.map(n => `<div class="row" style="margin:6px 0">"${esc(n)}" = <b>${esc(F.wagons.find(w => U(w.sheet_material)===n).material)}</b> <button class="ghost sm" data-unmap="${esc(n)}">Change</button></div>`).join('')}
+          <span class="muted">Your choice is remembered for this customer, so the next wagon sheet matches automatically.</span></div>` : '')
+        + (F.wagons.length ? table([{h:'Sr',k:'sr'},{h:'Wagon no',k:'wagon_no'},{h:'Wagon type',k:'wagon_type'},{h:'Bags',k:'bags',n:1},{h:'MT',f:w=>n3(w.mt),n:1},
+        {h:'Material type',f:w=>k.has(U(w.material)) ? esc(w.material) + (U(w.sheet_material)!==U(w.material) ? ` <span class="muted">(sheet: ${esc(w.sheet_material)})</span>` : '') : chip((w.sheet_material||'—')+' — choose our type above','bad')},{h:'Destination',k:'destination'}], F.wagons) : '');
+      const box = $('rkWagonsNew');
+      box.querySelectorAll('[data-map]').forEach(sel => { sel._opts = () => '<option value="">Choose our material type</option>' + opt(cMats(), 'code', x => x.code + (x.name && x.name!==x.code ? ' · ' + x.name : '')); });
+      wireAdd(box);
+      box.querySelectorAll('[data-map]').forEach(sel => sel.addEventListener('change', () => { if(!sel.value || sel.value===ADD_NEW) return; F.pick[sel.dataset.map] = sel.value; draw(); check(); }));
+      box.querySelectorAll('[data-unmap]').forEach(b => b.onclick = () => { const n = b.dataset.unmap; F.pick[n] = null; F.unmapped = F.unmapped || new Set(); F.unmapped.add(n);
+        F.wagons.forEach(w => { if(U(w.sheet_material)===n) w.material = w.sheet_material; }); S.aliases = (S.aliases||[]).filter(a => !(a.client_id===r.client_id && a.sheet_name===n)); draw(); check(); });
+    };
+    const saveAliases = async () => {
+      const k = known(); const rows = []; const seen = new Set();
+      F.wagons.forEach(w => { const n = U(w.sheet_material); if(!n || seen.has(n) || k.has(n) || !k.has(U(w.material))) return; seen.add(n);
+        const m1 = cMats().find(x => U(x.code)===U(w.material)); const ex = (S.aliases||[]).find(a => a.client_id===r.client_id && a.sheet_name===n);
+        if(!ex || ex.material_id !== m1.id) rows.push({client_id:r.client_id, sheet_name:n, material_id:m1.id}); });
+      if(!rows.length) return;
+      for(const row of rows){ const ex = await sb.from('rk_material_aliases').select('id').eq('client_id', row.client_id).eq('sheet_name', row.sheet_name);
+        const res = ex.data && ex.data.length ? await sb.from('rk_material_aliases').update({material_id:row.material_id}).eq('id', ex.data[0].id) : await sb.from('rk_material_aliases').insert(row);
+        if(res.error) toast('Mapping not remembered: ' + niceErr(res.error.message), 'warn', 6000); }
+      S.aliases = await q('rk_material_aliases');
+    };
     const check = async () => {
       const p = payload(); $('rkBatch').textContent = p.invoice_date ? `Batch will be ${batchOf(p.invoice_date)} (from invoice date)` : '';
       if(!F.wagons.length) return;
@@ -1440,7 +1475,7 @@ async function rkDetail(m, id){
       const p = payload(); const stamp = Date.now();
       if(F.rrFile){ const path = `rr/${r.siding_code}/${stamp}-${F.rrFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.rrFile); if(!u.error) p.rr_file_path = path; }
       if(F.sheetFile){ const path = `rr/${r.siding_code}/${stamp}-${F.sheetFile.name}`; const u = await sb.storage.from('wh-evidence').upload(path, F.sheetFile); if(!u.error) p.sheet_file_path = path; }
-      const n = await rpc('rk_rake_wagons', {p}); back(); return n;
+      const n = await rpc('rk_rake_wagons', {p}); await saveAliases(); back(); return n;
     }, n => `${n} wagons saved`);
   }
   if($('aGo')) $('aGo').onclick = e => act(e.target, async () => {
@@ -1734,6 +1769,7 @@ const MASTERS = {
   'Labour Sardars': {grp:'rk', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor']], note:'A siding can have more than one Sardar. Add the Sardar in Master data › Vendors first.'},
   'Sardar activity rates': {grp:'rk', t:'rk_labor_rates', cols:['sardar_id','activity','rate_per_mt','effective_from'], form:[['sardar_id','Sardar','sardar'],['activity','Activity','sel',['wagon_platform','platform_truck','wagon_truck']],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Per siding × Sardar × activity. Effective-dated: a change is a new row.'},
   'Platform shortage recovery rate': {grp:'rk', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
+  'Wagon sheet material names': {grp:'rk', t:'rk_material_aliases', cols:['client_id','sheet_name','material_id'], form:[['client_id','Customer','client'],['sheet_name','Name as in the wagon sheet'],['material_id','Our material type','mat']], extra:r => ({...r, sheet_name:(r.sheet_name||'').trim().toUpperCase()}), labels:{sheet_name:'Name in wagon sheet', material_id:'Our material type'}, note:'When the customer\'s wagon sheet names a material differently from our material type (e.g. W.PLUS → WALL PLUS), map it once here or while uploading the wagon sheet; every later sheet is matched automatically.'},
   'Customer DC/WC bearer': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','effective_from','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['effective_from','Effective from','date'],['note','Note']], note:'Required for every customer served at the siding: who bears railway demurrage and wharfage. Effective-dated: when terms change, add a new row with the new effective date; old rows stay as history. A rake takes the terms in force on its arrival date.'},
   'Customer email settings': {wh:1, t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
 };
@@ -1745,7 +1781,7 @@ const ADD_FOR = {company:'Our companies', client:'Customers', mat:'Materials', l
   district:'Districts', dest:'Destinations', soldto:'Sold-To parties', shipto:'Ship-To parties', sardar:'Labour Sardars', cat:'Material categories'};
 const ADD_LABEL = {company:'company', client:'customer', mat:'material type', loc:'warehouse', vendor:'vendor', plantall:'warehouse', plant:'plant', siding:'siding',
   district:'district', dest:'destination', soldto:'Sold-To party', shipto:'Ship-To party', sardar:'Labour Sardar', cat:'material category'};
-const ADD_PRESET = {sardar:() => ({siding_id:S.loc && S.loc.kind==='siding' ? S.loc.id : ''})};
+const ADD_PRESET = {sardar:() => ({siding_id:S.loc && S.loc.kind==='siding' ? S.loc.id : ''}), mat:() => ({client_id:S.addClient || ''})};
 const ADD_NEW = '__add__';
 const masterPerm = M => M.grp==='rk' ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin');
 const distLabel = d => d ? `${d.name} · ${(S.states.find(x=>x.id===d.state_id)||{}).name||''}` : '';
@@ -1834,7 +1870,7 @@ const EDIT_CFG = {'Our companies':{lock:['code']}, 'Customers':{lock:['code']}, 
   'Sidings':{lock:['code']}, 'Vendors':{lock:['vendor_code']}, 'Own trucks':{}, 'Materials':{lock:['client_id']}, 'SAP product mapping':{lock:['client_id']},
   'Sold-To parties':{lock:['client_id','sap_code']}, 'Ship-To parties':{lock:['client_id']}, 'Destinations':{}, 'Districts':{},
   'Labor contractors':{lock:['location_id','vendor_id']}, 'Labour Sardars':{lock:['siding_id','vendor_id']},
-  'Customer DC/WC bearer':{key:['siding_id','client_id','effective_from'], lock:['siding_id','client_id','effective_from']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}};
+  'Wagon sheet material names':{lock:['client_id','sheet_name']}, 'Customer DC/WC bearer':{key:['siding_id','client_id','effective_from'], lock:['siding_id','client_id','effective_from']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}};
 function editMaster(key, row, after){
   const M = MASTERS[key], C = EDIT_CFG[key], lock = C.lock || []; S.qaN = (S.qaN||0) + 1; const pre = 'ed' + S.qaN + '_';
   const fields = M.form.concat(M.cols.includes('is_active') ? [['is_active','Status','active']] : []);
