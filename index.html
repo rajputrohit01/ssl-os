@@ -1317,8 +1317,38 @@ async function rkDetail(m, id){
   const back = () => rkDetail(m, id);
   const truckMt = wid => tlines.filter(l => l.wagon_id===wid && l.actual_mt!=null).reduce((a,l) => a + +l.actual_mt, 0);
   const unlMt = wid => uslips.filter(u => u.wagon_id===wid && u.status==='returned').reduce((a,u) => a + +u.good_mt + +u.damaged_mt, 0);
+  const tsIds = [...new Set(tlines.map(l => l.truck_slip_id))];
+  const openTrucks = tsIds.length ? await q('rk_truck_slips', b => b.in('id', tsIds).eq('status', 'open')) : [];
+  const canCorr = can('rk_correct') && r.status!=='closed';
+  const cMode = canCorr && S.corrMode === id;
 
-  let h = `<div class="row" style="justify-content:space-between"><h1>${esc(r.rake_no)} · ${esc(r.client_name)}</h1><button class="ghost sm" id="rkBack">All rakes</button></div>
+  // ---- what to do next: one plain sentence per pending step, with the button that does it ----
+  const nx = []; const lotLeft = lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005).sort((a,b) => (a.sheet_sr||0)-(b.sheet_sr||0));
+  const lotTxt = lotLeft.map(x => `Platform-Sr ${x.sheet_sr} (${+x.balance_mt > 0 ? n3(x.balance_mt) + ' MT left' : 'loaded ' + n3(-x.balance_mt) + ' MT more than unloaded'})`).join(', ');
+  const go2 = (t, btn, lab) => nx.push(`<li>${t}${btn ? ` <button class="primary sm" data-nx="${btn}">${esc(lab)}</button>` : ''}</li>`);
+  if(r.status==='planned') go2('Upload the RR PDF and the wagon sheet (below).');
+  else if(r.status==='wagons_updated') go2('Mark the rake arrival and untick wagons that were not placed (below).');
+  else if(r.status!=='closed'){
+    const notStarted = wagons.filter(w => w.status==='arrived'), inProg = wagons.filter(w => w.status==='unloading');
+    if(notStarted.length) go2(`${notStarted.length} wagon(s) not started: take the before-photo and start unloading (Sr ${notStarted.map(w => w.sheet_sr).join(', ')}).`);
+    if(inProg.length) go2(`${inProg.length} wagon(s) being unloaded: return the unloading slip, take the after-photo and mark empty (Sr ${inProg.map(w => w.sheet_sr).join(', ')}).`);
+    if(openTrucks.length) go2(`${openTrucks.length} truck slip(s) waiting for the labour-confirmed quantity: ${openTrucks.map(t => esc(t.slip_no)).join(', ')} (Trucks).`);
+    if(['unloaded','released'].includes(r.status) && lotLeft.length) go2(`Platform not at zero: ${lotTxt}. Load it on a truck, or close the platform difference if it is a real shortage / excess.`, can('rk_platform_diff_close') ? 'rkDiff' : '', 'Close platform difference');
+    else if(['arrived','unloading'].includes(r.status) && +r.lot_mt > 0 && can('rk_truck')) go2(`${n3(r.lot_mt)} MT on the platform waiting for trucks.`, 'rkTruck', '+ Load a truck');
+    if(r.status==='unloaded') go2('All wagons empty. Record the rake release (railway and operational times).', can('rk_release_clear') ? 'rkRel' : '', 'Record release');
+    if(r.status==='released' && !lotLeft.length) go2('Platform is at zero. Record platform clear.', can('rk_release_clear') ? 'rkClr' : '', 'Record platform clear');
+    if(si >= rkIdx('unloaded') && !r.charges_at) go2('Enter the DC / WC assessed, waived and paid by the railway.', can('rk_charges') ? 'rkChg' : '', 'Enter DC/WC');
+    if(diffs.some(d => d.status==='pending')) go2('Record the Sardar recovery for the platform shortage (Platform difference).');
+    if(r.status==='cleared'){ if(!msgs.some(x => x.kind==='rake_closure')) go2('Draft the final shortage report for the customer.', can('rk_rake_close') ? 'rkRep' : '', 'Draft final report'); else go2('Everything done? Close the rake.', can('rk_rake_close') ? 'rkClose' : '', 'Close rake'); }
+  }
+  // figures that look like a wrong entry (more than 2 MT off the sheet)
+  const odd = wagons.filter(w => w.status==='empty' && Math.abs(+w.diff_mt) > 2);
+  const oddTxt = odd.map(w => `wagon Sr ${w.sheet_sr} (${+w.diff_mt < 0 ? 'excess ' + n3(-w.diff_mt) : 'short ' + n3(w.diff_mt)} MT)`).join(', ');
+
+  let h = `<div class="row" style="justify-content:space-between"><h1>${esc(r.rake_no)} · ${esc(r.client_name)}</h1><div class="row">${canCorr ? `<button class="${cMode ? 'danger' : 'ghost'} sm" id="rkCm">${cMode ? 'Exit correction mode' : '✎ Correct a mistake'}</button>` : ''}<button class="ghost sm" id="rkBack">All rakes</button></div></div>
+  ${cMode ? `<div class="warnbox"><b>Correction mode.</b> A <b>Correct</b> button now shows on wagons, unloading slips and the arrival. Change the figure that was entered wrong (do not void and re-enter); press <b>Preview changes</b> to see everything it will update, give the reason, then save. Exit correction mode when done.</div>` : ''}
+  ${nx.length || odd.length ? `<div class="card" style="border-left:4px solid var(--deep)"><h2>What to do next</h2><ol style="margin:6px 0 0 18px;padding:0;line-height:1.9">${nx.join('')}</ol>
+    ${odd.length ? `<div class="warnbox" style="margin-top:8px">Check ${oddTxt}: far from the wagon sheet, possibly a wrong entry.${canCorr ? ' Use <b>✎ Correct a mistake</b> to fix it.' : ' Ask your supervisor to correct it.'}</div>` : ''}</div>` : ''}
   <div class="steps">${RK_STEPS.map(([k,l],i) => `<span class="${i<si?'done':i===si?'cur':''}">${i<si?'✓ ':''}${esc(l)}</span>`).join('')}</div>
   <div class="kpi"><div><span>RR / FNR</span><b style="font-size:15px">${esc(r.rr_no||'—')} / ${esc(r.fnr||'—')}</b></div><div><span>Batch</span><b>${esc(r.batch||'—')}</b></div>
    <div><span>Wagons empty</span><b>${r.wagons ? `${r.wagons_empty}/${r.wagons}` : '—'}</b></div><div><span>Missing</span><b style="color:${r.wagons_missing?'var(--alert)':'inherit'}">${r.wagons_missing}</b></div>
@@ -1356,7 +1386,7 @@ async function rkDetail(m, id){
   }
   // wagons
   if(si >= rkIdx('arrived')){
-    const canC = can('rk_correct') && r.status!=='closed';
+    const canC = cMode;
     h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Wagons</h2>${canC ? '<button class="ghost sm" id="rkCorrArr">Correct arrival (placed / positions)</button>' : ''}</div>${table([
       {h:'Pos',k:'position'},{h:'Wagon',f:w=>`<b>${esc(w.wagon_no)}</b>${w.late?' '+chip('late','warn'):''}<br><span class="muted">${esc(w.wagon_type||'')}</span>`},
       {h:'Sheet',f:w=>`${esc(mat(w.material_id))} · ${w.sheet_bags} bags · ${n3(w.sheet_mt)} MT`},
@@ -1407,7 +1437,7 @@ async function rkDetail(m, id){
       <p class="muted">Anything left on (or loaded beyond) the platform after the last truck. A shortage is recovered from the Sardar who loaded the last truck; the customer is paid its value; SSL bears the gap.</p>
       ${table([{h:'Platform lot',f:d=>'Platform-' + esc(wagLabel(wagons.find(w=>w.id===d.wagon_id)))},{h:'Type',f:d=>esc(mat(d.material_id))},{h:'Condition',k:'kind'},{h:'Difference',n:1,f:d=>+d.diff_mt>0?chip('short '+n3(d.diff_mt),'bad'):chip('excess '+n3(-d.diff_mt),'warn')},{h:'Bags',n:1,k:'bags'},{h:'Sardar',f:d=>esc(sardarName(d.sardar_id))},
         {h:'Recovery',n:1,f:d=>d.recovery_amount!=null?inr(d.recovery_amount):''},{h:'Paid to customer',n:1,f:d=>d.customer_value!=null?inr(d.customer_value):''},{h:'SSL net',n:1,f:d=>d.customer_value!=null?inr(d.customer_value-(d.recovery_amount||0)):''},
-        {h:'Status',f:d=>chip(d.status.replace('_',' '), d.status==='pending'?'bad':'ok')},{h:'',f:d=>d.status==='pending' && can('rk_recovery_settle') ? `<button class="primary sm" data-settle="${d.id}">Record recovery</button>` : d.settle_ref ? esc(d.settle_mode.replace('_',' ')+' · '+d.settle_ref) + (can('rk_correct') && r.status!=='closed' && d.status==='settled' ? ` <button class="ghost sm" data-unset="${d.id}">Reverse settlement</button>` : '') : ''}], diffs, 'No platform difference.')}</div>`;
+        {h:'Status',f:d=>chip(d.status.replace('_',' '), d.status==='pending'?'bad':'ok')},{h:'',f:d=>d.status==='pending' && can('rk_recovery_settle') ? `<button class="primary sm" data-settle="${d.id}">Record recovery</button>` : d.settle_ref ? esc(d.settle_mode.replace('_',' ')+' · '+d.settle_ref) + (cMode && d.status==='settled' ? ` <button class="ghost sm" data-unset="${d.id}">Reverse settlement</button>` : '') : ''}], diffs, 'No platform difference.')}</div>`;
   }
   // close
   if(si >= rkIdx('released')){
@@ -1552,6 +1582,8 @@ async function rkDetail(m, id){
     act(b, async () => { const x = await rpc('rk_wagon_close', {p_wagon:w.id}); back(); return x; }, x => x==='unloaded' ? 'All wagons empty — unloading complete' : 'Wagon settled');
   });
   if($('rkTruck')) $('rkTruck').onclick = () => rkTruckForm(r.client_id, () => rkDetail(m, id));
+  if($('rkCm')) $('rkCm').onclick = () => { S.corrMode = cMode ? null : id; back(); };
+  m.querySelectorAll('[data-nx]').forEach(b => b.onclick = () => { const t = $(b.dataset.nx); if(t){ t.scrollIntoView({behavior:'smooth', block:'center'}); t.click(); } });
   // ----- corrections -----
   if($('rkCorrArr')) $('rkCorrArr').onclick = () => corrModal(r.rake_no + ' arrival', `<p class="muted">Tick wagons that were placed. A wagon already unloading or emptied cannot be marked missing. Free time and rates: use "Change free time / rates".</p>
     ${table([{h:'Placed',f:w=>`<input type="checkbox" data-cpl="${w.id}" ${w.status!=='missing'?'checked':''} ${['unloading','empty'].includes(w.status)?'disabled':''}>`},{h:'Sr',k:'sheet_sr'},{h:'Wagon',k:'wagon_no'},{h:'Status',k:'status'},{h:'Position',f:w=>`<input type="number" data-cpos="${w.id}" value="${w.position ?? ''}" style="width:90px;height:36px">`}], wagons)}`,
@@ -1568,8 +1600,9 @@ async function rkDetail(m, id){
       <div><label>Labour Sardar</label><select id="cuS">${sardarOpts(u.sardar_id)}</select></div>
       ${u.status==='returned' ? `<div><label>Good MT</label><input id="cuG" type="number" step="0.001" value="${u.good_mt??''}"></div><div><label>Good bags</label><input id="cuGB" type="number" value="${u.good_bags??''}"></div>
       <div><label>Damaged MT</label><input id="cuD" type="number" step="0.001" value="${u.damaged_mt??0}"></div><div><label>Damaged bags</label><input id="cuDB" type="number" value="${u.damaged_bags??''}"></div>` : ''}
-      <div><label class="row" style="margin-top:18px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="cuV"> Void this slip (entered by mistake)</label></div></div>
-      <p class="muted">The wagon's platform lot, its settlement, the Sardar's work and any closed platform difference are recalculated.</p>`,
+</div>
+      <p class="muted">Change the numbers to what the labour actually unloaded. The wagon's platform lot, its settlement, the Sardar's work and any closed platform difference update by themselves.</p>
+      <details><summary class="muted">Slip made for the wrong wagon or twice?</summary><label class="row" style="margin-top:8px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="cuV"> Void this slip (only for a wrong-wagon or duplicate slip)</label></details>`,
       'unload_slip', u.id, () => ({sardar_id:$('cuS').value, void:$('cuV').checked, ...(u.status==='returned' ? {good_mt:$('cuG').value, good_bags:$('cuGB').value, damaged_mt:$('cuD').value, damaged_bags:$('cuDB').value} : {})}), back); });
   m.querySelectorAll('[data-unset]').forEach(b => b.onclick = () => corrModal('platform recovery settlement', '<p>The recovery goes back to <b>pending</b>; record it again after the correction.</p>', 'recovery', b.dataset.unset, () => ({}), back));
 
@@ -1741,7 +1774,7 @@ async function rkTruckDetail(m, id){
       {h:'MT loaded',n:1,f:l=>t.status==='open'?`<input type="number" step="0.001" data-lm="${l.id}" value="${n3(l.planned_mt)}" style="width:120px;height:36px">`:n3(l.actual_mt)}], lines)}
     ${t.status==='open' ? `<div class="row" style="margin-top:10px"><button class="ghost sm" id="tPr">Print slip</button>${can('rk_truck') ? '<button class="primary" id="tConf">Labour confirmed → generate challans</button><button class="ghost sm" id="tCx">Cancel slip</button>' : ''}</div>
       <p class="muted">The quantity the labour writes on the returned slip goes on the delivery challan.</p>` : t.status==='dispatched' ? `<button class="ghost sm" id="tCh" style="margin-top:10px">Print challans</button>` : ''}
-    ${can('rk_correct') && t.status!=='cancelled' ? '<button class="ghost sm" id="tCorr" style="margin-top:10px">Correct this truck slip</button>' : ''}</div>`;
+    ${can('rk_correct') && t.status!=='cancelled' ? '<button class="ghost sm" id="tCorr" style="margin-top:10px">✎ Correct a mistake on this slip</button>' : ''}</div>`;
   $('tBack').onclick = () => go();
   if($('tPr')) $('tPr').onclick = () => printTruckSlip(t, lines, rakes);
   const bpm = l => { const w = wagons.find(x => x.id===(l.wagon_id || l.lot_wagon_id)); return w && +w.sheet_mt ? w.sheet_bags / w.sheet_mt : 20; };
@@ -1768,7 +1801,7 @@ async function rkTruckDetail(m, id){
       <h2 style="margin-top:12px">Lines</h2>${table([{h:'From',f:srcSel},{h:'Type',f:l=>esc(mat(l.material_id))},
         {h:disp?'MT loaded':'Planned MT',n:1,f:l=>`<input type="number" step="0.001" data-cq="${l.id}" value="${disp ? (l.actual_mt??'') : l.planned_mt}" style="width:110px;height:36px">`},
         ...(disp ? [{h:'Bags',n:1,f:l=>`<input type="number" data-cb="${l.id}" value="${l.actual_bags??''}" style="width:100px;height:36px">`}] : [])], lines)}
-      <label class="row" style="margin-top:10px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="ctX"> Void this truck slip${disp ? ' and its challans' : ''} (entered by mistake)</label>
+      <details style="margin-top:10px"><summary class="muted">Truck never loaded, or slip made twice?</summary><label class="row" style="margin-top:8px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="ctX"> Void this truck slip${disp ? ' and its challans' : ''}</label></details>
       <p class="muted">Challans, platform lots, wagon settlements and any closed platform difference are recalculated. Blocked if the challan is already received at our warehouse (GRN) or tagged to a SAP invoice.</p>`,
       'truck_slip', t.id, () => ({truck_no:$('ctT').value, driver_name:$('ctD').value, sardar_id:$('ctS').value, ship_to_code:$('ctP').value, void:$('ctX').checked,
         ...($('ctV') ? {vendor_id:$('ctV').value} : {}),
