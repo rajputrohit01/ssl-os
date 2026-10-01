@@ -857,7 +857,7 @@ VIEWS.ic_reports = async m => {
 // Order (MP approves) → placed with dealer → each invoice = one truck → onboarding steps (vendor + cost → voucher; document upload)
 // → loan + EMI schedule (NACH: an EMI counts as paid on its due date unless recorded as bounced) → Fleet Head marks Ready → fleet master.
 const FT_STEPS = [
-  ['body',      'Body building',          'Body invoice / job card no. (optional)', false],
+  ['body',      'Body building',          'Contract / work order no. (optional)', false],
   ['insurance', 'Insurance',              'Policy number', true],
   ['temp_reg',  'Temporary registration', 'Temporary registration no.', false],
   ['perm_reg',  'Permanent registration', 'Registration no. (e.g. WB23A1234)', false],
@@ -1079,13 +1079,13 @@ function ftStepForm(t, s, v, evN){
   modal(`<h2>${esc(D.n)} · ${esc(t.label)}</h2>
     ${s.status==='not_needed' ? `<div class="issues">Marked not needed: ${esc(s.not_needed_reason||'')}. Saving re-opens it.</div>` : ''}
     <div class="grid">
-    <div class="field"><label>Vendor (who does it / is paid)</label><select id="fsV" data-mt="vendor" data-vt="${ftVT(s.step)}" ${paid ? 'disabled' : ''}>${vendOpts(s.vendor_id, s.step)}</select></div>
-    <div class="field"><label>Amount ₹ (blank / 0 if no cost to us)</label><input type="number" min="0" step="0.01" id="fsA" value="${s.amount ?? ''}" ${paid ? 'disabled' : ''}></div>
+    <div class="field"><label>${s.step==='body' ? 'Body contractor *' : 'Vendor (who does it / is paid)'}</label><select id="fsV" data-mt="vendor" data-vt="${ftVT(s.step)}" ${paid ? 'disabled' : ''}>${vendOpts(s.vendor_id, s.step)}</select></div>
+    <div class="field"><label>${s.step==='body' ? 'Contract amount ₹ *' : 'Amount ₹ (blank / 0 if no cost to us)'}</label><input type="number" min="0" step="0.01" id="fsA" value="${s.amount ?? ''}" ${paid ? 'disabled' : ''}></div>
     <div class="field"><label>${esc(D.doc)}</label><input id="fsN" value="${esc(s.doc_no||'')}"></div>
     <div class="field"><label>${s.step==='gps' || s.step==='fastag' ? 'Installed on' : 'Issued on'}</label><input type="date" id="fsI" max="${today()}" value="${s.issued_on||''}"></div>
     ${D.exp ? `<div class="field"><label>Valid till (expiry)</label><input type="date" id="fsE" value="${s.expiry_on||''}"></div>` : ''}
     ${ex.map(([k,l]) => `<div class="field"><label>${esc(l)}</label><input data-x="${k}" value="${esc((s.details||{})[k]||'')}"></div>`).join('')}
-    <div class="field"><label>${s.step==='body' ? 'Body photo or invoice (needed to mark done)' : 'Document (photo / PDF, needed to mark done)'}${evN ? ` · ${evN} uploaded` : ''}</label><input type="file" id="fsF" accept="image/*,application/pdf"></div>
+    <div class="field"><label>${s.step==='body' ? 'Photo of finished body (optional)' : 'Document (photo / PDF, needed to mark done)'}${evN ? ` · ${evN} uploaded` : ''}</label><input type="file" id="fsF" accept="image/*,application/pdf"></div>
   </div>${paid ? `<p class="muted">Voucher ${esc(v.voucher_no)} is paid, so vendor and amount are fixed.</p>` : '<p class="muted">Vendor + amount raises a payment voucher for Accounts automatically.</p>'}
   ${s.step==='perm_reg' ? '<p class="muted">The registration number becomes the truck number everywhere once saved.</p>' : ''}
   <div class="row" style="margin-top:12px"><button class="ghost" id="fsSave">Save (not finished)</button><button class="primary" id="fsDone">Save & mark done</button>
