@@ -228,6 +228,18 @@
   .lineRow{display:grid;grid-template-columns:1fr 130px 40px;gap:8px;align-items:center;margin-bottom:6px}
   @media (max-width:640px){ .lineRow{grid-template-columns:1fr 100px 40px} .rkgrid{grid-template-columns:1fr} }
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  /* compact module tiles: icon + name + one short line */
+  .home-wrap{max-width:1180px;padding:18px 20px 40px}
+  .mods{grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px;margin-top:14px}
+  .mod{flex-direction:row;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;min-height:0}
+  .mod::after{height:3px}
+  .mod .ic{width:38px;height:38px;border-radius:10px;margin:0;flex:0 0 38px}
+  .mod .ic svg{width:20px;height:20px}
+  .mod .tx{min-width:0;flex:1}
+  .mod .nm{font-size:15px;margin:0 0 2px;line-height:1.25}
+  .mod .ds{font-size:12.5px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  @media (max-width:640px){ .mods{grid-template-columns:1fr;gap:8px} .mod{padding:10px 12px} .mod .ds{display:-webkit-box;-webkit-line-clamp:1} .home-hello{font-size:20px} }
+
 </style>
 </head>
 <body>
@@ -466,6 +478,9 @@ const MODULES = [
   { key:'admin', name:'Users & Roles', icon:'users', desc:'Add users, set roles, permissions and locations',
     visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
 ];
+const MOD_SHORT = {rk:'Rakes, wagons, unloading, trucks, DC/WC', wh:'Godown receipts, dispatch, stock, SAP billing', ic:'SSL ↔ LSA cash, hire and monthly settlement',
+  ft:'New trucks: order to ready for movement', fl:'Existing trucks, documents, EMIs, FASTag', vn:'Vendor master by type, PAN, bank',
+  md:'Companies, customers, materials, plants, parties', admin:'Users, roles, permissions'};
 const modOf = k => MODULES.find(x => x.key === k);
 function tabList(){ const M = modOf(S.module); return M ? M.screens() : []; }
 function setNav(open){ document.body.classList.toggle('nav-open', open); }
@@ -509,7 +524,7 @@ function renderHome(){
   const mods = MODULES.filter(x => x.visible());
   const name = (S.me.profile && (S.me.profile.full_name || S.me.profile.email)) || '';
   $('main').innerHTML = `<div class="home-wrap"><div class="row" style="justify-content:space-between;align-items:flex-start"><div><p class="home-hello">Welcome${name ? ', ' + esc(name.split(' ')[0]) : ''}</p><p class="muted" style="margin:0">Choose a module.</p></div><div class="row homeLinks"><a class="ghost sm" href="#profile" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px">My profile</a><button class="ghost sm" onclick="sb.auth.signOut().then(()=>location.reload())">Sign out</button></div></div>
-    <div class="mods">${mods.map(x => `<button class="mod" data-mod="${x.key}"><div class="ic">${ICONS[x.icon]}</div><div class="nm">${esc(x.name)}</div><div class="ds">${esc(x.desc)}</div></button>`).join('')
+    <div class="mods">${mods.map(x => `<button class="mod" data-mod="${x.key}" title="${esc(x.desc)}"><div class="ic">${ICONS[x.icon]}</div><div class="tx"><div class="nm">${esc(x.name)}</div><div class="ds">${esc(MOD_SHORT[x.key] || x.desc)}</div></div></button>`).join('')
       || '<div class="empty">No module is open to you yet. Ask the administrator to give you a role.</div>'}</div></div>`;
   $('main').querySelectorAll('[data-mod]').forEach(b => b.onclick = () => { location.hash = b.dataset.mod; });
 }
