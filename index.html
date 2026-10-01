@@ -861,7 +861,8 @@ const FT_STEPS = [
   ['insurance', 'Insurance',              'Policy number', true],
   ['temp_reg',  'Temporary registration', 'Temporary registration no.', false],
   ['perm_reg',  'Permanent registration', 'Registration no. (e.g. WB23A1234)', false],
-  ['permit',    'Permit',                 'Permit number', true],
+  ['permit',    'State permit',           'State permit number', true],
+  ['nat_permit','National Permit',        'National Permit authorisation no.', true],
   ['fitness',   'Fitness',                'Fitness certificate no.', true],
   ['road_tax',  'Road tax',               'Tax receipt no.', true],
   ['gps',       'GPS',                    'GPS device ID', false],
@@ -1026,11 +1027,11 @@ async function ftTruckFile(m, id){
   const loanOk = t.no_loan || (loan && emis.length);
   const stepCard = ([k]) => { const s = byStep[k]; if(!s) return ''; const D = FT_STEP[k]; const v = vch.find(x => x.step_id===s.id);
     const blocked = (k==='perm_reg' && ['insurance','temp_reg'].some(x => byStep[x] && byStep[x].status==='open')) ? 'after insurance and temporary registration'
-      : (['permit','fitness','road_tax'].includes(k) && byStep.perm_reg && byStep.perm_reg.status!=='done') ? 'after permanent registration' : '';
+      : (['permit','nat_permit','fitness','road_tax'].includes(k) && byStep.perm_reg && byStep.perm_reg.status!=='done') ? 'after permanent registration' : '';
     const st = s.status==='done' ? chip('done','ok') : s.status==='not_needed' ? chip('not needed') : blocked ? chip(blocked,'') : chip('open','warn');
     return `<div class="card" style="margin:0"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">${esc(D.n)}</h2>${st}</div>
       <div class="muted" style="margin-top:6px">${[s.vendor_id ? esc(ftVendor(s.vendor_id)) : '', s.amount!=null ? inr(s.amount) : '', s.doc_no ? 'No. ' + esc(s.doc_no) : '', s.issued_on ? 'on ' + d8(s.issued_on) : '', s.expiry_on ? 'valid till ' + d8(s.expiry_on) : '',
-        ...Object.entries(s.details||{}).filter(([,x]) => x).map(([,x]) => esc(x)), s.not_needed_reason ? esc(s.not_needed_reason) : ''].filter(Boolean).join(' · ') || 'Nothing entered yet.'}</div>
+        ...Object.entries(s.details||{}).filter(([k,x]) => x && !k.startsWith('np_')).map(([,x]) => esc(x)), k==='perm_reg' && s.status==='done' ? ((s.details||{}).np_included ? 'NP fee included' : 'NP fee paid separately') : '', (s.details||{}).np_ref ? `NP fee paid ${d8(s.details.np_paid_on)} · ${esc(s.details.np_mode)} · ${esc(s.details.np_ref)}` : '', ['permit','fitness','road_tax'].includes(k) || (k==='nat_permit' && s.status==='done' && s.amount==null) ? 'cost in PR package' : '', s.not_needed_reason ? esc(s.not_needed_reason) : ''].filter(Boolean).join(' · ') || 'Nothing entered yet.'}</div>
       ${v ? `<div style="margin-top:4px">${chip(v.voucher_no + ' · ' + v.status, v.status==='paid' ? 'ok' : v.status==='unpaid' ? 'warn' : '')}</div>` : ''}
       <div class="row" style="margin-top:8px">${ent && s.status!=='done' ? `<button class="${blocked || s.status==='not_needed' ? 'ghost' : 'primary'} sm" data-st="${s.id}">${s.status==='not_needed' ? 'Re-open' : 'Enter / complete'}</button>` : ''}
         ${ev[s.id] ? `<button class="ghost sm" data-ev="${s.id}">Document (${ev[s.id]})</button>` : ''}</div></div>`; };
@@ -1058,7 +1059,7 @@ async function ftTruckFile(m, id){
   <div class="card"><h2>Vendor vouchers</h2>${table([{h:'Voucher',k:'voucher_no'},{h:'For',f:v=>esc((FT_STEP[v.kind]||{n:v.kind}).n)},{h:'Vendor',f:v=>esc(ftVendor(v.vendor_id))},{h:'Amount',n:1,f:v=>inr(v.amount)},{h:'Status',f:v=>chip(v.status, v.status==='paid' ? 'ok' : v.status==='unpaid' ? 'warn' : '') + (v.paid_on ? `<div class="muted">${d8(v.paid_on)} · ${esc(v.paid_mode)} · ${esc(v.paid_ref)}</div>` : '')}], vch, 'No vendor costs yet. A voucher is raised when a step gets a vendor and an amount.')}</div>`;
   $('ftBack').onclick = () => { S.ftTruck = null; go(); };
   m.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.ev));
-  m.querySelectorAll('[data-st]').forEach(b => b.onclick = () => ftStepForm(t, steps.find(s => s.id===b.dataset.st), vch.find(v => v.step_id===b.dataset.st), ev[b.dataset.st]||0));
+  m.querySelectorAll('[data-st]').forEach(b => b.onclick = () => ftStepForm(t, steps.find(s => s.id===b.dataset.st), vch.find(v => v.step_id===b.dataset.st), ev[b.dataset.st]||0, steps));
   if($('ftEdit')) $('ftEdit').onclick = () => {
     modal(`<h2>Correct invoice details</h2><div class="grid">
       <div class="field"><label>Chassis number</label><input id="feCh" value="${esc(t.chassis_no)}"></div><div class="field"><label>Engine number</label><input id="feEn" value="${esc(t.engine_no||'')}"></div>
@@ -1073,32 +1074,55 @@ async function ftTruckFile(m, id){
   if($('ftReady')) $('ftReady').onclick = e => { if(!confirm(`Mark ${t.label} ready for movement? It joins the own fleet for trips.`)) return;
     act(e.target, async () => { await rpc('ft_mark_ready', {p_truck:id}); await loadMasters(); go(); }, 'Truck is ready for movement and added to the fleet'); };
 }
-function ftStepForm(t, s, v, evN){
+function ftStepForm(t, s, v, evN, steps){
   const D = FT_STEP[s.step], ex = FT_EXTRA[s.step] || [], paid = v && v.status==='paid';
-  const canSkip = ['body','temp_reg'].includes(s.step);
+  const canSkip = ['body','temp_reg','nat_permit'].includes(s.step);
+  // after the permanent registration: fitness and road tax carry no cost; the permit carries only the National Permit fee
+  // (paid to the Government, recorded here) when it was not included in the registration package
+  const pr = (steps||[]).find(x => x.step==='perm_reg') || {};
+  const np = pr.status==='done' ? String((pr.details||{}).np_included) : null;   // 'true' | 'false' | null
+  const noCost = ['permit','fitness','road_tax'].includes(s.step) || (s.step==='nat_permit' && np!=='false');
+  const npFee = s.step==='nat_permit' && np==='false';
+  const vendorRows = noCost || npFee ? '' : `
+    <div class="field"><label>${s.step==='body' ? 'Body contractor *' : s.step==='perm_reg' ? 'RTO agent *' : 'Vendor (who does it / is paid)'}</label><select id="fsV" data-mt="vendor" data-vt="${ftVT(s.step)}" ${paid ? 'disabled' : ''}>${vendOpts(s.vendor_id, s.step)}</select></div>
+    <div class="field"><label>${s.step==='body' ? 'Contract amount ₹ *' : s.step==='perm_reg' ? 'Registration package amount ₹ *' : 'Amount ₹ (blank / 0 if no cost to us)'}</label><input type="number" min="0" step="0.01" id="fsA" value="${s.amount ?? ''}" ${paid ? 'disabled' : ''}></div>`;
+  const prRows = s.step!=='perm_reg' ? '' : `
+    <div class="field"><label>National Permit fee included in the package? *</label><select id="fsNp"><option value="">Choose</option><option value="true" ${(s.details||{}).np_included===true?'selected':''}>Yes — included, nothing more to pay</option><option value="false" ${(s.details||{}).np_included===false?'selected':''}>No — we pay it to the Government</option></select></div>`;
+  const npRows = !npFee ? '' : `
+    <div class="field"><label>National Permit fee ₹ *</label><input type="number" min="0" step="0.01" id="fsA" value="${s.amount ?? ''}"></div>
+    <div class="field"><label>Fee paid on *</label><input type="date" id="fsPd" max="${today()}" value="${esc((s.details||{}).np_paid_on||'')}"></div>
+    <div class="field"><label>Paid by *</label><select id="fsPm"><option value="bank">Bank</option><option value="cash" ${(s.details||{}).np_mode==='cash'?'selected':''}>Cash</option></select></div>
+    <div class="field"><label>Challan / UTR no. *</label><input id="fsPr" value="${esc((s.details||{}).np_ref||'')}"></div>`;
+  const note = s.step==='nat_permit' ? (np===null ? 'Complete the permanent registration first: it records whether the National Permit fee is included.' : np==='true' ? 'National Permit fee was included in the registration package: no cost here.' : 'The fee is paid to the Government and recorded here (no vendor voucher). It is added to the truck\'s landed cost.')
+    : noCost ? 'Cost is included in the permanent registration package: only the document is recorded here.'
+    : s.step==='perm_reg' ? 'The package paid to the RTO agent covers the state permit, fitness and road tax (and the National Permit fee if you say so below). The registration number becomes the truck number everywhere once saved.'
+    : paid ? `Voucher ${esc(v.voucher_no)} is paid, so vendor and amount are fixed.` : 'Vendor + amount raises a payment voucher for Accounts automatically.';
   modal(`<h2>${esc(D.n)} · ${esc(t.label)}</h2>
     ${s.status==='not_needed' ? `<div class="issues">Marked not needed: ${esc(s.not_needed_reason||'')}. Saving re-opens it.</div>` : ''}
-    <div class="grid">
-    <div class="field"><label>${s.step==='body' ? 'Body contractor *' : 'Vendor (who does it / is paid)'}</label><select id="fsV" data-mt="vendor" data-vt="${ftVT(s.step)}" ${paid ? 'disabled' : ''}>${vendOpts(s.vendor_id, s.step)}</select></div>
-    <div class="field"><label>${s.step==='body' ? 'Contract amount ₹ *' : 'Amount ₹ (blank / 0 if no cost to us)'}</label><input type="number" min="0" step="0.01" id="fsA" value="${s.amount ?? ''}" ${paid ? 'disabled' : ''}></div>
+    <div class="grid">${vendorRows}${prRows}${npRows}
     <div class="field"><label>${esc(D.doc)}</label><input id="fsN" value="${esc(s.doc_no||'')}"></div>
     <div class="field"><label>${s.step==='gps' || s.step==='fastag' ? 'Installed on' : 'Issued on'}</label><input type="date" id="fsI" max="${today()}" value="${s.issued_on||''}"></div>
     ${D.exp ? `<div class="field"><label>Valid till (expiry)</label><input type="date" id="fsE" value="${s.expiry_on||''}"></div>` : ''}
     ${ex.map(([k,l]) => `<div class="field"><label>${esc(l)}</label><input data-x="${k}" value="${esc((s.details||{})[k]||'')}"></div>`).join('')}
     <div class="field"><label>${s.step==='body' ? 'Photo of finished body (optional)' : 'Document (photo / PDF, needed to mark done)'}${evN ? ` · ${evN} uploaded` : ''}</label><input type="file" id="fsF" accept="image/*,application/pdf"></div>
-  </div>${paid ? `<p class="muted">Voucher ${esc(v.voucher_no)} is paid, so vendor and amount are fixed.</p>` : '<p class="muted">Vendor + amount raises a payment voucher for Accounts automatically.</p>'}
-  ${s.step==='perm_reg' ? '<p class="muted">The registration number becomes the truck number everywhere once saved.</p>' : ''}
+  </div><p class="muted">${note}</p>
   <div class="row" style="margin-top:12px"><button class="ghost" id="fsSave">Save (not finished)</button><button class="primary" id="fsDone">Save & mark done</button>
     ${canSkip && s.status!=='not_needed' ? '<button class="ghost" id="fsSkip">Not needed</button>' : ''}<button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-  $('fsV')._opts = () => vendOpts(null, s.step); wireAdd($('modalBox'));
-  const payload = done => { const p = {vendor_id:$('fsV').value || null, amount:$('fsA').value, doc_no:$('fsN').value, issued_on:$('fsI').value || null, done};
-    if($('fsE')) p.expiry_on = $('fsE').value || null; const d = {}; $('modalBox').querySelectorAll('[data-x]').forEach(i => d[i.dataset.x] = i.value.trim()); p.details = d; if(paid){ delete p.vendor_id; delete p.amount; } return p; };
+  if($('fsV')){ $('fsV')._opts = () => vendOpts(null, s.step); wireAdd($('modalBox')); }
+  const payload = done => { const p = {doc_no:$('fsN').value, issued_on:$('fsI').value || null, done};
+    if($('fsV') && !paid){ p.vendor_id = $('fsV').value || null; }
+    if($('fsA') && !paid) p.amount = $('fsA').value;
+    if($('fsE')) p.expiry_on = $('fsE').value || null;
+    const d = {}; $('modalBox').querySelectorAll('[data-x]').forEach(i => d[i.dataset.x] = i.value.trim());
+    if($('fsNp') && $('fsNp').value) d.np_included = $('fsNp').value === 'true';
+    if(npFee){ d.np_paid_on = $('fsPd').value || null; d.np_mode = $('fsPm').value; d.np_ref = $('fsPr').value.trim(); }
+    p.details = d; return p; };
   const run = (btn, done) => act(btn, async () => {
     const f = $('fsF').files[0]; if(f){ await uploadPhotoFile('ft_step', s.id, f, `${D.n} · ${t.label}`); $('fsF').value = ''; }
     const r = await rpc('ft_step_save', {p_step:s.id, p:payload(done)}); closeModal(); go(); return r; }, r => r==='done' ? `${D.n} done` : 'Saved');
   $('fsSave').onclick = e => run(e.target, false);
   $('fsDone').onclick = e => run(e.target, true);
-  if($('fsSkip')) $('fsSkip').onclick = e => { const why = prompt(s.step==='body' ? 'Why is no body work needed? (e.g. factory-built body)' : 'Why is temporary registration not needed?'); if(why===null) return;
+  if($('fsSkip')) $('fsSkip').onclick = e => { const why = prompt(s.step==='body' ? 'Why is no body work needed? (e.g. factory-built body)' : s.step==='nat_permit' ? 'Why is no National Permit needed? (e.g. truck runs within the state only)' : 'Why is temporary registration not needed?'); if(why===null) return;
     act(e.target, async () => { await rpc('ft_step_save', {p_step:s.id, p:{not_needed:true, reason:why}}); closeModal(); go(); }, 'Marked not needed'); };
 }
 function ftLoanForm(t, loan, emis){
@@ -1229,13 +1253,13 @@ VIEWS.ft_reports = async m => {
 /* ---- setup + import ---- */
 VIEWS.ft_setup = m => VIEWS.masters(m, 'ft');
 const FT_IMPORT_COLS = ['registration_no','chassis_no','engine_no','company','make','model','purchase_date','purchase_cost','financier','agreement_no','loan_amount','emi_amount','next_emi_date','remaining_emis',
-  'insurance_no','insurance_expiry','permit_no','permit_expiry','fitness_expiry','road_tax_expiry','gps_device','fastag_id'];
+  'insurance_no','insurance_expiry','permit_no','permit_expiry','np_no','np_expiry','fitness_expiry','road_tax_expiry','gps_device','fastag_id'];
 VIEWS.ft_import = async m => {
   m.innerHTML = `<h1>Import existing fleet</h1>
-  <p class="muted">One row per truck already running. Required: registration_no, chassis_no, company (our company code, e.g. SSL). For a running loan give financier, agreement_no, emi_amount, next_emi_date (the next EMI still to be paid) and remaining_emis — the system builds the remaining monthly schedule. Expiry dates feed the renewals list. Dates as DD-MM-YYYY. Rows with a problem are listed and skipped; fix and upload them again.</p>
+  <p class="muted">One row per truck already running. Required: registration_no, chassis_no, company (our company code, e.g. SSL). For a running loan give financier, agreement_no, emi_amount, next_emi_date (the next EMI still to be paid) and remaining_emis — the system builds the remaining monthly schedule. permit_no / permit_expiry = State permit; np_no / np_expiry = National Permit authorisation. Expiry dates feed the renewals list. Dates as DD-MM-YYYY. Rows with a problem are listed and skipped; fix and upload them again.</p>
   <div class="card"><div class="row"><button class="ghost sm" id="fiT">Download template</button><input type="file" id="fiFile" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="fiGo">Import</button></div><div id="fiOut"></div></div>`;
   $('fiT').onclick = () => { const wb = XLSX.utils.book_new(); const ex = {registration_no:'WB23A1234', chassis_no:'MAT123456789', engine_no:'ENG123', company:'SSL', make:'TATA', model:'SIGNA 4825.TK', purchase_date:'15-04-2024', purchase_cost:3850000,
-      financier:'HDFC BANK', agreement_no:'LN123456', loan_amount:3000000, emi_amount:72500, next_emi_date:'05-11-2026', remaining_emis:18, insurance_no:'POL123', insurance_expiry:'14-04-2027', permit_no:'PRM123', permit_expiry:'30-06-2028', fitness_expiry:'14-04-2027', road_tax_expiry:'31-03-2027', gps_device:'GPS0001', fastag_id:'FT0001'};
+      financier:'HDFC BANK', agreement_no:'LN123456', loan_amount:3000000, emi_amount:72500, next_emi_date:'05-11-2026', remaining_emis:18, insurance_no:'POL123', insurance_expiry:'14-04-2027', permit_no:'PRM123', permit_expiry:'30-06-2028', np_no:'NP123', np_expiry:'30-06-2027', fitness_expiry:'14-04-2027', road_tax_expiry:'31-03-2027', gps_device:'GPS0001', fastag_id:'FT0001'};
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([ex], {header:FT_IMPORT_COLS}), 'Fleet'); XLSX.writeFile(wb, 'fleet_import_template.xlsx'); };
   $('fiGo').onclick = e => act(e.target, async () => {
     const f = $('fiFile').files[0]; if(!f) throw new Error('Choose the filled Excel file');
