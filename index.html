@@ -287,6 +287,8 @@ function batchOf(dateStr){ // WW-YY, week counted from 1 January (same rule as t
 function toast(msg, kind='ok', ms=3500){ const t=$('toast'); t.textContent=msg; t.className='toast show '+kind; clearTimeout(t._t); t._t=setTimeout(()=>t.className='toast '+kind, ms); }
 async function rpc(fn, args={}){ const {data, error} = await sb.rpc(fn, args); if(error) throw new Error(error.message); return data; }
 async function q(table, build = x => x){ const {data, error} = await build(sb.from(table).select('*')); if(error) throw new Error(error.message); return data || []; }
+// all rows, past the server's 1,000-row page limit (vendor master, fleet)
+async function qAll(table, build = x => x){ const out = []; for(let from = 0; ; from += 1000){ const {data, error} = await build(sb.from(table).select('*')).range(from, from + 999); if(error) throw new Error(error.message); out.push(...(data||[])); if(!data || data.length < 1000) return out; } }
 // database wording → plain words
 function niceErr(m){
   m = String(m || 'Something went wrong');
@@ -398,7 +400,7 @@ async function loadMasters(){
     q('wh_materials', b => b.order('code')),
     q('wh_contractor_names'),
     q('wh_party_map', b => b.order('party_name')),
-    q('sys_vendors', b => b.order('vendor_name')),
+    qAll('sys_vendors', b => b.order('vendor_name').order('id')),
   ]);
   S.trucks = await q('sys_trucks', b => b.eq('is_active', true).order('registration_no'));
   [S.cats, S.sardars, S.links, S.terms, S.plants, S.states, S.districts, S.dests, S.soldTos] = await Promise.all([
@@ -1243,7 +1245,7 @@ VIEWS.ft_reports = async m => {
       : [{h:'Truck',k:'label'},{h:'Order',k:'order_no'},{h:'Days in onboarding',n:1,k:'days'},{h:'Open steps',f:x=>esc((x.steps_open||'').split(',').filter(Boolean).map(s => FT_STEP[s] ? FT_STEP[s].n : s).join(', '))},{h:'Loan',f:x=>x.loan_id ? 'entered' : x.no_loan ? 'no loan' : chip('missing','warn')}];
     out = rows.map(x => ({truck:x.label, chassis:x.chassis_no, model:`${x.make||''} ${x.model||''}`.trim(), company:x.company_code, order:x.order_no, invoice:x.invoice_amount, landed_cost:x.landed_cost, unpaid:x.unpaid, status:x.status, days:x.days ?? ''}));
   } else if(R==='calendar' || R==='outstanding'){
-    const e = await q('ft_emi_list', b => b.eq('source', ftSrc()).in('state', R==='calendar' ? ['due','bounced'] : ['due']).limit(20000));
+    const e = await qAll('ft_emi_list', b => b.eq('source', ftSrc()).in('state', R==='calendar' ? ['due','bounced'] : ['due']).order('id'));
     const g = {}; e.forEach(x => { const k = R==='calendar' ? x.due_date.slice(0,7) + '|' + x.financier_id : x.financier_id + '|' + coCode(x.debit_company_id); g[k] = g[k] || {n:0, a:0, loans:new Set()}; g[k].n++; g[k].a += +x.amount; g[k].loans.add(x.loan_id); });
     rows = Object.entries(g).map(([k,v]) => { const [a,b] = k.split('|'); return R==='calendar' ? {month:a, financier:fin(b), emis:v.n, amount:v.a} : {financier:fin(a), company:b, loans:v.loans.size, emis:v.n, amount:v.a}; }).sort((x,y) => (x.month||x.financier).localeCompare(y.month||y.financier));
     cols = R==='calendar' ? [{h:'Month',f:x=>monthLbl(x.month + '-01')},{h:'Financier',k:'financier'},{h:'EMIs',n:1,k:'emis'},{h:'Amount',n:1,f:x=>inr(x.amount)}] : [{h:'Financier',k:'financier'},{h:'Debit company',k:'company'},{h:'Loans',n:1,k:'loans'},{h:'EMIs left',n:1,k:'emis'},{h:'Outstanding (EMI total)',n:1,f:x=>inr(x.amount)}];
@@ -1271,8 +1273,8 @@ const docState = s => { if(!s || s.status==='open') return ['missing','warn']; i
 VIEWS.fl_list = async m => {
   await ftMasters();
   if(S.flTruck) return flTruckFile(m, S.flTruck);
-  const [rows, emis, docs] = await Promise.all([q('ft_truck_list', b => b.eq('source','import').order('registration_no').limit(5000)),
-    q('ft_emi_list', b => b.eq('source','import').in('state', ['due','bounced']).limit(20000)), q('ft_steps', b => b.in('step', FL_DOCS).eq('status','done').not('expiry_on','is',null).limit(20000))]);
+  const [rows, emis, docs] = await Promise.all([qAll('ft_truck_list', b => b.eq('source','import').order('registration_no').order('id')),
+    qAll('ft_emi_list', b => b.eq('source','import').in('state', ['due','bounced']).order('id')), qAll('ft_steps', b => b.in('step', FL_DOCS).eq('status','done').not('expiry_on','is',null).order('id'))]);
   const ids = new Set(rows.map(t => t.id));
   const week = new Date(Date.now() + 7*86400000).toISOString().slice(0,10), in30 = new Date(Date.now() + 30*86400000).toISOString().slice(0,10);
   const exp = docs.filter(d => ids.has(d.ft_truck_id) && d.expiry_on <= in30);
@@ -1343,7 +1345,7 @@ async function flTruckFile(m, id){
 /* ---- truck documents: every document of every existing truck ---- */
 VIEWS.fl_docs = async m => {
   S.flD = S.flD || {doc:'', st:'attention', co:''}; const F = S.flD;
-  const [trucks, steps] = await Promise.all([q('ft_trucks', b => b.select('id,registration_no,company_id,source').eq('source','import').limit(5000)), q('ft_steps', b => b.in('step', FL_DOCS).limit(40000))]);
+  const [trucks, steps] = await Promise.all([qAll('ft_trucks', b => b.eq('source','import').order('id')), qAll('ft_steps', b => b.in('step', FL_DOCS).order('id'))]);
   const tmap = Object.fromEntries(trucks.map(t => [t.id, t]));
   const all = steps.filter(s => tmap[s.ft_truck_id]).map(s => ({...s, _t:tmap[s.ft_truck_id], _st:docState(s)}));
   const rows = all.filter(s => (!F.doc || s.step===F.doc) && (!F.co || coCode(s._t.company_id)===F.co)
@@ -1414,7 +1416,7 @@ VIEWS.ft_import = async m => {
 const GAP_DOC = {insurance:'Insurance', permit:'State permit', nat_permit:'National Permit', fitness:'Fitness', road_tax:'Road tax', gps:'GPS', fastag:'FASTag'};
 VIEWS.ft_gaps = async m => {
   S.ftGF = S.ftGF || {only:true, co:''};
-  const all = await q('ft_fleet_gaps', b => b.eq('source','import').order('registration_no').limit(5000));
+  const all = await qAll('ft_fleet_gaps', b => b.eq('source','import').order('registration_no').order('id'));
   const gapsOf = g => [g.no_chassis ? 'Chassis' : '', g.no_model ? 'Model' : '', ...(g.docs_missing||'').split(',').filter(Boolean).map(k => GAP_DOC[k] || k),
     g.loan_state==='missing' ? 'Loan (yes/no)' : '', g.no_agreement ? 'Loan agreement no.' : '', g.no_emis ? 'EMI schedule' : ''].filter(Boolean);
   all.forEach(g => g._gaps = gapsOf(g));
@@ -1466,7 +1468,7 @@ function vnForm(v, preset, done){
       ${f('pan','PAN *','maxlength="10" style="text-transform:uppercase"')}${f('gstin','GSTIN (if registered)','maxlength="15" style="text-transform:uppercase"')}
       <div class="field"><label>State</label><select id="${P}state_id">${opt(S.states,'id','name',V.state_id,'—')}</select></div>
       <div class="field" style="grid-column:1/-1"><label>Address</label><input id="${P}address" value="${esc(V.address||'')}"></div>
-      ${f('bank_account','Bank account no.','inputmode="numeric"')}${f('bank_ifsc','IFSC','maxlength="11" style="text-transform:uppercase"')}${f('bank_holder','Account holder name')}
+      ${f('bank_name','Bank name')}${f('bank_branch','Branch')}${f('bank_account','Bank account no.','inputmode="numeric"')}${f('bank_ifsc','IFSC','maxlength="11" style="text-transform:uppercase"')}${f('bank_holder','Account holder name')}
       <div class="field"><label>Cancelled cheque / passbook${v && v.cheque_docs ? ` (${v.cheque_docs} uploaded)` : ''}</label><input type="file" id="${P}chq" accept="image/*,application/pdf"></div>
       ${f('note','Note')}
       ${v ? `<div class="field"><label>Status</label><select id="${P}is_active"><option value="true">Active</option><option value="false" ${v.is_active ? '' : 'selected'}>Inactive (hidden from all dropdowns)</option></select></div>` : ''}
@@ -1476,7 +1478,7 @@ function vnForm(v, preset, done){
   const g = k => ov.querySelector('#' + P + k);
   ov.querySelector('[data-vc]').onclick = () => ov.remove();
   ov.querySelector('[data-vs]').onclick = e => act(e.target, async () => {
-    const r = {}; ['vendor_name','busy_name','contact_person','phone','email','pan','gstin','address','bank_account','bank_ifsc','bank_holder','note'].forEach(k => r[k] = g(k).value.trim() || null);
+    const r = {}; ['vendor_name','busy_name','contact_person','phone','email','pan','gstin','address','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','note'].forEach(k => r[k] = g(k).value.trim() || null);
     r.state_id = g('state_id').value || null; r.kinds = [...ov.querySelectorAll('[data-k]:checked')].map(i => i.dataset.k);
     if(v) r.is_active = g('is_active').value === 'true';
     ['pan','gstin','bank_ifsc'].forEach(k => r[k] = r[k] && r[k].toUpperCase().replace(/\s/g,''));
@@ -1501,7 +1503,7 @@ function vnForm(v, preset, done){
 
 VIEWS.vn_list = async m => {
   S.vnF = S.vnF || {type:'', status:'active', gap:'', q:''}; const F = S.vnF;
-  const all = await q('vn_vendor_list', b => b.order('vendor_name').limit(5000));
+  const all = await qAll('vn_vendor_list', b => b.order('vendor_name').order('id'));
   const qs = F.q.trim().toUpperCase();
   const rows = all.filter(v => (!F.type || (v.kinds||[]).includes(F.type)) && (F.status==='all' || (F.status==='active') === v.is_active)
     && (!F.gap || (F.gap==='gstin' && !v.gstin) || (F.gap==='bank' && !v.bank_account) || (F.gap==='cheque' && !v.cheque_docs))
@@ -1516,7 +1518,7 @@ VIEWS.vn_list = async m => {
   <div class="card">${table([{h:'Vendor',f:v=>`<b>${esc(v.vendor_name)}</b><div class="muted">${esc(v.vendor_code)}${v.busy_name && v.busy_name!==v.vendor_name ? ' · BUSY: ' + esc(v.busy_name) : ''}</div>`},
     {h:'Types',f:v=>`<div style="display:flex;flex-wrap:wrap;gap:4px">${(v.kinds||[]).map(k => chip(vtName(k), 'info')).join('')}</div>`},{h:'Contact',f:v=>`${esc(v.phone)}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
     {h:'PAN / GSTIN',f:v=>`${esc(v.pan)}<div class="muted">${v.gstin ? esc(v.gstin) : 'no GSTIN'}</div>`},
-    {h:'Bank',f:v=>v.bank_account ? `…${esc(v.bank_account.slice(-4))} · ${esc(v.bank_ifsc)}${v.cheque_docs ? '' : ' ' + chip('no cheque copy','warn')}` : chip('missing','warn')},
+    {h:'Bank',f:v=>v.bank_account ? `${esc(v.bank_name||'')} …${esc(v.bank_account.slice(-4))} · ${esc(v.bank_ifsc)}${v.cheque_docs ? '' : ' ' + chip('no cheque copy','warn')}` : chip('missing','warn')},
     {h:'Used in',n:1,f:v=>v.used_count ? v.used_count + ' doc(s)' : '—'},{h:'Status',f:v=>v.is_active ? chip('active','ok') : chip('inactive')},
     {h:'',f:v=>(v.cheque_docs ? `<button class="ghost sm" data-ev="${v.id}">Cheque</button> ` : '') + (can('vendor_admin') ? `<button class="ghost sm" data-ed="${v.id}">Edit</button>` : '')}], rows, 'No vendors match.')}</div>`;
   $('vnT').onchange = () => { F.type = $('vnT').value; go(); }; $('vnS').onchange = () => { F.status = $('vnS').value; go(); };
@@ -1525,16 +1527,16 @@ VIEWS.vn_list = async m => {
   m.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => vnForm(all.find(v => v.id===b.dataset.ed), null, () => go()));
   m.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.ev));
   $('vnCsv').onclick = () => csv(rows.map(v => ({code:v.vendor_code, name:v.vendor_name, busy_name:v.busy_name, types:(v.kinds||[]).map(vtName).join(', '), contact_person:v.contact_person||'', phone:v.phone, email:v.email||'',
-    pan:v.pan, gstin:v.gstin||'', state:v.state_name||'', address:v.address||'', bank_account:v.bank_account||'', ifsc:v.bank_ifsc||'', holder:v.bank_holder||'', active:v.is_active, used_in_docs:v.used_count})), 'vendors');
+    pan:v.pan, gstin:v.gstin||'', state:v.state_name||'', address:v.address||'', bank_name:v.bank_name||'', branch:v.bank_branch||'', bank_account:v.bank_account||'', ifsc:v.bank_ifsc||'', holder:v.bank_holder||'', active:v.is_active, used_in_docs:v.used_count})), 'vendors');
 };
 
-const VN_COLS = ['vendor_name','busy_name','types','contact_person','phone','email','pan','gstin','address','state','bank_account','bank_ifsc','bank_holder','note'];
+const VN_COLS = ['vendor_code','vendor_name','busy_name','types','contact_person','phone','email','pan','gstin','address','state','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','vendor_since','note'];
 VIEWS.vn_import = async m => {
   m.innerHTML = `<h1>Import vendors from Excel</h1>
-  <p class="muted">One row per vendor. Required: vendor_name, types, phone, pan. Types = names or codes from the Types sheet, separated by commas (e.g. "Body builder, RTO agent"). A PAN already in the system is not duplicated: its new types are added and blank details filled; nothing is overwritten. Rows with a problem are listed and skipped.</p>
+  <p class="muted">One row per vendor. Required: vendor_name, types, phone, pan. vendor_code: keep your existing code (e.g. VD0123); blank = next VD number. Types = names or codes from the Types sheet, separated by commas (e.g. "Body builder, RTO agent"). A PAN already in the system is not duplicated: its new types are added and blank details filled; nothing is overwritten. Rows with a problem are listed and skipped.</p>
   <div class="card"><div class="row"><button class="ghost sm" id="viT">Download template</button><input type="file" id="viF" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="viGo">Import</button></div><div id="viOut"></div></div>`;
   $('viT').onclick = () => { const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{vendor_name:'MAA TARA TRANSPORT', busy_name:'Maa Tara Transport', types:'Truck vendor (transporter)', contact_person:'Ramesh Das', phone:'9830012345', email:'', pan:'ABCDE1234F', gstin:'19ABCDE1234F1Z5', address:'Kolkata', state:'West Bengal', bank_account:'12345678901', bank_ifsc:'SBIN0001234', bank_holder:'MAA TARA TRANSPORT', note:''}], {header:VN_COLS}), 'Vendors');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{vendor_code:'', vendor_name:'MAA TARA TRANSPORT', busy_name:'Maa Tara Transport', bank_name:'STATE BANK OF INDIA', bank_branch:'HOWRAH', vendor_since:'', types:'Truck vendor (transporter)', contact_person:'Ramesh Das', phone:'9830012345', email:'', pan:'ABCDE1234F', gstin:'19ABCDE1234F1Z5', address:'Kolkata', state:'West Bengal', bank_account:'12345678901', bank_ifsc:'SBIN0001234', bank_holder:'MAA TARA TRANSPORT', note:''}], {header:VN_COLS}), 'Vendors');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(S.vtypes.filter(t => t.is_active).map(t => ({type_name:t.name, code:t.code, used_in:t.used_in||''}))), 'Types');
     XLSX.writeFile(wb, 'vendor_import_template.xlsx'); };
   $('viGo').onclick = e => act(e.target, async () => {
