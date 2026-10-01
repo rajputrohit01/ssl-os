@@ -892,6 +892,7 @@ MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
       if(can('ft_import') || can('ft_entry') || can('ft_accounts')) t.push(['#','Setup']);
       if(can('ft_entry') || can('ft_accounts')) t.push(['ft_setup','Models & financiers']);
       if(can('ft_import')) t.push(['ft_import','Import existing fleet']);
+      if(can('ft_view')) t.splice(t.findIndex(x => x[0]==='ft_reports'), 0, ['ft_gaps','Fleet data gaps']);
       return t; } });
 ICONS.truck = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5h13v11H1z"/><path d="M14 9h4l4 4v3h-8z"/><circle cx="5.5" cy="18.5" r="1.8"/><circle cx="17.5" cy="18.5" r="1.8"/></svg>';
 async function ftMasters(){ [S.ftModels, S.ftFin] = await Promise.all([q('ft_models', b => b.order('make').order('model')), q('ft_financiers', b => b.order('name'))]); }
@@ -1021,7 +1022,7 @@ async function ftTruckFile(m, id){
   const loan = loans[0]; const emis = loan ? await q('ft_emi_list', b => b.eq('loan_id', loan.id).order('inst_no')) : [];
   const ev = await evidenceCount('ft_step', steps.map(s => s.id)); const evT = await evidenceCount('ft_truck', [id]);
   const o = t.order_id ? (await q('ft_orders', b => b.eq('id', t.order_id)))[0] : null;
-  const ready = t.status==='ready', ent = can('ft_entry') && !ready, acc = can('ft_accounts');
+  const ready = t.status==='ready', imp = t.source==='import', ent = can('ft_entry') && (!ready || imp), acc = can('ft_accounts');
   const byStep = Object.fromEntries(steps.map(s => [s.step, s]));
   const open = steps.filter(s => s.status==='open');
   const loanOk = t.no_loan || (loan && emis.length);
@@ -1045,7 +1046,7 @@ async function ftTruckFile(m, id){
     <div><label>Dealer invoice</label><div>${esc(t.invoice_no||'—')} ${t.invoice_date ? '· ' + d8(t.invoice_date) : ''} · ${inr(t.invoice_amount)}${evT[id] ? ` <button class="ghost sm" data-ev="${id}">Copy</button>` : ''}</div></div>
     <div><label>Registration</label><div>${esc(t.registration_no || '—')}${t.temp_reg_no ? ` <span class="muted">(temp ${esc(t.temp_reg_no)})</span>` : ''}</div></div>
     <div><label>Landed cost so far</label><div><b>${inr(t.landed_cost)}</b></div></div><div><label>Unpaid vendor vouchers</label><div>${inr(t.unpaid)}</div></div>
-  </div>${ent ? '<button class="ghost sm" id="ftEdit" style="margin-top:8px">Correct invoice details</button>' : ''}</div>
+  </div>${ent ? `<button class="ghost sm" id="ftEdit" style="margin-top:8px">${imp ? 'Complete / correct truck details' : 'Correct invoice details'}</button>` : ''}</div>
   ${!ready ? `<div class="card" style="background:var(--soft,#f6f8f4)"><h2>What to do next</h2><ul style="margin:0;padding-left:18px">${[
       ...open.map(s => `<li>${esc(FT_STEP[s.step].n)}</li>`),
       !loanOk ? `<li>Loan and EMI schedule (Accounts)${acc ? '' : ' — not your role'}</li>` : '',
@@ -1061,12 +1062,14 @@ async function ftTruckFile(m, id){
   m.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.ev));
   m.querySelectorAll('[data-st]').forEach(b => b.onclick = () => ftStepForm(t, steps.find(s => s.id===b.dataset.st), vch.find(v => v.step_id===b.dataset.st), ev[b.dataset.st]||0, steps));
   if($('ftEdit')) $('ftEdit').onclick = () => {
-    modal(`<h2>Correct invoice details</h2><div class="grid">
-      <div class="field"><label>Chassis number</label><input id="feCh" value="${esc(t.chassis_no)}"></div><div class="field"><label>Engine number</label><input id="feEn" value="${esc(t.engine_no||'')}"></div>
+    modal(`<h2>${imp ? 'Truck details' : 'Correct invoice details'}</h2><div class="grid">
+      <div class="field"><label>Chassis number</label><input id="feCh" value="${esc(t.chassis_no||'')}"></div>
+      ${imp ? `<div class="field"><label>Model</label><select id="feM" data-mt="ftmodel"><option value=""></option>${typeOpts('ftmodel')}</select></div>` : ''}<div class="field"><label>Engine number</label><input id="feEn" value="${esc(t.engine_no||'')}"></div>
       <div class="field"><label>Invoice number</label><input id="feNo" value="${esc(t.invoice_no||'')}"></div><div class="field"><label>Invoice date</label><input type="date" id="feD" value="${t.invoice_date||''}"></div>
       <div class="field"><label>Invoice amount ₹</label><input type="number" step="0.01" id="feA" value="${t.invoice_amount||''}"></div><div class="field"><label>Invoice copy (add)</label><input type="file" id="feF" accept="image/*,application/pdf"></div></div>
       <div class="row" style="margin-top:12px"><button class="primary" id="feGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('feGo').onclick = e => act(e.target, async () => { await rpc('ft_truck_edit', {p_truck:id, p:{chassis_no:$('feCh').value, engine_no:$('feEn').value, invoice_no:$('feNo').value, invoice_date:$('feD').value || null, invoice_amount:$('feA').value}});
+    if($('feM')){ $('feM').value = t.model_id || ''; wireAdd($('modalBox')); }
+    $('feGo').onclick = e => act(e.target, async () => { await rpc('ft_truck_edit', {p_truck:id, p:{chassis_no:$('feCh').value, engine_no:$('feEn').value, invoice_no:$('feNo').value, invoice_date:$('feD').value || null, invoice_amount:$('feA').value, model_id:$('feM') ? $('feM').value || null : null}});
       const f = $('feF').files[0]; if(f) await uploadPhotoFile('ft_truck', id, f, 'Invoice ' + $('feNo').value); closeModal(); go(); }, 'Saved'); };
   if($('ftLoan')) $('ftLoan').onclick = () => ftLoanForm(t, loan, emis);
   if($('ftNoLoan')) $('ftNoLoan').onclick = e => { if(t.no_loan) return; const why = prompt('Why is there no loan? (e.g. bought from own funds)'); if(why===null) return;
@@ -1104,7 +1107,7 @@ function ftStepForm(t, s, v, evN, steps){
     <div class="field"><label>${s.step==='gps' || s.step==='fastag' ? 'Installed on' : 'Issued on'}</label><input type="date" id="fsI" max="${today()}" value="${s.issued_on||''}"></div>
     ${D.exp ? `<div class="field"><label>Valid till (expiry)</label><input type="date" id="fsE" value="${s.expiry_on||''}"></div>` : ''}
     ${ex.map(([k,l]) => `<div class="field"><label>${esc(l)}</label><input data-x="${k}" value="${esc((s.details||{})[k]||'')}"></div>`).join('')}
-    <div class="field"><label>${s.step==='body' ? 'Photo of finished body (optional)' : 'Document (photo / PDF, needed to mark done)'}${evN ? ` · ${evN} uploaded` : ''}</label><input type="file" id="fsF" accept="image/*,application/pdf"></div>
+    <div class="field"><label>${s.step==='body' ? 'Photo of finished body (optional)' : t.source==='import' ? 'Document copy (optional for existing trucks)' : 'Document (photo / PDF, needed to mark done)'}${evN ? ` · ${evN} uploaded` : ''}</label><input type="file" id="fsF" accept="image/*,application/pdf"></div>
   </div><p class="muted">${note}</p>
   <div class="row" style="margin-top:12px"><button class="ghost" id="fsSave">Save (not finished)</button><button class="primary" id="fsDone">Save & mark done</button>
     ${canSkip && s.status!=='not_needed' ? '<button class="ghost" id="fsSkip">Not needed</button>' : ''}<button class="ghost" onclick="closeModal()">Cancel</button></div>`);
@@ -1252,24 +1255,59 @@ VIEWS.ft_reports = async m => {
 
 /* ---- setup + import ---- */
 VIEWS.ft_setup = m => VIEWS.masters(m, 'ft');
-const FT_IMPORT_COLS = ['registration_no','chassis_no','engine_no','company','make','model','purchase_date','purchase_cost','financier','agreement_no','loan_amount','emi_amount','next_emi_date','remaining_emis',
-  'insurance_no','insurance_expiry','permit_no','permit_expiry','np_no','np_expiry','fitness_expiry','road_tax_expiry','gps_device','fastag_id'];
+const FT_IMPORT_COLS = ['registration_no','company','chassis_no','engine_no','make','model','purchase_date','purchase_cost','loan','financier','agreement_no','loan_amount','emi_amount','next_emi_date','remaining_emis',
+  'insurance_no','insurance_expiry','permit_no','permit_expiry','national_permit','np_no','np_expiry','fitness_no','fitness_expiry','road_tax_no','road_tax_expiry','gps_device','fastag_id'];
+const ftImportRows = raw => raw.map(r => { const o = {}; Object.entries(r).forEach(([k,v]) => { const key = String(k).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); if(v===null || v==='') return;
+  o[key] = /(_date|_expiry)$/.test(key) ? isoD(v) : /(_cost|_amount|remaining_emis)$/.test(key) ? +String(v).replace(/[₹,\s]/g,'') : String(v).trim(); }); return o; }).filter(o => o.registration_no);
 VIEWS.ft_import = async m => {
   m.innerHTML = `<h1>Import existing fleet</h1>
-  <p class="muted">One row per truck already running. Required: registration_no, chassis_no, company (our company code, e.g. SSL). For a running loan give financier, agreement_no, emi_amount, next_emi_date (the next EMI still to be paid) and remaining_emis — the system builds the remaining monthly schedule. permit_no / permit_expiry = State permit; np_no / np_expiry = National Permit authorisation. Expiry dates feed the renewals list. Dates as DD-MM-YYYY. Rows with a problem are listed and skipped; fix and upload them again.</p>
-  <div class="card"><div class="row"><button class="ghost sm" id="fiT">Download template</button><input type="file" id="fiFile" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="fiGo">Import</button></div><div id="fiOut"></div></div>`;
-  $('fiT').onclick = () => { const wb = XLSX.utils.book_new(); const ex = {registration_no:'WB23A1234', chassis_no:'MAT123456789', engine_no:'ENG123', company:'SSL', make:'TATA', model:'SIGNA 4825.TK', purchase_date:'15-04-2024', purchase_cost:3850000,
-      financier:'HDFC BANK', agreement_no:'LN123456', loan_amount:3000000, emi_amount:72500, next_emi_date:'05-11-2026', remaining_emis:18, insurance_no:'POL123', insurance_expiry:'14-04-2027', permit_no:'PRM123', permit_expiry:'30-06-2028', np_no:'NP123', np_expiry:'30-06-2027', fitness_expiry:'14-04-2027', road_tax_expiry:'31-03-2027', gps_device:'GPS0001', fastag_id:'FT0001'};
+  <div class="card"><p style="margin-top:0"><b>Only registration_no and company are required.</b> Fill what you have and leave the rest blank — blank means "not known yet", and the truck shows in <a href="#ft/ft_gaps">Fleet data gaps</a>. Upload the same sheet again later with more columns filled: blanks on trucks already imported are filled in; anything already recorded is never overwritten.</p>
+  <ul class="muted" style="margin:0;padding-left:18px">
+    <li>loan: <b>no</b> = bought without a loan; blank = not known yet. For a running loan give financier (agreement no., EMI amount, next EMI date and EMIs left when you have them — the remaining monthly schedule is built from these).</li>
+    <li>permit_no / permit_expiry = State permit; np_no / np_expiry = National Permit; national_permit: <b>no</b> = state-only truck.</li>
+    <li>A document counts as recorded when its expiry date is given (GPS and FASTag: their ID). Dates as DD-MM-YYYY.</li></ul>
+  <div class="row" style="margin-top:10px"><button class="ghost sm" id="fiT">Download blank template</button><a class="ghost sm" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px" href="#ft/ft_gaps">Download gap sheet (trucks already in)</a></div>
+  <div class="row" style="margin-top:10px"><input type="file" id="fiFile" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="fiGo">Import</button></div><div id="fiOut"></div></div>`;
+  $('fiT').onclick = () => { const wb = XLSX.utils.book_new(); const ex = {registration_no:'WB23A1234', company:'SSL', chassis_no:'MAT123456789', engine_no:'', make:'TATA', model:'SIGNA 4825.TK', purchase_date:'', purchase_cost:'',
+      loan:'yes', financier:'HDFC BANK', agreement_no:'', loan_amount:'', emi_amount:72500, next_emi_date:'05-11-2026', remaining_emis:18, insurance_no:'', insurance_expiry:'14-04-2027', permit_no:'', permit_expiry:'30-06-2028', national_permit:'', np_no:'', np_expiry:'30-06-2027', fitness_no:'', fitness_expiry:'14-04-2027', road_tax_no:'', road_tax_expiry:'', gps_device:'', fastag_id:''};
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([ex], {header:FT_IMPORT_COLS}), 'Fleet'); XLSX.writeFile(wb, 'fleet_import_template.xlsx'); };
   $('fiGo').onclick = e => act(e.target, async () => {
     const f = $('fiFile').files[0]; if(!f) throw new Error('Choose the filled Excel file');
-    const wb = XLSX.read(await f.arrayBuffer(), {cellDates:true}); const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:true});
-    const rows = raw.map(r => { const o = {}; Object.entries(r).forEach(([k,v]) => { const key = String(k).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); if(v===null || v==='') return;
-      o[key] = /(_date|_expiry)$/.test(key) ? isoD(v) : /(_cost|_amount|remaining_emis)$/.test(key) ? +String(v).replace(/[₹,\s]/g,'') : String(v).trim(); }); return o; }).filter(o => o.registration_no || o.chassis_no);
-    if(!rows.length) throw new Error('No truck rows found. Use the template columns.');
+    const wb = XLSX.read(await f.arrayBuffer(), {cellDates:true}); const rows = ftImportRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:true}));
+    if(!rows.length) throw new Error('No truck rows found (registration_no column is needed).');
     const res = await rpc('ft_import', {p_rows:rows}); await loadMasters();
-    $('fiOut').innerHTML = `<p><b>${res.imported}</b> of ${rows.length} truck(s) imported.</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Registration',k:'registration_no'},{h:'Problem',k:'error'}], res.errors) : '');
-    return res; }, r => `${r.imported} truck(s) imported`);
+    $('fiOut').innerHTML = `<p><b>${res.imported}</b> new truck(s) · <b>${res.updated}</b> existing truck(s) updated · of ${rows.length} row(s). <a href="#ft/ft_gaps">See what is still missing</a></p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Registration',k:'registration_no'},{h:'Problem',k:'error'}], res.errors) : '');
+    return res; }, r => `${r.imported} new, ${r.updated} updated`);
+};
+
+/* ---- fleet data gaps: what is still missing per truck ---- */
+const GAP_DOC = {insurance:'Insurance', permit:'State permit', nat_permit:'National Permit', fitness:'Fitness', road_tax:'Road tax', gps:'GPS', fastag:'FASTag'};
+VIEWS.ft_gaps = async m => {
+  S.ftGF = S.ftGF || {only:true, co:''};
+  const all = await q('ft_fleet_gaps', b => b.order('registration_no').limit(5000));
+  const gapsOf = g => [g.no_chassis ? 'Chassis' : '', g.no_model ? 'Model' : '', ...(g.docs_missing||'').split(',').filter(Boolean).map(k => GAP_DOC[k] || k),
+    g.loan_state==='missing' ? 'Loan (yes/no)' : '', g.no_agreement ? 'Loan agreement no.' : '', g.no_emis ? 'EMI schedule' : ''].filter(Boolean);
+  all.forEach(g => g._gaps = gapsOf(g));
+  const rows = all.filter(g => (!S.ftGF.only || g._gaps.length) && (!S.ftGF.co || g.company_code===S.ftGF.co));
+  const cnt = k => all.filter(g => g._gaps.includes(k)).length;
+  const cos = [...new Set(all.map(g => g.company_code))];
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Fleet data gaps</h1><div class="row"><button class="primary sm" id="fgX">Download gap sheet (Excel)</button><button class="ghost sm" id="fgCsv">CSV</button></div></div>
+  <p class="muted">Every truck in the fleet and what is still not recorded. Download the gap sheet, have the team fill the blanks, then upload it in Import existing fleet — only blanks are filled. Or open a truck and complete it there.</p>
+  <div class="kpi"><div><span>Trucks in fleet</span><b>${all.length}</b></div><div><span>Complete</span><b>${all.filter(g => !g._gaps.length).length}</b></div>
+    <div><span>Loan status unknown</span><b>${cnt('Loan (yes/no)')}</b></div><div><span>EMI schedule missing</span><b>${cnt('EMI schedule')}</b></div><div><span>Insurance missing</span><b>${cnt('Insurance')}</b></div></div>
+  <div class="row"><select id="fgO" style="width:auto"><option value="1" ${S.ftGF.only?'selected':''}>Only trucks with gaps</option><option value="" ${S.ftGF.only?'':'selected'}>All trucks</option></select>
+    <select id="fgC" style="width:auto"><option value="">All companies</option>${cos.map(c => `<option ${c===S.ftGF.co?'selected':''}>${esc(c)}</option>`).join('')}</select></div>
+  <div class="card">${table([{h:'Truck',f:g=>`<b>${esc(g.registration_no)}</b><div class="muted">${esc(g.chassis_no||'no chassis')}</div>`},{h:'Company',k:'company_code'},{h:'Model',f:g=>esc(g.model ? (g.make||'') + ' ' + g.model : '—')},
+    {h:'Loan',f:g=>g.loan_state==='loan' ? esc(g.financier||'') + (g.agreement_no ? `<div class="muted">${esc(g.agreement_no)}</div>` : '') : g.loan_state==='no_loan' ? 'no loan' : chip('unknown','warn')},
+    {h:'Missing',f:g=>g._gaps.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px">${g._gaps.map(x => chip(x,'warn')).join('')}</div>` : chip('complete','ok')},
+    {h:'',f:g=>`<button class="ghost sm" data-tk="${g.id}">Open</button>`}], rows, 'No gaps. Every truck is complete.')}</div>`;
+  $('fgO').onchange = () => { S.ftGF.only = !!$('fgO').value; go(); }; $('fgC').onchange = () => { S.ftGF.co = $('fgC').value; go(); };
+  m.querySelectorAll('[data-tk]').forEach(b => b.onclick = () => { S.ftTruck = b.dataset.tk; location.hash = 'ft/ft_trucks'; });
+  $('fgCsv').onclick = () => csv(rows.map(g => ({registration_no:g.registration_no, company:g.company_code, chassis_no:g.chassis_no||'', model:g.model||'', loan:g.loan_state, missing:g._gaps.join('; ')})), 'fleet-gaps');
+  $('fgX').onclick = () => { const wb = XLSX.utils.book_new();
+    const out = rows.map(g => { const o = Object.fromEntries(FT_IMPORT_COLS.map(c => [c, ''])); Object.assign(o, {registration_no:g.registration_no, company:g.company_code, chassis_no:g.chassis_no||'', engine_no:g.engine_no||'', make:g.make||'', model:g.model||'',
+      loan:g.loan_state==='no_loan' ? 'no' : g.loan_state==='loan' ? 'yes' : '', financier:g.financier||'', agreement_no:g.agreement_no||''}); o.missing_now = g._gaps.join('; '); return o; });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out, {header:[...FT_IMPORT_COLS, 'missing_now']}), 'Fleet'); XLSX.writeFile(wb, `fleet_gap_sheet_${today()}.xlsx`); };
 };
 
 /* ============ VENDOR MASTER ============ */
