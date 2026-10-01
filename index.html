@@ -404,6 +404,7 @@ async function loadMasters(){
     q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
   S.companies = await q('sys_companies', b => b.order('code'));
   S.aliases = await q('rk_material_aliases');
+  if(can('ft_view')) await ftMasters();
 }
 async function start(){
   const {data:{user}} = await sb.auth.getUser(); if(!user) return;
@@ -847,6 +848,407 @@ VIEWS.ic_reports = async m => {
   <div class="card">${table(cols, rows, 'Nothing to show.')}</div>`;
   $('irR').onchange = () => { R.r = $('irR').value; go(); }; if($('irM')) $('irM').onchange = () => { R.month = $('irM').value; go(); };
   $('irCsv').onclick = () => csv(out, 'intercompany-' + R.r);
+};
+
+/* ============ OWN TRUCK PURCHASE & LOANS ============ */
+// Order (MP approves) → placed with dealer → each invoice = one truck → onboarding steps (vendor + cost → voucher; document upload)
+// → loan + EMI schedule (NACH: an EMI counts as paid on its due date unless recorded as bounced) → Fleet Head marks Ready → fleet master.
+const FT_STEPS = [
+  ['body',      'Body building',          'Body invoice / job card no.', false],
+  ['insurance', 'Insurance',              'Policy number', true],
+  ['temp_reg',  'Temporary registration', 'Temporary registration no.', false],
+  ['perm_reg',  'Permanent registration', 'Registration no. (e.g. WB23A1234)', false],
+  ['permit',    'Permit',                 'Permit number', true],
+  ['fitness',   'Fitness',                'Fitness certificate no.', true],
+  ['road_tax',  'Road tax',               'Tax receipt no.', true],
+  ['gps',       'GPS',                    'GPS device ID', false],
+  ['fastag',    'FASTag',                 'FASTag ID', false]];
+const FT_STEP = Object.fromEntries(FT_STEPS.map(s => [s[0], {n:s[1], doc:s[2], exp:s[3]}]));
+const FT_EXTRA = {gps:[['provider','GPS provider']], fastag:[['installed_by','Installed by (bank / agent)']], body:[['body_type','Body type (e.g. 24 ft high-side)']]};
+const FT_ORDER_ST = {pending_approval:['waiting for MP approval','warn'], approved:['approved · place with dealer','info'], rejected:['rejected','bad'], placed:['placed with dealer','ok'], cancelled:['cancelled','']};
+const FT_EMI_ST = {due:['due','info'], paid:['paid (NACH)','ok'], bounced:['BOUNCED','bad'], repaid:['bounced · repaid','warn']};
+const ftModel = id => { const x = (S.ftModels||[]).find(m => m.id===id); return x ? `${x.make} ${x.model}` : ''; };
+const ftVendor = id => (S.vendors.find(v => v.id===id)||{}).vendor_name || '';
+const vendOpts = (sel, kind) => { const vs = S.vendors.slice().sort((a,b) => ((b.kinds||[]).includes(kind)) - ((a.kinds||[]).includes(kind)) || a.vendor_name.localeCompare(b.vendor_name));
+  return opt(vs, 'id', v => v.vendor_name + ((v.kinds||[]).length ? ` · ${v.kinds.join(', ')}` : ''), sel, 'Select vendor'); };
+const linkBtn = (href, label, cls='ghost') => `<a class="${cls} sm" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px" href="${href}">${label}</a>`;
+const isoD = v => { if(v==null || v==='') return null; if(v instanceof Date) return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`;
+  v = String(v).trim(); let m;
+  if((m = v.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/))) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  if(/^\d{4}-\d{2}-\d{2}/.test(v)) return v.slice(0,10);
+  if(/^\d+(\.\d+)?$/.test(v)){ const d = XLSX.SSF.parse_date_code(+v); return `${d.y}-${String(d.m).padStart(2,'0')}-${String(d.d).padStart(2,'0')}`; }
+  const d = new Date(v); return isNaN(d) ? v : isoD(d); };
+const addMonths = (iso, k) => { const [y,mo,d] = iso.split('-').map(Number); const t = new Date(Date.UTC(y, mo-1+k, 1)); const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth()+1, 0)).getUTCDate();
+  return `${t.getUTCFullYear()}-${String(t.getUTCMonth()+1).padStart(2,'0')}-${String(Math.min(d, last)).padStart(2,'0')}`; };
+
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'ft', name:'Truck Purchase', icon:'truck', desc:'Own truck orders (MP approval), dealer invoices, body / insurance / registration / permit / GPS / FASTag, loans and EMIs, vendor payments, ready for movement',
+    visible: () => can('ft_view'),
+    screens: () => { const t = [['#','Truck Purchase'],['ft_dash','Dashboard'],['ft_orders','Purchase orders'],['ft_trucks','Trucks & onboarding'],['ft_emis','Loans & EMIs'],['ft_vouchers','Vendor payments'],['ft_reports','Reports']];
+      if(can('ft_import') || can('ft_entry') || can('ft_accounts')) t.push(['#','Setup']);
+      if(can('ft_entry') || can('ft_accounts')) t.push(['ft_setup','Models & financiers']);
+      if(can('ft_import')) t.push(['ft_import','Import existing fleet']);
+      return t; } });
+ICONS.truck = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5h13v11H1z"/><path d="M14 9h4l4 4v3h-8z"/><circle cx="5.5" cy="18.5" r="1.8"/><circle cx="17.5" cy="18.5" r="1.8"/></svg>';
+async function ftMasters(){ [S.ftModels, S.ftFin] = await Promise.all([q('ft_models', b => b.order('make').order('model')), q('ft_financiers', b => b.order('name'))]); }
+
+/* ---- dashboard ---- */
+VIEWS.ft_dash = async m => {
+  await ftMasters();
+  const [orders, trucks, emis, vch] = await Promise.all([q('ft_order_list', b => b.in('status', ['pending_approval','approved','placed'])), q('ft_truck_list', b => b.eq('status','onboarding')),
+    q('ft_emi_list', b => b.in('state', ['due','bounced']).order('due_date').limit(500)), q('ft_vouchers', b => b.eq('status','unpaid'))]);
+  const week = new Date(Date.now() + 7*86400000).toISOString().slice(0,10);
+  const dueWeek = emis.filter(e => e.state==='due' && e.due_date <= week), bounced = emis.filter(e => e.state==='bounced');
+  const stuck = trucks.filter(t => (Date.now() - new Date(t.created_at)) / 86400000 > 21);
+  const tl = id => { const t = S._ftT && S._ftT[id]; return t ? esc(t) : ''; };
+  const allT = await q('ft_trucks', b => b.select('id,registration_no,temp_reg_no,chassis_no')); S._ftT = Object.fromEntries(allT.map(t => [t.id, t.registration_no || t.temp_reg_no || t.chassis_no]));
+  m.innerHTML = `<h1>Truck Purchase</h1>
+  ${bounced.length ? `<div class="issues">${bounced.length} EMI bounce(s) not yet repaid: ${bounced.map(e => `${tl(e.ft_truck_id)} ${inr(e.amount)} (${d8(e.due_date)})`).join(' · ')}. Pay the financier and record the re-payment in Loans & EMIs.</div>` : ''}
+  <div class="kpi">
+    <div><span>Orders waiting for MP</span><b>${orders.filter(o => o.status==='pending_approval').length}</b></div>
+    <div><span>Trucks in onboarding</span><b>${trucks.length}</b></div>
+    <div><span>Unpaid vendor vouchers</span><b>${inr(vch.reduce((a,v) => a + +v.amount, 0))}</b></div>
+    <div><span>EMIs in next 7 days</span><b>${inr(dueWeek.reduce((a,e) => a + +e.amount, 0))}</b></div>
+  </div>
+  <div class="card"><h2>Orders in progress</h2>${table([{h:'Order',k:'order_no'},{h:'Date',f:o=>d8(o.order_date)},{h:'Company',k:'company_code'},{h:'Model',f:o=>esc(o.make + ' ' + o.model)},{h:'Qty',n:1,f:o=>`${o.invoiced}/${o.qty} invoiced`},{h:'Status',f:o=>chip(...FT_ORDER_ST[o.status])}], orders, 'No open orders.')}
+    ${linkBtn('#ft/ft_orders', 'Open purchase orders')}</div>
+  <div class="card"><h2>Trucks in onboarding</h2>${table([{h:'Truck',f:t=>`<b>${esc(t.label)}</b><div class="muted">${esc((t.make||'') + ' ' + (t.model||''))}</div>`},{h:'Company',k:'company_code'},{h:'Since',f:t=>d8(t.created_at) + ((Date.now() - new Date(t.created_at))/86400000 > 21 ? ' ' + chip('over 21 days','bad') : '')},
+      {h:'Steps',f:t=>`${t.steps_done}/${t.steps_total}`},{h:'Open',f:t=>esc((t.steps_open||'').split(',').filter(Boolean).map(s => FT_STEP[s] ? FT_STEP[s].n : s).join(', '))},{h:'Loan',f:t=>t.loan_id ? chip('loan entered','ok') : t.no_loan ? chip('no loan') : chip('loan missing','warn')},
+      {h:'',f:t=>`<button class="ghost sm" data-tk="${t.id}">Open</button>`}], trucks, 'No truck in onboarding.')}</div>
+  <div class="card"><h2>EMIs in the next 7 days</h2>${table([{h:'Due',f:e=>d8(e.due_date)},{h:'Truck',f:e=>tl(e.ft_truck_id)},{h:'Agreement',k:'agreement_no'},{h:'Financier',f:e=>esc(((S.ftFin||[]).find(f=>f.id===e.financier_id)||{}).name)},{h:'Debited from',f:e=>esc(coCode(e.debit_company_id))},{h:'Amount',n:1,f:e=>inr(e.amount)}], dueWeek, 'No EMI due in the next 7 days.')}
+    <p class="muted">Keep the balance in the debit account a day before. An EMI counts as paid on its due date unless Accounts records it as bounced.</p></div>`;
+  m.querySelectorAll('[data-tk]').forEach(b => b.onclick = () => { S.ftTruck = b.dataset.tk; location.hash = 'ft/ft_trucks'; });
+};
+
+/* ---- purchase orders ---- */
+VIEWS.ft_orders = async m => {
+  await ftMasters();
+  S.ftOF = S.ftOF || 'open';
+  const rows = await q('ft_order_list', b => { b = b.order('order_date', {ascending:false}).order('order_no', {ascending:false}).limit(300);
+    return S.ftOF==='open' ? b.in('status', ['pending_approval','approved','placed']) : S.ftOF==='all' ? b : b.eq('status', S.ftOF); });
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Purchase orders</h1>${can('ft_entry') ? '<button class="primary sm" id="ftoAdd">+ New order</button>' : ''}</div>
+  <p class="muted">Raise the order → the Managing Partner approves → place it with the dealer → enter each truck as its dealer invoice arrives. One invoice = one truck.</p>
+  <div class="row"><select id="ftoF" style="width:auto">${[['open','Open orders'],['pending_approval','Waiting for MP'],['placed','Placed with dealer'],['rejected','Rejected'],['cancelled','Cancelled'],['all','All']].map(([v,l]) => `<option value="${v}" ${v===S.ftOF?'selected':''}>${l}</option>`).join('')}</select></div>
+  <div class="card">${table([{h:'Order',f:o=>`<b>${esc(o.order_no)}</b><div class="muted">${d8(o.order_date)}</div>`},{h:'Company',k:'company_code'},{h:'Model',f:o=>esc(o.make + ' ' + o.model)},{h:'Qty',n:1,k:'qty'},{h:'Rate',n:1,f:o=>inr(o.rate)},
+    {h:'TCS / TCR',f:o=>`TCS ${o.tcs_mode}${+o.tcs_amount ? ' ' + inr(o.tcs_amount) : ''}<br>TCR ${o.tcr_mode}${+o.tcr_amount ? ' ' + inr(o.tcr_amount) : ''}`},{h:'Dealer',f:o=>esc(o.dealer||'')},
+    {h:'Trucks',f:o=>`${o.invoiced}/${o.qty} invoiced · ${o.ready} ready`},{h:'Status',f:o=>chip(...FT_ORDER_ST[o.status]) + (o.reject_reason ? `<div class="muted">${esc(o.reject_reason)}</div>` : '')},
+    {h:'',f:o=>[
+      o.status==='pending_approval' && can('ft_order_approve') ? `<button class="lime sm" data-ok="${o.id}">Approve</button> <button class="danger sm" data-no="${o.id}">Reject</button>` : '',
+      ['pending_approval','rejected'].includes(o.status) && can('ft_entry') ? `<button class="ghost sm" data-ed="${o.id}">Edit</button>` : '',
+      o.status==='approved' && can('ft_entry') ? `<button class="primary sm" data-pl="${o.id}">Place with dealer</button>` : '',
+      o.status==='placed' && o.invoiced < o.qty && can('ft_entry') ? `<button class="primary sm" data-inv="${o.id}">+ Truck invoice</button>` : '',
+      !['cancelled','rejected'].includes(o.status) && !o.invoiced && can('ft_entry') ? `<button class="ghost sm" data-cx="${o.id}">Cancel</button>` : ''].filter(Boolean).join(' ')}], rows, 'No orders.')}</div>`;
+  $('ftoF').onchange = () => { S.ftOF = $('ftoF').value; go(); };
+  if($('ftoAdd')) $('ftoAdd').onclick = () => ftOrderForm(null);
+  const R = id => rows.find(o => o.id===id);
+  m.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => ftOrderForm(R(b.dataset.ed)));
+  m.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => { const o = R(b.dataset.ok); if(!confirm(`Approve ${o.order_no}: ${o.qty} × ${o.make} ${o.model} at ${inr(o.rate)} each (${inr(o.qty * o.rate)})?`)) return;
+    act(b, async () => { await rpc('ft_order_decide', {p_id:o.id, p_approve:true, p_reason:null}); go(); }, 'Order approved'); });
+  m.querySelectorAll('[data-no]').forEach(b => b.onclick = () => { const why = prompt('Reason for rejecting:'); if(why===null) return;
+    act(b, async () => { await rpc('ft_order_decide', {p_id:b.dataset.no, p_approve:false, p_reason:why}); go(); }, 'Rejected'); });
+  m.querySelectorAll('[data-cx]').forEach(b => b.onclick = () => { const why = prompt('Reason for cancelling:'); if(why===null) return;
+    act(b, async () => { await rpc('ft_order_cancel', {p_id:b.dataset.cx, p_reason:why}); go(); }, 'Cancelled'); });
+  m.querySelectorAll('[data-pl]').forEach(b => b.onclick = () => { const o = R(b.dataset.pl);
+    modal(`<h2>Place ${esc(o.order_no)} with the dealer</h2><p>${o.qty} × ${esc(o.make + ' ' + o.model)} at ${inr(o.rate)}</p>
+      <div class="field"><label>Dealer</label><select id="plD" data-mt="vendor">${vendOpts(o.dealer_id, 'dealer')}</select></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="plGo">Placed</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('plD')._opts = () => vendOpts(null, 'dealer'); wireAdd($('modalBox'));
+    $('plGo').onclick = e => act(e.target, async () => { if(!$('plD').value) throw new Error('Choose the dealer'); await rpc('ft_order_place', {p_id:o.id, p_dealer:$('plD').value}); closeModal(); go(); }, 'Order placed'); });
+  m.querySelectorAll('[data-inv]').forEach(b => b.onclick = () => ftInvoiceForm(R(b.dataset.inv)));
+};
+function ftOrderForm(o){
+  const ssl = S.companies.find(c => c.code==='SSL');
+  modal(`<h2>${o ? 'Edit ' + esc(o.order_no) : 'New truck purchase order'}</h2>${o && o.reject_reason ? `<div class="issues">Rejected: ${esc(o.reject_reason)}</div>` : ''}<div class="grid">
+    <div class="field"><label>Order date</label><input type="date" id="foD" max="${today()}" value="${o ? o.order_date : today()}"></div>
+    <div class="field"><label>Buying company</label><select id="foC">${coOpts(o ? o.company_id : ssl && ssl.id, 'Select')}</select></div>
+    <div class="field"><label>Truck model</label><select id="foM" data-mt="ftmodel"><option value=""></option>${typeOpts('ftmodel')}</select></div>
+    <div class="field"><label>Quantity (trucks)</label><input type="number" min="1" step="1" id="foQ" value="${o ? o.qty : ''}"></div>
+    <div class="field"><label>Rate per truck ₹ (ex-showroom as per quotation)</label><input type="number" min="0" step="0.01" id="foR" value="${o ? o.rate : ''}"></div>
+    <div class="field"><label>TCS</label><select id="foTcs"><option value="included">Included in rate</option><option value="excluded">Excluded (paid extra)</option></select></div>
+    <div class="field"><label>TCS amount per truck ₹</label><input type="number" min="0" step="0.01" id="foTcsA" value="${o ? o.tcs_amount : ''}"></div>
+    <div class="field"><label>TCR (temporary registration charge)</label><select id="foTcr"><option value="included">Included (dealer does temporary registration)</option><option value="excluded">Excluded (we arrange it)</option></select></div>
+    <div class="field"><label>TCR amount per truck ₹</label><input type="number" min="0" step="0.01" id="foTcrA" value="${o ? o.tcr_amount : ''}"></div>
+    <div class="field"><label>Dealer (if known)</label><select id="foDl" data-mt="vendor">${vendOpts(o && o.dealer_id, 'dealer')}</select></div>
+    <div class="field"><label>Note</label><input id="foN" value="${esc(o && o.note || '')}"></div>
+  </div><p class="muted" id="foT"></p>
+  <div class="row" style="margin-top:12px"><button class="primary" id="foGo">${o ? 'Save & send for approval again' : 'Send for MP approval'}</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  if(o){ $('foM').value = o.model_id; $('foTcs').value = o.tcs_mode; $('foTcr').value = o.tcr_mode; }
+  $('foDl')._opts = () => vendOpts(null, 'dealer'); wireAdd($('modalBox'));
+  const tot = () => { const q1 = +$('foQ').value || 0, r = +$('foR').value || 0; $('foT').textContent = q1 && r ? `Order value ${inr(q1 * r)}${$('foTcs').value==='excluded' ? ' + TCS ' + inr(q1 * (+$('foTcsA').value||0)) : ''}${$('foTcr').value==='excluded' ? ' + TCR arranged by us' : ''}.` : ''; };
+  ['foQ','foR','foTcs','foTcsA','foTcr'].forEach(i => $(i).addEventListener('input', tot)); ['foTcs','foTcr'].forEach(i => $(i).addEventListener('change', tot)); tot();
+  $('foGo').onclick = e => act(e.target, async () => {
+    await rpc('ft_order_save', {p_id: o ? o.id : null, p: {order_date:$('foD').value, company_id:$('foC').value || null, model_id:$('foM').value || null, qty:$('foQ').value, rate:$('foR').value,
+      tcs_mode:$('foTcs').value, tcs_amount:$('foTcsA').value, tcr_mode:$('foTcr').value, tcr_amount:$('foTcrA').value, dealer_id:$('foDl').value || null, note:$('foN').value}});
+    closeModal(); go(); }, 'Sent to the Managing Partner for approval');
+}
+function ftInvoiceForm(o){
+  modal(`<h2>Truck invoice · ${esc(o.order_no)}</h2><p class="muted">${esc(o.make + ' ' + o.model)} · truck ${o.invoiced + 1} of ${o.qty} · dealer ${esc(o.dealer||'')}</p><div class="grid">
+    <div class="field"><label>Chassis number</label><input id="fiCh" style="text-transform:uppercase"></div>
+    <div class="field"><label>Engine number</label><input id="fiEn" style="text-transform:uppercase"></div>
+    <div class="field"><label>Invoice number</label><input id="fiNo"></div>
+    <div class="field"><label>Invoice date</label><input type="date" id="fiD" max="${today()}" value="${today()}"></div>
+    <div class="field"><label>Invoice amount ₹ (as billed)</label><input type="number" min="0" step="0.01" id="fiA" value="${o.rate}"></div>
+    <div class="field"><label>TCS ₹ ${o.tcs_mode==='included' ? '(included in invoice)' : '(paid extra)'}</label><input type="number" min="0" step="0.01" id="fiT" value="${o.tcs_amount}"></div>
+    <div class="field"><label>Invoice copy</label><input type="file" id="fiF" accept="image/*,application/pdf"></div>
+  </div>${o.tcr_mode==='included' ? '<p class="muted">Temporary registration is included in this order: the dealer does it, so that step is marked not needed. Enter the temporary number when you get it.</p>' : ''}
+  <div class="row" style="margin-top:12px"><button class="primary" id="fiGo">Save truck</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('fiGo').onclick = e => act(e.target, async () => {
+    const id = await rpc('ft_invoice_add', {p_order:o.id, p:{chassis_no:$('fiCh').value, engine_no:$('fiEn').value, invoice_no:$('fiNo').value, invoice_date:$('fiD').value, invoice_amount:$('fiA').value, tcs_amount:$('fiT').value}});
+    const f = $('fiF').files[0]; if(f) await uploadPhotoFile('ft_truck', id, f, 'Invoice ' + $('fiNo').value);
+    closeModal(); S.ftTruck = id; location.hash = 'ft/ft_trucks'; }, 'Truck created. Now complete its onboarding steps.');
+}
+
+/* ---- trucks list + truck file ---- */
+VIEWS.ft_trucks = async m => {
+  await ftMasters();
+  if(S.ftTruck) return ftTruckFile(m, S.ftTruck);
+  S.ftTF = S.ftTF || 'onboarding';
+  const rows = await q('ft_truck_list', b => { b = b.order('created_at', {ascending:false}).limit(1000); return S.ftTF==='all' ? b : S.ftTF==='import' ? b.eq('source','import') : b.eq('status', S.ftTF).eq('source','purchase'); });
+  const qs = (S.ftTQ||'').toUpperCase();
+  const list = rows.filter(t => !qs || [t.registration_no, t.temp_reg_no, t.chassis_no, t.order_no].some(x => (x||'').toUpperCase().includes(qs)));
+  m.innerHTML = `<h1>Trucks & onboarding</h1>
+  <div class="row"><select id="fttF" style="width:auto">${[['onboarding','In onboarding'],['ready','Ready (bought here)'],['import','Imported fleet'],['all','All']].map(([v,l]) => `<option value="${v}" ${v===S.ftTF?'selected':''}>${l}</option>`).join('')}</select>
+    <input id="fttQ" placeholder="Search registration / chassis / order" value="${esc(S.ftTQ||'')}" style="max-width:280px"></div>
+  <div class="card">${table([{h:'Truck',f:t=>`<b>${esc(t.label)}</b><div class="muted">${esc(t.chassis_no)}</div>`},{h:'Model',f:t=>esc((t.make||'') + ' ' + (t.model||''))},{h:'Company',k:'company_code'},{h:'Order',f:t=>esc(t.order_no || 'imported')},
+    {h:'Steps',f:t=>t.status==='ready' ? chip('ready','ok') : `${t.steps_done}/${t.steps_total}`},{h:'Loan',f:t=>t.loan_id ? `${esc(t.financier)}<div class="muted">${esc(t.agreement_no)}</div>` : t.no_loan ? chip('no loan') : chip('missing','warn')},
+    {h:'EMI outstanding',n:1,f:t=>t.loan_id ? inr(t.emi_outstanding) + (+t.emis_bounced ? ' ' + chip(t.emis_bounced + ' bounced','bad') : '') : ''},{h:'Landed cost',n:1,f:t=>inr(t.landed_cost)},
+    {h:'',f:t=>`<button class="ghost sm" data-tk="${t.id}">Open</button>`}], list, 'No trucks here.')}</div>`;
+  $('fttF').onchange = () => { S.ftTF = $('fttF').value; go(); };
+  $('fttQ').onchange = () => { S.ftTQ = $('fttQ').value; go(); };
+  m.querySelectorAll('[data-tk]').forEach(b => b.onclick = () => { S.ftTruck = b.dataset.tk; go(); window.scrollTo(0,0); });
+};
+async function ftTruckFile(m, id){
+  const [[t], steps, vch, loans] = await Promise.all([q('ft_truck_list', b => b.eq('id', id)), q('ft_steps', b => b.eq('ft_truck_id', id)), q('ft_vouchers', b => b.eq('ft_truck_id', id).order('voucher_no')), q('ft_loans', b => b.eq('ft_truck_id', id))]);
+  if(!t){ S.ftTruck = null; return go(); }
+  const loan = loans[0]; const emis = loan ? await q('ft_emi_list', b => b.eq('loan_id', loan.id).order('inst_no')) : [];
+  const ev = await evidenceCount('ft_step', steps.map(s => s.id)); const evT = await evidenceCount('ft_truck', [id]);
+  const o = t.order_id ? (await q('ft_orders', b => b.eq('id', t.order_id)))[0] : null;
+  const ready = t.status==='ready', ent = can('ft_entry') && !ready, acc = can('ft_accounts');
+  const byStep = Object.fromEntries(steps.map(s => [s.step, s]));
+  const open = steps.filter(s => s.status==='open');
+  const loanOk = t.no_loan || (loan && emis.length);
+  const stepCard = ([k]) => { const s = byStep[k]; if(!s) return ''; const D = FT_STEP[k]; const v = vch.find(x => x.step_id===s.id);
+    const blocked = (k==='perm_reg' && ['insurance','temp_reg'].some(x => byStep[x] && byStep[x].status==='open')) ? 'after insurance and temporary registration'
+      : (['permit','fitness','road_tax'].includes(k) && byStep.perm_reg && byStep.perm_reg.status!=='done') ? 'after permanent registration' : '';
+    const st = s.status==='done' ? chip('done','ok') : s.status==='not_needed' ? chip('not needed') : blocked ? chip(blocked,'') : chip('open','warn');
+    return `<div class="card" style="margin:0"><div class="row" style="justify-content:space-between;align-items:center"><h2 style="margin:0">${esc(D.n)}</h2>${st}</div>
+      <div class="muted" style="margin-top:6px">${[s.vendor_id ? esc(ftVendor(s.vendor_id)) : '', s.amount!=null ? inr(s.amount) : '', s.doc_no ? 'No. ' + esc(s.doc_no) : '', s.issued_on ? 'on ' + d8(s.issued_on) : '', s.expiry_on ? 'valid till ' + d8(s.expiry_on) : '',
+        ...Object.entries(s.details||{}).filter(([,x]) => x).map(([,x]) => esc(x)), s.not_needed_reason ? esc(s.not_needed_reason) : ''].filter(Boolean).join(' · ') || 'Nothing entered yet.'}</div>
+      ${v ? `<div style="margin-top:4px">${chip(v.voucher_no + ' · ' + v.status, v.status==='paid' ? 'ok' : v.status==='unpaid' ? 'warn' : '')}</div>` : ''}
+      <div class="row" style="margin-top:8px">${ent && s.status!=='done' ? `<button class="${blocked || s.status==='not_needed' ? 'ghost' : 'primary'} sm" data-st="${s.id}">${s.status==='not_needed' ? 'Re-open' : 'Enter / complete'}</button>` : ''}
+        ${ev[s.id] ? `<button class="ghost sm" data-ev="${s.id}">Document (${ev[s.id]})</button>` : ''}</div></div>`; };
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><button class="ghost sm" id="ftBack">&#8592; All trucks</button>
+    ${can('ft_ready') && !ready ? `<button class="lime sm" id="ftReady" ${open.length || !loanOk || !t.registration_no ? 'disabled title="Complete the steps and the loan first"' : ''}>Mark ready for movement</button>` : ready ? chip('READY · in fleet since ' + d8(t.ready_at), 'ok') : ''}</div>
+  <h1 style="margin-top:8px">${esc(t.label)}</h1>
+  <div class="card"><div class="grid">
+    <div><label>Model</label><div>${esc((t.make||'') + ' ' + (t.model||''))}</div></div><div><label>Company</label><div>${esc(t.company_code)}</div></div>
+    <div><label>Chassis / engine</label><div>${esc(t.chassis_no)} / ${esc(t.engine_no||'—')}</div></div>
+    <div><label>Order</label><div>${esc(t.order_no || 'Imported (existing fleet)')}${o ? ` · TCS ${o.tcs_mode} · TCR ${o.tcr_mode}` : ''}</div></div>
+    <div><label>Dealer invoice</label><div>${esc(t.invoice_no||'—')} ${t.invoice_date ? '· ' + d8(t.invoice_date) : ''} · ${inr(t.invoice_amount)}${evT[id] ? ` <button class="ghost sm" data-ev="${id}">Copy</button>` : ''}</div></div>
+    <div><label>Registration</label><div>${esc(t.registration_no || '—')}${t.temp_reg_no ? ` <span class="muted">(temp ${esc(t.temp_reg_no)})</span>` : ''}</div></div>
+    <div><label>Landed cost so far</label><div><b>${inr(t.landed_cost)}</b></div></div><div><label>Unpaid vendor vouchers</label><div>${inr(t.unpaid)}</div></div>
+  </div>${ent ? '<button class="ghost sm" id="ftEdit" style="margin-top:8px">Correct invoice details</button>' : ''}</div>
+  ${!ready ? `<div class="card" style="background:var(--soft,#f6f8f4)"><h2>What to do next</h2><ul style="margin:0;padding-left:18px">${[
+      ...open.map(s => `<li>${esc(FT_STEP[s.step].n)}</li>`),
+      !loanOk ? `<li>Loan and EMI schedule (Accounts)${acc ? '' : ' — not your role'}</li>` : '',
+      !open.length && loanOk ? `<li>All done: the Fleet Head marks the truck ready for movement.</li>` : ''].join('')}</ul></div>` : ''}
+  <h2>Onboarding steps</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">${FT_STEPS.map(stepCard).join('')}</div>
+  <div class="card" style="margin-top:14px"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Loan & EMIs</h2>${acc ? `<div class="row">${!t.no_loan ? `<button class="primary sm" id="ftLoan">${loan ? 'Edit loan / schedule' : 'Enter loan'}</button>` : ''}${!loan ? `<button class="ghost sm" id="ftNoLoan">${t.no_loan ? 'Bought without loan ✓' : 'Bought without loan'}</button>` : ''}</div>` : ''}</div>
+    ${loan ? `<p>${esc(((S.ftFin||[]).find(f => f.id===loan.financier_id)||{}).name)} · agreement <b>${esc(loan.agreement_no)}</b> · loan ${inr(loan.loan_amount)}${loan.interest_pct ? ' @ ' + loan.interest_pct + '%' : ''} · EMI debited from ${esc(coCode(loan.debit_company_id))} bank</p>
+      ${table([{h:'#',k:'inst_no'},{h:'Due',f:e=>d8(e.due_date)},{h:'Amount',n:1,f:e=>inr(e.amount)},{h:'Status',f:e=>chip(...FT_EMI_ST[e.state]) + (e.bounced_on ? `<div class="muted">bounced ${d8(e.bounced_on)}${e.bounce_charges ? ' · charges ' + inr(e.bounce_charges) : ''}${e.repaid_on ? ' · repaid ' + d8(e.repaid_on) + ' ' + esc(e.repaid_ref) : ''}</div>` : '')}], emis, 'EMI schedule not entered yet.')}`
+      : t.no_loan ? `<p>Bought without a loan: ${esc(t.no_loan_reason)}</p>` : '<div class="empty">Loan not entered yet (Accounts).</div>'}</div>
+  <div class="card"><h2>Vendor vouchers</h2>${table([{h:'Voucher',k:'voucher_no'},{h:'For',f:v=>esc((FT_STEP[v.kind]||{n:v.kind}).n)},{h:'Vendor',f:v=>esc(ftVendor(v.vendor_id))},{h:'Amount',n:1,f:v=>inr(v.amount)},{h:'Status',f:v=>chip(v.status, v.status==='paid' ? 'ok' : v.status==='unpaid' ? 'warn' : '') + (v.paid_on ? `<div class="muted">${d8(v.paid_on)} · ${esc(v.paid_mode)} · ${esc(v.paid_ref)}</div>` : '')}], vch, 'No vendor costs yet. A voucher is raised when a step gets a vendor and an amount.')}</div>`;
+  $('ftBack').onclick = () => { S.ftTruck = null; go(); };
+  m.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.ev));
+  m.querySelectorAll('[data-st]').forEach(b => b.onclick = () => ftStepForm(t, steps.find(s => s.id===b.dataset.st), vch.find(v => v.step_id===b.dataset.st), ev[b.dataset.st]||0));
+  if($('ftEdit')) $('ftEdit').onclick = () => {
+    modal(`<h2>Correct invoice details</h2><div class="grid">
+      <div class="field"><label>Chassis number</label><input id="feCh" value="${esc(t.chassis_no)}"></div><div class="field"><label>Engine number</label><input id="feEn" value="${esc(t.engine_no||'')}"></div>
+      <div class="field"><label>Invoice number</label><input id="feNo" value="${esc(t.invoice_no||'')}"></div><div class="field"><label>Invoice date</label><input type="date" id="feD" value="${t.invoice_date||''}"></div>
+      <div class="field"><label>Invoice amount ₹</label><input type="number" step="0.01" id="feA" value="${t.invoice_amount||''}"></div><div class="field"><label>Invoice copy (add)</label><input type="file" id="feF" accept="image/*,application/pdf"></div></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="feGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('feGo').onclick = e => act(e.target, async () => { await rpc('ft_truck_edit', {p_truck:id, p:{chassis_no:$('feCh').value, engine_no:$('feEn').value, invoice_no:$('feNo').value, invoice_date:$('feD').value || null, invoice_amount:$('feA').value}});
+      const f = $('feF').files[0]; if(f) await uploadPhotoFile('ft_truck', id, f, 'Invoice ' + $('feNo').value); closeModal(); go(); }, 'Saved'); };
+  if($('ftLoan')) $('ftLoan').onclick = () => ftLoanForm(t, loan, emis);
+  if($('ftNoLoan')) $('ftNoLoan').onclick = e => { if(t.no_loan) return; const why = prompt('Why is there no loan? (e.g. bought from own funds)'); if(why===null) return;
+    act(e.target, async () => { await rpc('ft_loan_save', {p_truck:id, p:{no_loan:true, reason:why}}); go(); }, 'Recorded'); };
+  if($('ftReady')) $('ftReady').onclick = e => { if(!confirm(`Mark ${t.label} ready for movement? It joins the own fleet for trips.`)) return;
+    act(e.target, async () => { await rpc('ft_mark_ready', {p_truck:id}); await loadMasters(); go(); }, 'Truck is ready for movement and added to the fleet'); };
+}
+function ftStepForm(t, s, v, evN){
+  const D = FT_STEP[s.step], ex = FT_EXTRA[s.step] || [], paid = v && v.status==='paid';
+  const canSkip = ['body','temp_reg'].includes(s.step);
+  modal(`<h2>${esc(D.n)} · ${esc(t.label)}</h2>
+    ${s.status==='not_needed' ? `<div class="issues">Marked not needed: ${esc(s.not_needed_reason||'')}. Saving re-opens it.</div>` : ''}
+    <div class="grid">
+    <div class="field"><label>Vendor (who does it / is paid)</label><select id="fsV" data-mt="vendor" ${paid ? 'disabled' : ''}>${vendOpts(s.vendor_id, s.step)}</select></div>
+    <div class="field"><label>Amount ₹ (blank / 0 if no cost to us)</label><input type="number" min="0" step="0.01" id="fsA" value="${s.amount ?? ''}" ${paid ? 'disabled' : ''}></div>
+    <div class="field"><label>${esc(D.doc)}</label><input id="fsN" value="${esc(s.doc_no||'')}"></div>
+    <div class="field"><label>${s.step==='gps' || s.step==='fastag' ? 'Installed on' : 'Issued on'}</label><input type="date" id="fsI" max="${today()}" value="${s.issued_on||''}"></div>
+    ${D.exp ? `<div class="field"><label>Valid till (expiry)</label><input type="date" id="fsE" value="${s.expiry_on||''}"></div>` : ''}
+    ${ex.map(([k,l]) => `<div class="field"><label>${esc(l)}</label><input data-x="${k}" value="${esc((s.details||{})[k]||'')}"></div>`).join('')}
+    <div class="field"><label>Document (photo / PDF)${evN ? ` · ${evN} uploaded` : ''}</label><input type="file" id="fsF" accept="image/*,application/pdf"></div>
+  </div>${paid ? `<p class="muted">Voucher ${esc(v.voucher_no)} is paid, so vendor and amount are fixed.</p>` : '<p class="muted">Vendor + amount raises a payment voucher for Accounts automatically.</p>'}
+  ${s.step==='perm_reg' ? '<p class="muted">The registration number becomes the truck number everywhere once saved.</p>' : ''}
+  <div class="row" style="margin-top:12px"><button class="ghost" id="fsSave">Save (not finished)</button><button class="primary" id="fsDone">Save & mark done</button>
+    ${canSkip && s.status!=='not_needed' ? '<button class="ghost" id="fsSkip">Not needed</button>' : ''}<button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('fsV')._opts = () => vendOpts(null, s.step); wireAdd($('modalBox'));
+  const payload = done => { const p = {vendor_id:$('fsV').value || null, amount:$('fsA').value, doc_no:$('fsN').value, issued_on:$('fsI').value || null, done};
+    if($('fsE')) p.expiry_on = $('fsE').value || null; const d = {}; $('modalBox').querySelectorAll('[data-x]').forEach(i => d[i.dataset.x] = i.value.trim()); p.details = d; if(paid){ delete p.vendor_id; delete p.amount; } return p; };
+  const run = (btn, done) => act(btn, async () => {
+    const f = $('fsF').files[0]; if(f){ await uploadPhotoFile('ft_step', s.id, f, `${D.n} · ${t.label}`); $('fsF').value = ''; }
+    const r = await rpc('ft_step_save', {p_step:s.id, p:payload(done)}); closeModal(); go(); return r; }, r => r==='done' ? `${D.n} done` : 'Saved');
+  $('fsSave').onclick = e => run(e.target, false);
+  $('fsDone').onclick = e => run(e.target, true);
+  if($('fsSkip')) $('fsSkip').onclick = e => { const why = prompt(s.step==='body' ? 'Why is no body work needed? (e.g. factory-built body)' : 'Why is temporary registration not needed?'); if(why===null) return;
+    act(e.target, async () => { await rpc('ft_step_save', {p_step:s.id, p:{not_needed:true, reason:why}}); closeModal(); go(); }, 'Marked not needed'); };
+}
+function ftLoanForm(t, loan, emis){
+  const L = loan || {}; const anyBounce = emis.some(e => e.bounced_on);
+  modal(`<h2>Loan · ${esc(t.label)}</h2><div class="grid">
+    <div class="field"><label>Financier</label><select id="flF" data-mt="fin"><option value=""></option>${typeOpts('fin')}</select></div>
+    <div class="field"><label>Loan agreement no.</label><input id="flA" value="${esc(L.agreement_no||'')}"></div>
+    <div class="field"><label>Loan amount ₹</label><input type="number" step="0.01" id="flAm" value="${L.loan_amount||''}"></div>
+    <div class="field"><label>Down payment ₹</label><input type="number" step="0.01" id="flDp" value="${L.down_payment||''}"></div>
+    <div class="field"><label>Disbursed on</label><input type="date" id="flDd" value="${L.disbursed_on||''}"></div>
+    <div class="field"><label>Interest % (optional)</label><input type="number" step="0.001" id="flI" value="${L.interest_pct||''}"></div>
+    <div class="field"><label>EMI debited from (company bank, NACH)</label><select id="flC">${coOpts(L.debit_company_id || t.company_id)}</select></div>
+  </div>
+  <h2 style="margin-top:12px">EMI schedule</h2>
+  ${anyBounce ? '<p class="muted">A bounce is recorded on this loan, so the schedule is locked. Loan details can still be corrected.</p>' : `
+  <div class="row" style="align-items:flex-end">
+    <div><label>First EMI date</label><input type="date" id="fgD"></div><div><label>No. of EMIs</label><input type="number" min="1" id="fgN" style="max-width:110px"></div>
+    <div><label>EMI ₹</label><input type="number" step="0.01" id="fgA" style="max-width:150px"></div><button class="ghost sm" id="fgGo">Make monthly schedule</button></div>
+  <div class="field" style="margin-top:8px"><label>…or paste from the financier's schedule (Excel: due date and EMI amount columns)</label><textarea id="flP" rows="4" placeholder="05-11-2026	62500&#10;05-12-2026	62500"></textarea></div>`}
+  <div id="flPrev" class="muted"></div>
+  <div class="row" style="margin-top:12px"><button class="primary" id="flGo">Save loan</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  if(L.financier_id) $('flF').value = L.financier_id; wireAdd($('modalBox'));
+  let sched = emis.map(e => ({inst_no:e.inst_no, due_date:e.due_date, amount:+e.amount}));
+  const show = () => { $('flPrev').innerHTML = sched.length ? `${sched.length} EMIs · ${d8(sched[0].due_date)} to ${d8(sched[sched.length-1].due_date)} · total ${inr(sched.reduce((a,x) => a + x.amount, 0))}` + (L.loan_amount || $('flAm').value ? '' : '') : 'No schedule yet.'; };
+  show();
+  if($('fgGo')) $('fgGo').onclick = () => { const d = $('fgD').value, n = +$('fgN').value, a = +$('fgA').value; if(!d || !n || !a) return toast('Enter first date, number of EMIs and amount', 'warn');
+    sched = Array.from({length:n}, (_, i) => ({inst_no:i+1, due_date:addMonths(d, i), amount:a})); $('flP').value = ''; show(); };
+  if($('flP')) $('flP').oninput = () => { const lines = $('flP').value.split(/\n/).map(x => x.trim()).filter(Boolean); const out = [];
+    for(const l of lines){ const c = (l.includes('\t') ? l.split('\t') : l.split(/;|\s{2,}|,\s+/)).map(x => x.trim()).filter(Boolean); const di = c.findIndex(x => /\d{1,4}[-/.]\d{1,2}[-/.]\d{2,4}/.test(x)); if(di < 0) continue;
+      const nums = c.slice(di+1).map(x => +x.replace(/[₹,\s]/g,'')).filter(x => x > 0 && x < 1e8); const amt = nums.length > 1 && nums[0] < 1000 && Number.isInteger(nums[0]) ? nums[1] : nums[0]; if(!amt) continue;
+      out.push({inst_no:out.length+1, due_date:isoD(c[di]), amount:amt}); }
+    sched = out; show(); };
+  $('flGo').onclick = e => act(e.target, async () => {
+    const p = {financier_id:$('flF').value || null, agreement_no:$('flA').value, loan_amount:$('flAm').value, down_payment:$('flDp').value, disbursed_on:$('flDd').value || null, interest_pct:$('flI').value, debit_company_id:$('flC').value};
+    if(!anyBounce){ if(!sched.length) throw new Error('Enter the EMI schedule: make it monthly or paste it'); p.schedule = sched; }
+    await rpc('ft_loan_save', {p_truck:t.id, p}); closeModal(); go(); }, 'Loan saved');
+}
+
+/* ---- loans & EMIs ---- */
+VIEWS.ft_emis = async m => {
+  await ftMasters();
+  S.ftEM = S.ftEM ?? localMonth(); S.ftES = S.ftES || '';
+  const end = S.ftEM ? addMonths(S.ftEM, 1) : null;
+  const [emis, trucks] = await Promise.all([q('ft_emi_list', b => { b = b.order('due_date').limit(3000); if(S.ftEM) b = b.gte('due_date', S.ftEM).lt('due_date', end); if(S.ftES) b = b.eq('state', S.ftES); return b; }),
+    q('ft_trucks', b => b.select('id,registration_no,temp_reg_no,chassis_no'))]);
+  const tl = id => { const t = trucks.find(x => x.id===id) || {}; return t.registration_no || t.temp_reg_no || t.chassis_no || ''; };
+  const fin = id => ((S.ftFin||[]).find(f => f.id===id)||{}).name || '';
+  const tot = s => emis.filter(e => !s || e.state===s).reduce((a,e) => a + +e.amount, 0);
+  m.innerHTML = `<h1>Loans & EMIs</h1><p class="muted">EMIs are auto-debited (NACH). An EMI counts as paid on its due date unless recorded as bounced here. Record a bounce the day the bank reports it, and the re-payment when it is cleared.</p>
+  <div class="row"><select id="feM" style="width:auto">${monthsBack(6).reverse().concat([1,2,3,4,5,6].map(k => addMonths(localMonth(), k))).map(p => `<option value="${p}" ${p===S.ftEM?'selected':''}>${monthLbl(p)}</option>`).join('')}<option value="" ${S.ftEM===''?'selected':''}>All months</option></select>
+    <select id="feS" style="width:auto">${[['','All'],['due','Due'],['paid','Paid'],['bounced','Bounced (open)'],['repaid','Bounced · repaid']].map(([v,l]) => `<option value="${v}" ${v===S.ftES?'selected':''}>${l}</option>`).join('')}</select>
+    <button class="ghost sm" id="feCsv">Download CSV</button></div>
+  <div class="kpi"><div><span>Total in view</span><b>${inr(tot())}</b></div><div><span>Still due</span><b>${inr(tot('due'))}</b></div><div><span>Bounced, open</span><b style="color:var(--alert)">${inr(tot('bounced'))}</b></div></div>
+  <div class="card">${table([{h:'Due',f:e=>d8(e.due_date)},{h:'Truck',f:e=>`<b>${esc(tl(e.ft_truck_id))}</b>`},{h:'Financier',f:e=>esc(fin(e.financier_id))},{h:'Agreement',f:e=>esc(e.agreement_no) + ` <span class="muted">#${e.inst_no}</span>`},{h:'Debit',f:e=>esc(coCode(e.debit_company_id))},
+    {h:'Amount',n:1,f:e=>inr(e.amount)},{h:'Status',f:e=>chip(...FT_EMI_ST[e.state]) + (e.bounced_on ? `<div class="muted">${d8(e.bounced_on)}${e.bounce_charges ? ' · charges ' + inr(e.bounce_charges) : ''}${e.repaid_on ? ' · repaid ' + d8(e.repaid_on) : ''}</div>` : '')},
+    {h:'',f:e=>can('ft_accounts') ? (e.state==='paid' ? `<button class="danger sm" data-bn="${e.id}">Bounced</button>` : e.state==='bounced' ? `<button class="lime sm" data-rp="${e.id}">Repaid</button>` : '') : ''}], emis, 'No EMIs in this view.')}</div>`;
+  $('feM').onchange = () => { S.ftEM = $('feM').value; go(); }; $('feS').onchange = () => { S.ftES = $('feS').value; go(); };
+  $('feCsv').onclick = () => csv(emis.map(e => ({due_date:e.due_date, truck:tl(e.ft_truck_id), financier:fin(e.financier_id), agreement:e.agreement_no, inst:e.inst_no, debit_company:coCode(e.debit_company_id), amount:e.amount, status:e.state, bounced_on:e.bounced_on||'', bounce_charges:e.bounce_charges||'', repaid_on:e.repaid_on||'', repaid_ref:e.repaid_ref||''})), 'emis');
+  m.querySelectorAll('[data-bn]').forEach(b => b.onclick = () => { const e = emis.find(x => x.id===b.dataset.bn);
+    modal(`<h2>EMI bounced · ${esc(tl(e.ft_truck_id))}</h2><p>${esc(e.agreement_no)} #${e.inst_no} · ${inr(e.amount)} due ${d8(e.due_date)}</p><div class="grid">
+      <div class="field"><label>Bounced on</label><input type="date" id="bnD" value="${e.due_date}" max="${today()}"></div><div class="field"><label>Bounce charges ₹</label><input type="number" step="0.01" id="bnC"></div>
+      <div class="field"><label>Note</label><input id="bnN" placeholder="e.g. insufficient balance"></div></div>
+      <div class="row" style="margin-top:12px"><button class="danger" id="bnGo">Record bounce</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('bnGo').onclick = ev => act(ev.target, async () => { await rpc('ft_emi_bounce', {p_emi:e.id, p:{bounced_on:$('bnD').value, charges:$('bnC').value, note:$('bnN').value}}); closeModal(); go(); }, 'Bounce recorded'); });
+  m.querySelectorAll('[data-rp]').forEach(b => b.onclick = () => { const e = emis.find(x => x.id===b.dataset.rp);
+    modal(`<h2>Bounced EMI repaid · ${esc(tl(e.ft_truck_id))}</h2><div class="grid"><div class="field"><label>Paid on</label><input type="date" id="rpD" value="${today()}" max="${today()}"></div><div class="field"><label>UTR / reference</label><input id="rpR"></div></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="rpGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('rpGo').onclick = ev => act(ev.target, async () => { await rpc('ft_emi_bounce', {p_emi:e.id, p:{repaid:true, repaid_on:$('rpD').value, ref:$('rpR').value}}); closeModal(); go(); }, 'Re-payment recorded'); });
+};
+
+/* ---- vendor payments ---- */
+VIEWS.ft_vouchers = async m => {
+  S.ftVS = S.ftVS || 'unpaid';
+  const [rows, trucks] = await Promise.all([q('ft_vouchers', b => { b = b.order('created_at', {ascending:false}).limit(2000); return S.ftVS==='all' ? b : b.eq('status', S.ftVS); }), q('ft_trucks', b => b.select('id,registration_no,temp_reg_no,chassis_no'))]);
+  const tl = id => { const t = trucks.find(x => x.id===id) || {}; return t.registration_no || t.temp_reg_no || t.chassis_no || ''; };
+  const busy = id => { const v = S.vendors.find(x => x.id===id) || {}; return v.busy_name || v.vendor_name || ''; };
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Vendor payments</h1><button class="ghost sm" id="fvX">BUSY voucher file (Excel)</button></div>
+  <p class="muted">One voucher per onboarding cost (body, insurance, registration, permit, fitness, road tax, GPS, FASTag). Accounts pays and records the reference; the Excel is for posting in BUSY.</p>
+  <div class="row"><select id="fvS" style="width:auto">${[['unpaid','Unpaid'],['paid','Paid'],['cancelled','Cancelled'],['all','All']].map(([v,l]) => `<option value="${v}" ${v===S.ftVS?'selected':''}>${l}</option>`).join('')}</select>
+    ${S.ftVS==='unpaid' && can('ft_accounts') ? '<button class="primary sm" id="fvPay" disabled>Pay selected</button><span class="muted" id="fvN"></span>' : ''}</div>
+  <div class="card">${table([{h:'',f:v=>v.status==='unpaid' && can('ft_accounts') ? `<input type="checkbox" data-v="${v.id}" style="width:20px;height:20px">` : ''},{h:'Voucher',f:v=>`<b>${esc(v.voucher_no)}</b><div class="muted">${d8(v.created_at)}</div>`},{h:'Truck',f:v=>esc(tl(v.ft_truck_id))},
+    {h:'For',f:v=>esc((FT_STEP[v.kind]||{n:v.kind}).n)},{h:'Vendor',f:v=>esc(ftVendor(v.vendor_id))},{h:'Company',f:v=>esc(coCode(v.company_id))},{h:'Amount',n:1,f:v=>inr(v.amount)},
+    {h:'Status',f:v=>chip(v.status, v.status==='paid' ? 'ok' : v.status==='unpaid' ? 'warn' : '') + (v.paid_on ? `<div class="muted">${d8(v.paid_on)} · ${esc(v.paid_mode)} · ${esc(v.paid_ref)}</div>` : '')}], rows, 'No vouchers here.')}</div>`;
+  $('fvS').onchange = () => { S.ftVS = $('fvS').value; go(); };
+  const sel = () => [...m.querySelectorAll('[data-v]:checked')].map(i => i.dataset.v);
+  m.querySelectorAll('[data-v]').forEach(i => i.onchange = () => { const s = sel(); $('fvPay').disabled = !s.length; $('fvN').textContent = s.length ? `${s.length} selected · ${inr(rows.filter(r => s.includes(r.id)).reduce((a,r) => a + +r.amount, 0))}` : ''; });
+  if($('fvPay')) $('fvPay').onclick = () => { const ids = sel(); const tot = rows.filter(r => ids.includes(r.id)).reduce((a,r) => a + +r.amount, 0);
+    modal(`<h2>Pay ${ids.length} voucher(s) · ${inr(tot)}</h2><div class="grid"><div class="field"><label>Paid on</label><input type="date" id="pvD" value="${today()}" max="${today()}"></div>
+      <div class="field"><label>Mode</label><select id="pvM"><option value="bank">Bank</option><option value="cash">Cash</option></select></div><div class="field"><label>UTR / cheque / voucher ref.</label><input id="pvR"></div></div>
+      <div class="row" style="margin-top:12px"><button class="primary" id="pvGo">Record payment</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('pvGo').onclick = e => act(e.target, async () => { const n = await rpc('ft_voucher_pay', {p_ids:ids, p_date:$('pvD').value, p_mode:$('pvM').value, p_ref:$('pvR').value}); closeModal(); go(); return n; }, n => `${n} voucher(s) marked paid`); };
+  $('fvX').onclick = () => { if(!rows.length) return toast('Nothing to export', 'warn'); const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.map(v => ({'Voucher No':v.voucher_no, 'Date':v.created_at.slice(0,10), 'Company':coName(v.company_id), 'Party (BUSY)':busy(v.vendor_id), 'Truck':tl(v.ft_truck_id),
+      'Head':(FT_STEP[v.kind]||{n:v.kind}).n, 'Amount':+v.amount, 'Status':v.status, 'Paid On':v.paid_on||'', 'Mode':v.paid_mode||'', 'Reference':v.paid_ref||'', 'Narration':`${(FT_STEP[v.kind]||{n:v.kind}).n} for truck ${tl(v.ft_truck_id)} (${v.voucher_no})`}))), 'Vouchers');
+    XLSX.writeFile(wb, `BUSY_truck_vouchers_${S.ftVS}_${today()}.xlsx`); };
+};
+
+/* ---- reports ---- */
+VIEWS.ft_reports = async m => {
+  await ftMasters();
+  S.ftR = S.ftR || 'landed'; const R = S.ftR; let rows = [], cols = [], out = [];
+  const fin = id => ((S.ftFin||[]).find(f => f.id===id)||{}).name || '';
+  if(R==='landed' || R==='stuck'){
+    const t = await q('ft_truck_list', b => b.order('created_at', {ascending:false}));
+    rows = R==='landed' ? t.filter(x => x.source==='purchase') : t.filter(x => x.status==='onboarding').map(x => ({...x, days:Math.floor((Date.now() - new Date(x.created_at))/86400000)})).sort((a,b) => b.days - a.days);
+    cols = R==='landed' ? [{h:'Truck',k:'label'},{h:'Model',f:x=>esc((x.make||'') + ' ' + (x.model||''))},{h:'Company',k:'company_code'},{h:'Invoice',n:1,f:x=>inr(x.invoice_amount)},{h:'Landed cost',n:1,f:x=>inr(x.landed_cost)},{h:'Unpaid',n:1,f:x=>inr(x.unpaid)},{h:'Status',f:x=>chip(x.status, x.status==='ready' ? 'ok' : 'warn')}]
+      : [{h:'Truck',k:'label'},{h:'Order',k:'order_no'},{h:'Days in onboarding',n:1,k:'days'},{h:'Open steps',f:x=>esc((x.steps_open||'').split(',').filter(Boolean).map(s => FT_STEP[s] ? FT_STEP[s].n : s).join(', '))},{h:'Loan',f:x=>x.loan_id ? 'entered' : x.no_loan ? 'no loan' : chip('missing','warn')}];
+    out = rows.map(x => ({truck:x.label, chassis:x.chassis_no, model:`${x.make||''} ${x.model||''}`.trim(), company:x.company_code, order:x.order_no, invoice:x.invoice_amount, landed_cost:x.landed_cost, unpaid:x.unpaid, status:x.status, days:x.days ?? ''}));
+  } else if(R==='calendar' || R==='outstanding'){
+    const e = await q('ft_emi_list', b => b.in('state', R==='calendar' ? ['due','bounced'] : ['due']).limit(20000));
+    const g = {}; e.forEach(x => { const k = R==='calendar' ? x.due_date.slice(0,7) + '|' + x.financier_id : x.financier_id + '|' + coCode(x.debit_company_id); g[k] = g[k] || {n:0, a:0, loans:new Set()}; g[k].n++; g[k].a += +x.amount; g[k].loans.add(x.loan_id); });
+    rows = Object.entries(g).map(([k,v]) => { const [a,b] = k.split('|'); return R==='calendar' ? {month:a, financier:fin(b), emis:v.n, amount:v.a} : {financier:fin(a), company:b, loans:v.loans.size, emis:v.n, amount:v.a}; }).sort((x,y) => (x.month||x.financier).localeCompare(y.month||y.financier));
+    cols = R==='calendar' ? [{h:'Month',f:x=>monthLbl(x.month + '-01')},{h:'Financier',k:'financier'},{h:'EMIs',n:1,k:'emis'},{h:'Amount',n:1,f:x=>inr(x.amount)}] : [{h:'Financier',k:'financier'},{h:'Debit company',k:'company'},{h:'Loans',n:1,k:'loans'},{h:'EMIs left',n:1,k:'emis'},{h:'Outstanding (EMI total)',n:1,f:x=>inr(x.amount)}];
+    out = rows;
+  } else {
+    const [e, trucks] = await Promise.all([q('ft_emi_list', b => b.not('bounced_on','is',null).order('bounced_on', {ascending:false})), q('ft_trucks', b => b.select('id,registration_no,chassis_no'))]);
+    rows = e.map(x => ({...x, truck:(trucks.find(t => t.id===x.ft_truck_id)||{}).registration_no || '', financier:fin(x.financier_id)}));
+    cols = [{h:'Bounced',f:x=>d8(x.bounced_on)},{h:'Truck',k:'truck'},{h:'Financier',k:'financier'},{h:'Agreement',k:'agreement_no'},{h:'EMI',n:1,f:x=>inr(x.amount)},{h:'Charges',n:1,f:x=>inr(x.bounce_charges)},{h:'Repaid',f:x=>x.repaid_on ? d8(x.repaid_on) + ' · ' + esc(x.repaid_ref) : chip('open','bad')}];
+    out = rows.map(x => ({bounced_on:x.bounced_on, truck:x.truck, financier:x.financier, agreement:x.agreement_no, emi:x.amount, charges:x.bounce_charges, repaid_on:x.repaid_on, ref:x.repaid_ref, note:x.bounce_note}));
+  }
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Truck Purchase reports</h1><button class="ghost sm" id="frCsv">Download CSV</button></div>
+  <div class="row"><select id="frR" style="width:auto">${[['landed','Landed cost per truck'],['stuck','Stuck in onboarding'],['calendar','EMI calendar by month'],['outstanding','Loan outstanding by financier'],['bounces','EMI bounces']].map(([v,l]) => `<option value="${v}" ${v===R?'selected':''}>${l}</option>`).join('')}</select></div>
+  <div class="card">${table(cols, rows, 'Nothing to show.')}</div>`;
+  $('frR').onchange = () => { S.ftR = $('frR').value; go(); };
+  $('frCsv').onclick = () => csv(out, 'truck-' + R);
+};
+
+/* ---- setup + import ---- */
+VIEWS.ft_setup = m => VIEWS.masters(m, 'ft');
+const FT_IMPORT_COLS = ['registration_no','chassis_no','engine_no','company','make','model','purchase_date','purchase_cost','financier','agreement_no','loan_amount','emi_amount','next_emi_date','remaining_emis',
+  'insurance_no','insurance_expiry','permit_no','permit_expiry','fitness_expiry','road_tax_expiry','gps_device','fastag_id'];
+VIEWS.ft_import = async m => {
+  m.innerHTML = `<h1>Import existing fleet</h1>
+  <p class="muted">One row per truck already running. Required: registration_no, chassis_no, company (our company code, e.g. SSL). For a running loan give financier, agreement_no, emi_amount, next_emi_date (the next EMI still to be paid) and remaining_emis — the system builds the remaining monthly schedule. Expiry dates feed the renewals list. Dates as DD-MM-YYYY. Rows with a problem are listed and skipped; fix and upload them again.</p>
+  <div class="card"><div class="row"><button class="ghost sm" id="fiT">Download template</button><input type="file" id="fiFile" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="fiGo">Import</button></div><div id="fiOut"></div></div>`;
+  $('fiT').onclick = () => { const wb = XLSX.utils.book_new(); const ex = {registration_no:'WB23A1234', chassis_no:'MAT123456789', engine_no:'ENG123', company:'SSL', make:'TATA', model:'SIGNA 4825.TK', purchase_date:'15-04-2024', purchase_cost:3850000,
+      financier:'HDFC BANK', agreement_no:'LN123456', loan_amount:3000000, emi_amount:72500, next_emi_date:'05-11-2026', remaining_emis:18, insurance_no:'POL123', insurance_expiry:'14-04-2027', permit_no:'PRM123', permit_expiry:'30-06-2028', fitness_expiry:'14-04-2027', road_tax_expiry:'31-03-2027', gps_device:'GPS0001', fastag_id:'FT0001'};
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([ex], {header:FT_IMPORT_COLS}), 'Fleet'); XLSX.writeFile(wb, 'fleet_import_template.xlsx'); };
+  $('fiGo').onclick = e => act(e.target, async () => {
+    const f = $('fiFile').files[0]; if(!f) throw new Error('Choose the filled Excel file');
+    const wb = XLSX.read(await f.arrayBuffer(), {cellDates:true}); const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:true});
+    const rows = raw.map(r => { const o = {}; Object.entries(r).forEach(([k,v]) => { const key = String(k).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); if(v===null || v==='') return;
+      o[key] = /(_date|_expiry)$/.test(key) ? isoD(v) : /(_cost|_amount|remaining_emis)$/.test(key) ? +String(v).replace(/[₹,\s]/g,'') : String(v).trim(); }); return o; }).filter(o => o.registration_no || o.chassis_no);
+    if(!rows.length) throw new Error('No truck rows found. Use the template columns.');
+    const res = await rpc('ft_import', {p_rows:rows}); await loadMasters();
+    $('fiOut').innerHTML = `<p><b>${res.imported}</b> of ${rows.length} truck(s) imported.</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Registration',k:'registration_no'},{h:'Problem',k:'error'}], res.errors) : '');
+    return res; }, r => `${r.imported} truck(s) imported`);
 };
 
 /* ============ STOCK ============ */
@@ -1972,6 +2374,8 @@ const MASTERS = {
   'Platform shortage recovery rate': {grp:'rk', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
   'Wagon sheet material names': {grp:'rk', t:'rk_material_aliases', cols:['client_id','sheet_name','material_id'], form:[['client_id','Customer','client'],['sheet_name','Name as in the wagon sheet'],['material_id','Our material type','mat']], extra:r => ({...r, sheet_name:(r.sheet_name||'').trim().toUpperCase()}), labels:{sheet_name:'Name in wagon sheet', material_id:'Our material type'}, note:'When the customer\'s wagon sheet names a material differently from our material type (e.g. W.PLUS → WALL PLUS), map it once here or while uploading the wagon sheet; every later sheet is matched automatically.'},
   'Customer DC/WC bearer': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','effective_from','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['effective_from','Effective from','date'],['note','Note']], note:'Required for every customer served at the siding: who bears railway demurrage and wharfage. Effective-dated: when terms change, add a new row with the new effective date; old rows stay as history. A rake takes the terms in force on its arrival date.'},
+  'Truck models': {grp:'ft', t:'ft_models', cols:['make','model','gvw_kg','axle','is_active'], form:[['make','Make (e.g. TATA)'],['model','Model (e.g. SIGNA 4825.TK)'],['gvw_kg','GVW kg','num'],['axle','Axle / wheels (e.g. 10W)']], labels:{gvw_kg:'GVW kg'}, note:'Truck makes and models used in purchase orders and the fleet.'},
+  'Financiers': {grp:'ft', t:'ft_financiers', cols:['name','is_active'], form:[['name','Bank / NBFC name']], note:'Banks and NBFCs that finance our trucks.'},
   'Customer email settings': {wh:1, t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
 };
 VIEWS.whsetup = m => VIEWS.masters(m, true);
@@ -1979,12 +2383,12 @@ VIEWS.whsetup = m => VIEWS.masters(m, true);
 const plantCode2 = r => { const cc = clientCode(r.client_id); const c = String(r.code||'').trim().toUpperCase(); return !cc || !c || c.startsWith(cc + '-') ? c : cc + '-' + c; };
 /* ---- "+ Add new" inside any master dropdown ---- */
 const ADD_FOR = {company:'Our companies', client:'Customers', mat:'Materials', loc:'Warehouses', vendor:'Vendors', plantall:'Warehouses', plant:'Plants', siding:'Sidings',
-  district:'Districts', dest:'Destinations', soldto:'Sold-To parties', shipto:'Ship-To parties', sardar:'Labour Sardars', cat:'Material categories'};
+  district:'Districts', dest:'Destinations', soldto:'Sold-To parties', shipto:'Ship-To parties', sardar:'Labour Sardars', cat:'Material categories', ftmodel:'Truck models', fin:'Financiers'};
 const ADD_LABEL = {company:'company', client:'customer', mat:'material type', loc:'warehouse', vendor:'vendor', plantall:'warehouse', plant:'plant', siding:'siding',
-  district:'district', dest:'destination', soldto:'Sold-To party', shipto:'Ship-To party', sardar:'Labour Sardar', cat:'material category'};
+  district:'district', dest:'destination', soldto:'Sold-To party', shipto:'Ship-To party', sardar:'Labour Sardar', cat:'material category', ftmodel:'truck model', fin:'financier'};
 const ADD_PRESET = {sardar:() => ({siding_id:S.loc && S.loc.kind==='siding' ? S.loc.id : ''}), mat:() => ({client_id:S.addClient || ''})};
 const ADD_NEW = '__add__';
-const masterPerm = M => M.grp==='rk' ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin');
+const masterPerm = M => M.grp==='ft' ? (M.t==='ft_financiers' ? can('ft_accounts') : can('ft_entry')) || can('wh_master_admin') : M.grp==='rk' ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin');
 const distLabel = d => d ? `${d.name} · ${(S.states.find(x=>x.id===d.state_id)||{}).name||''}` : '';
 function typeOpts(t){
   const P = S.plants, pl = x => `${x.code} · ${x.name}`;
@@ -2000,6 +2404,8 @@ function typeOpts(t){
     case 'sardar': return opt(S.sardars.map(x=>({id:x.id, n:`${sardarName(x.id)} · ${(P.find(p=>p.id===x.siding_id)||{}).code||''}`})),'id','n');
     case 'cat': return opt(S.cats,'id',x=>`${x.code} · ${clientCode(x.client_id)}`);
     case 'state': return opt(S.states,'id','name');
+    case 'ftmodel': return opt((S.ftModels||[]).filter(x=>x.is_active),'id',x=>`${x.make} ${x.model}`);
+    case 'fin': return opt((S.ftFin||[]).filter(x=>x.is_active),'id','name');
     case 'district': return opt(S.districts,'id',distLabel);
     case 'dest': return opt(S.dests,'id',x=>`${x.name} · ${distLabel(S.districts.find(d=>d.id===x.district_id))}`);
     case 'soldto': return opt(S.soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`);
@@ -2071,7 +2477,7 @@ const EDIT_CFG = {'Our companies':{lock:['code']}, 'Customers':{lock:['code']}, 
   'Sidings':{lock:['code']}, 'Vendors':{lock:['vendor_code']}, 'Own trucks':{}, 'Materials':{lock:['client_id']}, 'SAP product mapping':{lock:['client_id']},
   'Sold-To parties':{lock:['client_id','sap_code']}, 'Ship-To parties':{lock:['client_id']}, 'Destinations':{}, 'Districts':{},
   'Labor contractors':{lock:['location_id','vendor_id']}, 'Labour Sardars':{lock:['siding_id','vendor_id']},
-  'Wagon sheet material names':{lock:['client_id','sheet_name']}, 'Customer DC/WC bearer':{key:['siding_id','client_id','effective_from'], lock:['siding_id','client_id','effective_from']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}};
+  'Wagon sheet material names':{lock:['client_id','sheet_name']}, 'Customer DC/WC bearer':{key:['siding_id','client_id','effective_from'], lock:['siding_id','client_id','effective_from']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}, 'Truck models':{}, 'Financiers':{}};
 function editMaster(key, row, after){
   const M = MASTERS[key], C = EDIT_CFG[key], lock = C.lock || []; S.qaN = (S.qaN||0) + 1; const pre = 'ed' + S.qaN + '_';
   const fields = M.form.concat(M.cols.includes('is_active') ? [['is_active','Status','active']] : []);
@@ -2160,7 +2566,7 @@ VIEWS.masters = async (m, whOnly = false) => {
     if(k==='destination_id'){ const x = S.dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(S.districts.find(d=>d.id===x.district_id))}`) : ''; }
     if(k==='sold_to_id'){ const x = S.soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; }
     return esc(v); };
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='ft' ? 'Truck models & financiers' : grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid" id="mForm">${M.form.map(f => masterInput(f, 'f_')).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
   <div class="card">${table(M.cols.map(k => ({h:(M.labels||{})[k] || k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(EDIT_CFG[S.mst] && masterPerm(M) ? [{h:'', f:r => EDIT_CFG[S.mst].remove ? `<button class="ghost sm" data-rm="${rows.indexOf(r)}">Remove</button>` : `<button class="ghost sm" data-edit="${rows.indexOf(r)}">Edit</button>` + (S.me.admin && r.id ? ` <button class="danger sm" data-del="${rows.indexOf(r)}">Delete</button>` : '')}] : []), rows)}</div>
   ${!EDIT_CFG[S.mst] && /rate|conversion/i.test(S.mst) ? '<p class="muted">Rates are effective-dated: to change one, add a new row with a new effective date.</p>' : ''}`;
