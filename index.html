@@ -452,7 +452,7 @@ const MODULES = [
       const t = []; const L = S.loc;
       if(L && can('rk_view')) t.push(['#', L.code + ' · siding'],['rk_board','Rake intimation'],['rk_sheet','Wagon sheet (RR)'],['rk_arrival','Arrival'],['rk_wagons','Wagons'],
         ['rk_unload','Unloading slips'],['rk_loading','Loading slips'],['rk_dispatch','Dispatch'],['rk_platform','Platform'],['rk_dcwc','Times & DC/WC'],['rk_close','Close & history']);
-      if(can('rk_view')) t.push(['#','Office'],['rk_recov','Platform recoveries'],['rk_msgs','Customer emails'],['rk_reports','Reports']);
+      if(can('rk_view')) t.push(['#','Office'],['rk_msgs','Customer emails'],['rk_reports','Reports']);
       if(can('rk_master_admin')) t.push(['#','Setup'],['rk_setup','Siding setup']);
       return t;
     } },
@@ -468,7 +468,7 @@ const MODULES = [
       t.push(['#','Office']);
       if(S.me.office || can('wh_adjustment_approve') || can('wh_damage_transfer_approve') || can('wh_variance_approve') || can('wh_labor_bill_approve') || can('wh_opening_mismatch_approve')) t.push(['approvals','Approvals']);
       if(can('wh_sap_operator')) t.push(['billing','SAP billing'],['sapgrn','SAP GRN']);
-      if(L) t.push(['recoveries','Recoveries'],['labor','Labor']);
+      if(L) t.push(['recoveries','Recoveries']);
       t.push(['messages','Messages'],['reports','Reports']);
       if(can('wh_master_admin')){ t.push(['#','Setup']); t.push(['whsetup','Warehouse setup']); }
       return t;
@@ -479,7 +479,7 @@ const MODULES = [
     visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
 ];
 const MOD_SHORT = {rk:'Rakes, wagons, unloading, trucks, DC/WC', wh:'Godown receipts, dispatch, stock, SAP billing', ic:'SSL ↔ LSA cash, hire and monthly settlement',
-  ft:'New trucks: order to ready for movement', fl:'Existing trucks, documents, EMIs, FASTag', vn:'Vendor master by type, PAN, bank',
+  ft:'New trucks: order to ready for movement', lb:'Labour contractors, Sardars, bills, rates', fl:'Existing trucks, documents, EMIs, FASTag', vn:'Vendor master by type, PAN, bank',
   md:'Companies, customers, materials, plants, parties', admin:'Users, roles, permissions'};
 const modOf = k => MODULES.find(x => x.key === k);
 function tabList(){ const M = modOf(S.module); return M ? M.screens() : []; }
@@ -1463,6 +1463,47 @@ VIEWS.ft_gaps = async m => {
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out, {header:[...FT_IMPORT_COLS, 'missing_now']}), 'Fleet'); XLSX.writeFile(wb, `fleet_gap_sheet_${today()}.xlsx`); };
 };
 
+
+/* ============ LABOUR ============ */
+// One place for all labour: warehouse labour contractors and their bills, siding Labour Sardars, their work and platform recoveries, and all labour rates.
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'lb', name:'Labour', icon:'labour', desc:'Warehouse labour contractors and bills; siding Labour Sardars, their work and platform recoveries; labour and Sardar rates',
+    usesLocation:true, locKinds:['warehouse','siding'],
+    visible: () => can('wh_master_admin') || can('rk_master_admin') || can('rk_view') || can('wh_labor_bill_approve') || S.me.locations.some(l => l.kind==='warehouse' || l.kind==='siding'),
+    screens: () => { const t = [], L = S.loc;
+      if(L && L.kind==='warehouse') t.push(['#', L.code + ' · warehouse labour'],['labor','Labour bills']);
+      if(L && L.kind==='siding' && can('rk_view')) t.push(['#', L.code + ' · Labour Sardars'],['lb_sardar','Sardar work'],['rk_recov','Platform recoveries']);
+      const wa = can('wh_master_admin'), ra = can('rk_master_admin') || wa;
+      if(wa || ra) t.push(['#','Setup']);
+      if(wa) t.push(['lb_contractors','Labour contractors'],['lb_rates','Labour rates']);
+      if(ra) t.push(['lb_sardars','Labour Sardars'],['lb_srates','Sardar rates'],['lb_recrate','Platform recovery rate']);
+      return t; } });
+ICONS.labour = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="6" r="3"/><path d="M6 21v-4a6 6 0 0 1 12 0v4"/><path d="M4 9h3M17 9h3"/></svg>';
+const LB_TITLE = {'Labor contractors':'Labour contractors', 'Labor rates':'Labour rates', 'Labour Sardars':'Labour Sardars', 'Sardar activity rates':'Sardar rates', 'Platform shortage recovery rate':'Platform recovery rate'};
+const lbMaster = key => m => { S.mst = key; return VIEWS.masters(m, 'lb'); };
+VIEWS.lb_contractors = lbMaster('Labor contractors');
+VIEWS.lb_rates = lbMaster('Labor rates');
+VIEWS.lb_sardars = lbMaster('Labour Sardars');
+VIEWS.lb_srates = lbMaster('Sardar activity rates');
+VIEWS.lb_recrate = lbMaster('Platform shortage recovery rate');
+
+/* ---- Sardar work at the siding: what each Sardar did, at which rate, for the month ---- */
+VIEWS.lb_sardar = async m => {
+  S.lbM = S.lbM || localMonth(); const end = addMonths(S.lbM, 1);
+  const rows = await qAll('rk_sardar_work', b => b.eq('siding_id', S.loc.id).gte('op_date', S.lbM).lt('op_date', end).order('op_date').order('doc_no'));
+  const ACT = {wagon_platform:'Wagon → platform', platform_truck:'Platform → truck', wagon_truck:'Wagon → truck'};
+  const g = {}; rows.forEach(r => { const k = r.sardar + '|' + r.activity; g[k] = g[k] || {sardar:r.sardar, activity:ACT[r.activity] || r.activity, docs:0, mt:0, amount:0, norate:0}; g[k].docs++; g[k].mt += +r.qty_mt||0; g[k].amount += +r.amount||0; if(r.rate_per_mt==null) g[k].norate++; });
+  const sum = Object.values(g).sort((a,b) => a.sardar.localeCompare(b.sardar) || a.activity.localeCompare(b.activity));
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Sardar work · ${esc(S.loc.code)}</h1><div class="row"><select id="lbM" style="width:auto">${monthsBack(12).map(p => `<option value="${p}" ${p===S.lbM?'selected':''}>${monthLbl(p)}</option>`).join('')}</select><button class="ghost sm" id="lbCsv">Download CSV</button></div></div>
+  <p class="muted">From unloading slips and truck loading slips: quantity handled by each Labour Sardar and the amount at the Sardar rate in force on that day.</p>
+  <div class="kpi"><div><span>MT handled</span><b>${n3(rows.reduce((a,r) => a + (+r.qty_mt||0), 0))}</b></div><div><span>Amount</span><b>${inr(rows.reduce((a,r) => a + (+r.amount||0), 0))}</b></div><div><span>Slips</span><b>${rows.length}</b></div>
+    ${sum.some(x => x.norate) ? `<div><span>Slips without a rate</span><b style="color:var(--alert)">${sum.reduce((a,x) => a + x.norate, 0)}</b></div>` : ''}</div>
+  <div class="card"><h2>By Sardar and activity</h2>${table([{h:'Sardar',k:'sardar'},{h:'Activity',k:'activity'},{h:'Slips',n:1,k:'docs'},{h:'MT',n:1,f:x=>n3(x.mt)},{h:'Amount',n:1,f:x=>inr(x.amount) + (x.norate ? ' ' + chip(x.norate + ' without rate','bad') : '')}], sum, 'No Sardar work this month.')}</div>
+  <details class="card"><summary>All slips (${rows.length})</summary>${table([{h:'Date',f:r=>d8(r.op_date)},{h:'Slip',k:'doc_no'},{h:'Rake',k:'rake_no'},{h:'Sardar',k:'sardar'},{h:'Activity',f:r=>esc(ACT[r.activity] || r.activity)},{h:'Material',k:'material'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Rate',n:1,f:r=>r.rate_per_mt==null ? chip('no rate','bad') : inr(r.rate_per_mt)},{h:'Amount',n:1,f:r=>inr(r.amount)}], rows)}</details>`;
+  $('lbM').onchange = () => { S.lbM = $('lbM').value; go(); };
+  $('lbCsv').onclick = () => csv(rows.map(r => ({date:r.op_date, slip:r.doc_no, rake:r.rake_no, sardar:r.sardar, activity:ACT[r.activity] || r.activity, material:r.material, mt:r.qty_mt, rate:r.rate_per_mt, amount:r.amount})), 'sardar-work-' + S.loc.code + '-' + S.lbM.slice(0,7));
+};
+
 /* ============ VENDOR MASTER ============ */
 // A vendor has one or more types; every vendor dropdown shows only its type. HO / Admin (vendor_admin) create and edit.
 // Mandatory: name, type, mobile, PAN. One PAN = one vendor. GSTIN must contain the PAN. Bank details before a bank payment.
@@ -1928,7 +1969,7 @@ VIEWS.labor = async m => {
   const bills = await q('wh_labor_bills', b => b.eq('location_id', S.loc.id).order('created_at', {ascending:false}).limit(40));
   const unb = await q('wh_labor_ops', b => b.eq('location_id', S.loc.id).is('labor_bill_id', null));
   const V = c => c.vendor_name;
-  m.innerHTML = `<h1>Labor · ${esc(S.loc.code)}</h1><p class="muted">Bills are generated from our slips. Our records take precedence over the contractor's bill.</p>
+  m.innerHTML = `<h1>Labour bills · ${esc(S.loc.code)}</h1><p class="muted">Bills are generated from our slips. Our records take precedence over the contractor's bill.</p>
   <div class="card">${table([{h:'Contractor',f:c=>esc(V(c))},{h:'Cycle',f:c=>c.billing_cycle_days+' days'},{h:'Unbilled MT',n:1,f:c=>n3(unb.filter(o=>o.contractor_id===c.id).reduce((s,o)=>s+ +o.qty_mt,0))},{h:'Bill up to',f:c=>`<input type="date" data-to="${c.id}" value="${today()}" style="height:36px">`},{h:'',f:c=>`<button class="primary sm" data-gen="${c.id}">Generate bill</button>`}], cons, 'No contractors assigned to this location.')}</div>
   <div class="card"><div class="row" style="justify-content:space-between"><h2>Bills</h2><button class="ghost sm" id="lCsv">BUSY export (CSV)</button></div>${table([{h:'Bill',f:b=>`<a href="#" data-bl="${b.id}">${esc(b.bill_no)}</a>`},{h:'Contractor',f:b=>esc(V(cons.find(c=>c.id===b.contractor_id)||{}))},{h:'Period',f:b=>`${d8(b.period_from)} – ${d8(b.period_to)}`},{h:'MT',n:1,f:b=>n3(b.total_mt)},{h:'Amount',n:1,f:b=>inr(b.amount)},
     {h:'Status',f:b=>chip(b.status + (b.busy_ref?' · '+b.busy_ref:''), b.status==='exported'?'ok':b.status==='approved'?'info':'warn')},
@@ -2662,7 +2703,8 @@ VIEWS.rk_lots = async m => {
 };
 
 VIEWS.rk_recov = async m => {
-  const rows = await q('rk_recoveries', b => b.order('created_at', {ascending:false}).limit(200));
+  let rows = await q('rk_recoveries', b => b.order('created_at', {ascending:false}).limit(500));
+  if(S.module==='lb' && S.loc) rows = rows.filter(r => r.siding===S.loc.code);
   m.innerHTML = `<h1>Platform recoveries</h1><p class="muted">Platform shortage of a wagon's lot recovered from the Sardar who loaded the last truck from that lot; the customer is paid its value; SSL bears the gap.</p>
     <div class="kpi"><div><span>Pending</span><b style="color:var(--alert)">${rows.filter(r=>r.status==='pending').length}</b></div><div><span>Recovered ₹</span><b>${inr(rows.filter(r=>r.status==='settled').reduce((a,r)=>a + +r.recovery_amount,0))}</b></div><div><span>SSL net cost ₹</span><b>${inr(rows.reduce((a,r)=>a + (+r.ssl_net_cost||0),0))}</b></div></div>
     <div class="card">${table([{h:'Rake',k:'rake_no'},{h:'Siding',k:'siding'},{h:'Platform lot',f:r=>r.wagon_no ? 'Platform-' + esc(r.wagon_no) : ''},{h:'Type',k:'material'},{h:'Difference',n:1,f:r=>+r.diff_mt>0?chip('short '+n3(r.diff_mt),'bad'):chip('excess '+n3(-r.diff_mt),'warn')},{h:'Sardar',k:'sardar'},{h:'Recovery',n:1,f:r=>r.recovery_amount!=null?inr(r.recovery_amount):''},{h:'Customer',n:1,f:r=>r.customer_value!=null?inr(r.customer_value):''},{h:'SSL net',n:1,f:r=>r.ssl_net_cost!=null?inr(r.ssl_net_cost):''},{h:'Status',f:r=>chip(r.status.replace('_',' '), r.status==='pending'?'bad':'ok')},
@@ -2708,13 +2750,13 @@ const MASTERS = {
   'Destinations': {t:'sys_destinations', cols:['name','district_id','pincode'], form:[['district_id','District (state)','district'],['name','Destination'],['pincode','PIN code']], note:'Every destination carries its district and state. Add the district first if it is not in the list.'},
   'Districts': {t:'sys_districts', cols:['state_id','name'], form:[['state_id','State','state'],['name','District']]},
   'Bag conversion': {wh:1, t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant / warehouse (blank = all)','plantall'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
-  'Labor rates': {wh:1, t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
+  'Labor rates': {grp:'lb', t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
   'Shortage recovery rates': {wh:1, t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
-  'Labor contractors': {wh:1, t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Labour contractor (vendor)','vendor','labour_contractor'],['billing_cycle_days','Billing cycle (days)','num']], note:'Only vendors of type Labour contractor are listed. HO adds vendors in the Vendors module.'},
+  'Labor contractors': {grp:'lb', t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Labour contractor (vendor)','vendor','labour_contractor'],['billing_cycle_days','Billing cycle (days)','num']], note:'Only vendors of type Labour contractor are listed. HO adds vendors in the Vendors module.'},
   'Siding ↔ warehouse links': {grp:'rk', t:'sys_plant_sidings', cols:['siding_id','plant_id'], form:[['siding_id','Rake siding','siding'],['plant_id','Customer warehouse / plant','plantall']], note:'Which warehouses a siding feeds. The customers served by a siding come from these links.'},
-  'Labour Sardars': {grp:'rk', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor','sardar']], note:'A siding can have more than one Sardar. Only vendors of type Labour Sardar are listed; HO adds them in the Vendors module.'},
-  'Sardar activity rates': {grp:'rk', t:'rk_labor_rates', cols:['sardar_id','activity','rate_per_mt','effective_from'], form:[['sardar_id','Sardar','sardar'],['activity','Activity','sel',['wagon_platform','platform_truck','wagon_truck']],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Per siding × Sardar × activity. Effective-dated: a change is a new row.'},
-  'Platform shortage recovery rate': {grp:'rk', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
+  'Labour Sardars': {grp:'lb', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor','sardar']], note:'A siding can have more than one Sardar. Only vendors of type Labour Sardar are listed; HO adds them in the Vendors module.'},
+  'Sardar activity rates': {grp:'lb', t:'rk_labor_rates', cols:['sardar_id','activity','rate_per_mt','effective_from'], form:[['sardar_id','Sardar','sardar'],['activity','Activity','sel',['wagon_platform','platform_truck','wagon_truck']],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Per siding × Sardar × activity. Effective-dated: a change is a new row.'},
+  'Platform shortage recovery rate': {grp:'lb', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
   'Wagon sheet material names': {grp:'rk', t:'rk_material_aliases', cols:['client_id','sheet_name','material_id'], form:[['client_id','Customer','client'],['sheet_name','Name as in the wagon sheet'],['material_id','Our material type','mat']], extra:r => ({...r, sheet_name:(r.sheet_name||'').trim().toUpperCase()}), labels:{sheet_name:'Name in wagon sheet', material_id:'Our material type'}, note:'When the customer\'s wagon sheet names a material differently from our material type (e.g. W.PLUS → WALL PLUS), map it once here or while uploading the wagon sheet; every later sheet is matched automatically.'},
   'Customer DC/WC bearer': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','effective_from','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['effective_from','Effective from','date'],['note','Note']], note:'Required for every customer served at the siding: who bears railway demurrage and wharfage. Effective-dated: when terms change, add a new row with the new effective date; old rows stay as history. A rake takes the terms in force on its arrival date.'},
   'Truck models': {grp:'ft', t:'ft_models', cols:['make','model','gvw_kg','axle','is_active'], form:[['make','Make (e.g. TATA)'],['model','Model (e.g. SIGNA 4825.TK)'],['gvw_kg','GVW kg','num'],['axle','Axle / wheels (e.g. 10W)']], labels:{gvw_kg:'GVW kg'}, note:'Truck makes and models used in purchase orders and the fleet.'},
@@ -2731,7 +2773,7 @@ const ADD_LABEL = {company:'company', client:'customer', mat:'material type', lo
   district:'district', dest:'destination', soldto:'Sold-To party', shipto:'Ship-To party', sardar:'Labour Sardar', cat:'material category', ftmodel:'truck model', fin:'financier'};
 const ADD_PRESET = {sardar:() => ({siding_id:S.loc && S.loc.kind==='siding' ? S.loc.id : ''}), mat:() => ({client_id:S.addClient || ''})};
 const ADD_NEW = '__add__';
-const masterPerm = M => M.grp==='ft' ? (M.t==='ft_financiers' ? can('ft_accounts') : can('ft_entry')) || can('wh_master_admin') : M.grp==='rk' ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin');
+const masterPerm = M => M.grp==='lb' ? (M.t.startsWith('rk_') ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin')) : M.grp==='ft' ? (M.t==='ft_financiers' ? can('ft_accounts') : can('ft_entry')) || can('wh_master_admin') : M.grp==='rk' ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin');
 const distLabel = d => d ? `${d.name} · ${(S.states.find(x=>x.id===d.state_id)||{}).name||''}` : '';
 function typeOpts(t, vt){
   const P = S.plants, pl = x => `${x.code} · ${x.name}`;
@@ -2866,7 +2908,7 @@ async function bulkRates(m, key, rows){
   const next = (rid, col) => mine.filter(x => x[B.rowKey]===rid && x[B.colKey]===col && x.effective_from > td).sort((a,b) => a.effective_from.localeCompare(b.effective_from))[0];
   const cell = (rid, col) => { const c = cur(rid, col), n = next(rid, col);
     return `<div style="text-align:right">` + (c ? `<b>${inr(c.rate_per_mt)}</b><div class="muted" style="font-size:12px">since ${d8(c.effective_from)}</div>` : '<span class="muted">—</span>') + (n ? `<div style="font-size:12px;margin-top:2px">${chip('from ' + d8(n.effective_from) + ': ' + inr(n.rate_per_mt), 'info')}</div>` : '') + '</div>'; };
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(key)}</h1><select id="mS" style="width:auto">${Object.keys(MASTERS).filter(k => (MASTERS[k].grp || (MASTERS[k].wh ? 'wh' : 'md')) === (M.grp || (M.wh ? 'wh' : 'md'))).map(k=>`<option ${k===key?'selected':''}>${k}</option>`).join('')}</select></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(LB_TITLE[key] || key)}</h1><select id="mS" style="width:auto;${M.grp==='lb' ? 'display:none' : ''}">${Object.keys(MASTERS).filter(k => (MASTERS[k].grp || (MASTERS[k].wh ? 'wh' : 'md')) === (M.grp || (M.wh ? 'wh' : 'md'))).map(k=>`<option ${k===key?'selected':''}>${k}</option>`).join('')}</select></div>
   ${M.note ? `<p class="muted">${esc(M.note)}</p>` : ''}
   <div class="card"><div class="row" style="align-items:flex-end">
       <div style="flex:1 1 240px"><label>${esc(B.scopeLabel)}</label><select id="brS">${opt(scopes, 'id', x => `${x.code} · ${x.name}`, sc && sc.id)}</select></div>
@@ -2911,7 +2953,7 @@ VIEWS.masters = async (m, whOnly = false) => {
     if(k==='destination_id'){ const x = S.dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(S.districts.find(d=>d.id===x.district_id))}`) : ''; }
     if(k==='sold_to_id'){ const x = S.soldTos.find(y=>y.id===v); return x ? esc(`${x.name} (${x.sap_code})`) + (x.contact_phone ? '' : ' ' + chip('phone missing','bad')) : ''; }
     return esc(v); };
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='ft' ? 'Truck models & financiers' : grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${grp==='lb' ? esc(LB_TITLE[S.mst] || S.mst) : grp==='ft' ? 'Truck models & financiers' : grp==='rk' ? 'Siding setup' : grp==='wh' ? 'Warehouse setup' : 'Master data'}</h1><select id="mS" style="width:auto;${grp==='lb' ? 'display:none' : ''}">${keys.map(k=>`<option ${k===S.mst?'selected':''}>${k}</option>`).join('')}</select></div>
   <div class="card"><h2>Add ${esc(S.mst)}</h2>${M.note?`<p class="muted">${esc(M.note)}</p>`:''}<div class="grid" id="mForm">${M.form.map(f => masterInput(f, 'f_')).join('')}</div><button class="primary" id="mAdd" style="margin-top:8px">Add</button></div>
   <div class="card">${table(M.cols.map(k => ({h:(M.labels||{})[k] || k.replace(/_id$/,'').replace(/_/g,' '), f:r => show(k, r[k])})).concat(EDIT_CFG[S.mst] && masterPerm(M) ? [{h:'', f:r => EDIT_CFG[S.mst].remove ? `<button class="ghost sm" data-rm="${rows.indexOf(r)}">Remove</button>` : `<button class="ghost sm" data-edit="${rows.indexOf(r)}">Edit</button>` + (S.me.admin && r.id ? ` <button class="danger sm" data-del="${rows.indexOf(r)}">Delete</button>` : '')}] : []), rows)}</div>
   ${!EDIT_CFG[S.mst] && /rate|conversion/i.test(S.mst) ? '<p class="muted">Rates are effective-dated: to change one, add a new row with a new effective date.</p>' : ''}`;
