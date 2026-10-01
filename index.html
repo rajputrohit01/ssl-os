@@ -479,7 +479,7 @@ const MODULES = [
     visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
 ];
 const MOD_SHORT = {rk:'Rakes, wagons, unloading, trucks, DC/WC', wh:'Godown receipts, dispatch, stock, SAP billing', ic:'SSL ↔ LSA cash, hire and monthly settlement',
-  ft:'New trucks: order to ready for movement', lb:'Labour contractors, Sardars, bills, rates', fl:'Existing trucks, documents, EMIs, FASTag', vn:'Vendor master by type, PAN, bank',
+  ft:'New trucks: order to ready for movement', lb:'Labour contractors, Sardars, bills, rates', up:'Go-live Excel uploads and data gaps', fl:'Existing trucks, documents, EMIs, FASTag', vn:'Vendor master by type, PAN, bank',
   md:'Companies, customers, materials, plants, parties', admin:'Users, roles, permissions'};
 const modOf = k => MODULES.find(x => x.key === k);
 function tabList(){ const M = modOf(S.module); return M ? M.screens() : []; }
@@ -1504,6 +1504,165 @@ VIEWS.lb_sardar = async m => {
   $('lbCsv').onclick = () => csv(rows.map(r => ({date:r.op_date, slip:r.doc_no, rake:r.rake_no, sardar:r.sardar, activity:ACT[r.activity] || r.activity, material:r.material, mt:r.qty_mt, rate:r.rate_per_mt, amount:r.amount})), 'sardar-work-' + S.loc.code + '-' + S.lbM.slice(0,7));
 };
 
+/* ============ DATA UPLOAD (go-live loading) ============ */
+// One place to load every master from Excel, in the order they depend on each other.
+// Rows load even when optional / business-mandatory details are missing; those show in Data gaps. Re-uploading never duplicates.
+const UPN = v => String(v ?? '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+const upEq = (a, b) => UPN(a) !== '' && UPN(a) === UPN(b);
+const upPlant = kinds => v => { const n = UPN(v); if(!n) return null; return S.plants.find(p => (!kinds || kinds.includes(p.kind)) && (UPN(p.code) === n || UPN(p.code).endsWith(n) && UPN(p.code.split('-').slice(1).join('-')) === n)); };
+const UP_REF = {
+  company: v => S.companies.find(c => upEq(c.code, v) || upEq(c.name, v)),
+  client: v => S.clients.find(c => upEq(c.code, v) || upEq(c.name, v)),
+  state: v => S.states.find(s => upEq(s.name, v)),
+  district: (v, r) => S.districts.find(d => upEq(d.name, v) && (!r.state_id || d.state_id === r.state_id)),
+  dest: (v, r) => S.dests.find(d => upEq(d.name, v) && (!r._district || d.district_id === r._district)),
+  cat: (v, r) => S.cats.find(c => (upEq(c.code, v) || upEq(c.name, v)) && c.client_id === r.client_id),
+  mat: (v, r) => { const cid = r.client_id || (S.plants.find(p => p.id === r.location_id) || {}).client_id; return S.materials.find(m => (upEq(m.code, v) || upEq(m.name, v)) && (!cid || m.client_id === cid)); },
+  warehouse: upPlant(['warehouse']), plant: upPlant(['plant']), siding: upPlant(['siding']), plantwh: upPlant(['plant','warehouse']), anyloc: upPlant(['warehouse','siding']),
+  vendor: v => S.vendors.find(x => upEq(x.vendor_code, v)) || S.vendors.find(x => upEq(x.vendor_name, v)),
+  soldto: (v, r) => S.soldTos.find(s => upEq(s.sap_code, v) && (!r.client_id || s.client_id === r.client_id)),
+  sardar: (v, r) => { const vd = UP_REF.vendor(v); return vd && S.sardars.find(s => s.vendor_id === vd.id && s.siding_id === r.siding_id); },
+};
+const UP_LBL = {company:'company', client:'customer', state:'state', district:'district', dest:'destination', cat:'category', mat:'material type', warehouse:'warehouse', plant:'plant', siding:'siding', plantwh:'plant / warehouse', anyloc:'warehouse / siding', vendor:'vendor', soldto:'Sold-To', sardar:'Labour Sardar at this siding'};
+// col: [header, field, kind, required, help]   kind: text | upper | num | date | ref:<type> | sel:a/b | bool
+const UP_SETS = [
+  {k:'companies', g:'1 · Company & customers', n:'Our companies', t:'sys_companies', perm:'wh_master_admin', cols:[['Code','code','upper',1,'e.g. SSL'],['Company name','name','text',1],['GSTIN','gstin','upper'],['PAN','pan','upper'],['State','state_id','ref:state'],['Address','address','text'],['Name in BUSY','busy_company','text']]},
+  {k:'customers', g:'1 · Company & customers', n:'Customers', t:'sys_clients', perm:'wh_master_admin', cols:[['Code','code','upper',1,'e.g. UTCL'],['Customer name','name','text',1]]},
+  {k:'cats', g:'2 · Materials', n:'Material categories', t:'sys_material_categories', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1,'code or name'],['Category code','code','upper',1,'CEMENT, ORE…'],['Category name','name','text',0,'blank = code']], fix:r => ({...r, name:r.name || r.code})},
+  {k:'materials', g:'2 · Materials', n:'Material types', t:'wh_materials', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1],['Category','category_id','ref:cat',0,'blank = the customer\'s only category'],['Type code','code','upper',1,'PSC, OPC…'],['Name','name','text',0,'blank = code']],
+    fix:r => { if(!r.category_id){ const cs = S.cats.filter(c => c.client_id === r.client_id); if(cs.length === 1) r.category_id = cs[0].id; else throw new Error(cs.length ? 'category needed: this customer has more than one' : 'load the customer\'s material category first'); } return {...r, name:r.name || r.code}; }},
+  {k:'sap_map', g:'2 · Materials', n:'SAP product mapping', t:'wh_material_map', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1],['SAP product code','sap_product_code','text',1],['SAP description','sap_description','text'],['Our material type','material_id','ref:mat',1]]},
+  {k:'bags', g:'2 · Materials', n:'Bag conversion', t:'wh_bag_conversions', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1],['Material type','material_id','ref:mat',1],['Plant / warehouse','plant_id','ref:plantwh',0,'blank = all'],['Bags per MT','bags_per_mt','num',1],['Effective from','effective_from','date',1]]},
+  {k:'districts', g:'3 · Places', n:'Districts', t:'sys_districts', perm:'wh_master_admin', cols:[['State','state_id','ref:state',1],['District','name','text',1]]},
+  {k:'dests', g:'3 · Places', n:'Destinations', t:'sys_destinations', perm:'wh_master_admin', cols:[['State','state_id','ref:state',0,'helps find the district'],['District','district_id','ref:district',1],['Destination','name','text',1],['PIN code','pincode','text']], fix:r => { delete r.state_id; return r; }},
+  {k:'plants', g:'3 · Places', n:'Customer plants', t:'sys_plants', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1],['Location code','code','upper',1,'e.g. HSP (customer code is added)'],['Plant name','name','text',1]], fix:r => ({...r, code:plantCode2(r), kind:'plant', is_live:true})},
+  {k:'warehouses', g:'3 · Places', n:'Warehouses', t:'sys_plants', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1],['Location code','code','upper',1,'e.g. USTHI'],['Warehouse name','name','text',1],['Run by (our company)','company_id','ref:company'],['Inside plant','parent_id','ref:plant'],['Return intimation','return_intimation','sel:hard/soft',0,'blank = hard'],['Responsibility start','responsibility_start','date']],
+    fix:r => ({...r, code:plantCode2(r), kind:'warehouse', return_intimation:r.return_intimation || 'hard'})},
+  {k:'sidings', g:'3 · Places', n:'Rake sidings', t:'sys_plants', perm:'wh_master_admin', cols:[['Railway code','code','upper',1,'e.g. HPO'],['Siding name','name','text',1],['Run by (our company)','company_id','ref:company'],['State','state_id','ref:state',0,'helps find the district'],['District','district_id','ref:district']],
+    fix:r => { delete r.state_id; return {...r, kind:'siding', station_code:r.code, is_live:true}; }},
+  {k:'links', g:'3 · Places', n:'Siding ↔ warehouse links', t:'sys_plant_sidings', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Warehouse / plant','plant_id','ref:plantwh',1]]},
+  {k:'soldto', g:'4 · Parties', n:'Sold-To parties', t:'sys_sold_to', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1],['Sold-To code','sap_code','upper',1,'SAP code'],['Party name','name','text',1],['Contact phone','contact_phone','text',0,'missing = data gap']]},
+  {k:'shipto', g:'4 · Parties', n:'Ship-To parties', t:'sys_ship_to', perm:'wh_master_admin', cols:[['Customer','client_id','ref:client',1],['Sold-To code','sold_to_id','ref:soldto',1],['Ship-To code','sap_code','upper',0,'blank = Sold-To code + number'],['Ship-To name','name','text',1],['District','_district','ref:district',0,'helps find the destination'],['Destination','destination_id','ref:dest',0,'missing = data gap']],
+    fix:r => { delete r._district; return r; }},
+  {k:'terms', g:'5 · Rake sidings', n:'Customer DC/WC bearer', t:'rk_siding_client_terms', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Customer','client_id','ref:client',1],['DC/WC borne by','dcwc_bearer','sel:ssl/customer',1],['Effective from','effective_from','date',0,'blank = 01-04-2026'],['Note','note','text']], fix:r => ({...r, effective_from:r.effective_from || '2026-04-01'})},
+  {k:'aliases', g:'5 · Rake sidings', n:'Wagon sheet material names', t:'rk_material_aliases', perm:'rk_master_admin', cols:[['Customer','client_id','ref:client',1],['Name in wagon sheet','sheet_name','upper',1],['Our material type','material_id','ref:mat',1]]},
+  {k:'vendors', g:'6 · Vendors & labour', n:'Vendors', link:'#vn/vn_import', perm:'vendor_admin', note:'Vendor master has its own upload (codes, types, PAN, bank). Missing PAN / mobile / bank load as "incomplete".'},
+  {k:'contractors', g:'6 · Vendors & labour', n:'Warehouse labour contractors', t:'wh_contractors', perm:'wh_master_admin', cols:[['Warehouse','location_id','ref:warehouse',1],['Vendor (code or name)','vendor_id','ref:vendor',1,'must be type Labour contractor'],['Billing cycle (days)','billing_cycle_days','num',0,'blank = 7']], fix:r => ({...r, billing_cycle_days:r.billing_cycle_days || 7})},
+  {k:'sardars', g:'6 · Vendors & labour', n:'Labour Sardars', t:'rk_sardars', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Vendor (code or name)','vendor_id','ref:vendor',1,'must be type Labour Sardar']]},
+  {k:'labour_rates', g:'6 · Vendors & labour', n:'Warehouse labour rates', t:'wh_labor_rates', perm:'wh_master_admin', cols:[['Location','location_id','ref:anyloc',1],['Activity','activity','sel:unloading/loading/paltai',1],['Customer','client_id','ref:client',0,'helps find the material'],['Material type','material_id','ref:mat',1],['Rate per MT','rate_per_mt','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.client_id; return r; }},
+  {k:'sardar_rates', g:'6 · Vendors & labour', n:'Sardar rates', t:'rk_labor_rates', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Sardar (vendor code or name)','sardar_id','ref:sardar',1],['Activity','activity','sel:wagon_platform/platform_truck/wagon_truck',1],['Rate per MT','rate_per_mt','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.siding_id; return r; }},
+  {k:'plat_rate', g:'6 · Vendors & labour', n:'Platform recovery rate', t:'rk_recovery_rates', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Rate per bag','rate_per_bag','num',1],['Effective from','effective_from','date',1]]},
+  {k:'short_rate', g:'6 · Vendors & labour', n:'Truck shortage recovery rate', t:'wh_recovery_rates', perm:'wh_master_admin', cols:[['Warehouse','location_id','ref:warehouse',1],['Customer','client_id','ref:client',0,'helps find the material'],['Material type','material_id','ref:mat',0,'blank = warehouse default'],['Rate per bag','rate_per_bag','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.client_id; return r; }},
+  {k:'fleet', g:'7 · Fleet', n:'Existing trucks, loans, EMIs, documents', link:'#fl/ft_import', perm:'ft_import', note:'Fleet has its own upload: only registration no. + company are required; re-upload fills blanks.'},
+  {k:'fastag', g:'7 · Fleet', n:'FASTag list', link:'#fl/fl_fastag', perm:'ft_import', note:'Bank / issuer tag list mapped to trucks by vehicle number.'},
+  {k:'opening', g:'8 · Opening balances', n:'Warehouse opening stock', rpc:'opening', perm:'wh_operate', cols:[['Warehouse','location_id','ref:warehouse',1],['Material type','material_id','ref:mat',1],['Physical MT','physical_mt','num',1],['Customer SAP MT','sap_mt','num',1],['Reason if different','reason','text']], note:'Only for warehouses not yet live. A difference needs a reason and approval, as on the Opening stock screen.'},
+];
+const upCan = d => can(d.perm) || can('wh_master_admin') && d.perm !== 'vendor_admin' && d.perm !== 'ft_import' || S.me.admin;
+
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'up', name:'Data Upload', icon:'upload', desc:'Go-live: load every master from Excel in the right order — companies, customers, materials, places, parties, vendors, labour, fleet, opening stock — and see what is still missing',
+    visible: () => S.me.admin || can('wh_master_admin') || can('rk_master_admin') || can('vendor_admin') || can('ft_import'),
+    screens: () => [['#','Go-live data'],['up_center','Upload center'],['up_gaps','Data gaps']] });
+ICONS.upload = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>';
+
+const upCount = async d => { if(!d.t) return null; let b = sb.from(d.t).select('*', {count:'exact', head:true});
+  if(d.t === 'sys_plants') b = b.eq('kind', d.k === 'plants' ? 'plant' : d.k === 'warehouses' ? 'warehouse' : 'siding');
+  const {count} = await b; return count; };
+VIEWS.up_center = async m => {
+  const counts = await Promise.all(UP_SETS.map(d => upCount(d).catch(() => null)));
+  const groups = [...new Set(UP_SETS.map(d => d.g))];
+  m.innerHTML = `<h1>Upload center</h1>
+  <p class="muted">Load in this order — later lists look up earlier ones (a Ship-To needs its customer and Sold-To). For each list: download the template, fill it, upload. Only the columns marked * are needed; anything else can be blank and shows in <a href="#up/up_gaps">Data gaps</a>. Uploading the same file again is safe: rows already in the system are skipped.</p>
+  ${groups.map(g => `<div class="card"><h2>${esc(g)}</h2>${table([{h:'List',f:d=>`<b>${esc(d.n)}</b>${d.note ? `<div class="muted" style="font-size:12px">${esc(d.note)}</div>` : ''}`},
+      {h:'Needed columns',f:d=>d.cols ? esc(d.cols.filter(c => c[3]).map(c => c[0]).join(', ')) : '—'},
+      {h:'In system',n:1,f:d=>{ const c = counts[UP_SETS.indexOf(d)]; return c == null ? '' : String(c); }},
+      {h:'',f:d=>!upCan(d) ? '<span class="muted">no permission</span>' : d.link ? linkBtn(d.link, 'Open upload') : `<button class="ghost sm" data-tpl="${d.k}">Template</button> <button class="primary sm" data-up="${d.k}">Upload</button>`}], UP_SETS.filter(d => d.g === g))}</div>`).join('')}
+  <input type="file" id="upFile" accept=".xlsx,.xls,.csv" style="display:none">`;
+  m.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => upTemplate(UP_SETS.find(d => d.k === b.dataset.tpl)));
+  m.querySelectorAll('[data-up]').forEach(b => b.onclick = () => { const d = UP_SETS.find(x => x.k === b.dataset.up); const f = $('upFile'); f.value = ''; f.onchange = () => f.files[0] && upRun(d, f.files[0]); f.click(); });
+};
+function upTemplate(d){
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([d.cols.map(c => c[0] + (c[3] ? ' *' : ''))]), d.n.slice(0, 30));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Column','Needed','What to enter'], ...d.cols.map(c => [c[0], c[3] ? 'yes' : 'no',
+    (c[2].startsWith('ref:') ? `${UP_LBL[c[2].slice(4)]} — code or name as in the system` : c[2].startsWith('sel:') ? 'one of: ' + c[2].slice(4).split('/').join(', ') : c[2] === 'date' ? 'date DD-MM-YYYY' : c[2] === 'num' ? 'number' : 'text') + (c[4] ? ' · ' + c[4] : '')])]), 'How to fill');
+  XLSX.writeFile(wb, `upload_${d.k}.xlsx`);
+}
+async function upRun(d, file){
+  modal(`<h2>Uploading ${esc(d.n)}</h2><div id="upP" class="muted">Reading file…</div><div id="upR"></div><div class="row" style="margin-top:12px"><button class="ghost" id="upClose" disabled>Close</button></div>`);
+  const prog = t => $('upP').textContent = t;
+  try{
+    await loadMasters();
+    const wb = XLSX.read(await file.arrayBuffer(), {cellDates:true}); const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:true});
+    const hmap = {}; d.cols.forEach(c => { hmap[UPN(c[0])] = c; hmap[UPN(c[1])] = c; });
+    const res = {ok:0, skip:0, err:[], warn:[]}; const recs = [];
+    raw.forEach((row, i) => {
+      const rn = i + 2; const r = {}; let empty = true; const warns = [];
+      try{
+        const val = {}; Object.entries(row).forEach(([h, v]) => { const c = hmap[UPN(String(h).replace(/\*/g, ''))]; if(c && v != null && String(v).trim() !== '') { val[c[1]] = v; empty = false; } });
+        if(empty) return;
+        for(const c of d.cols){
+          let v = val[c[1]]; const [, f, kind, req] = c;
+          if(v == null){ if(req) throw new Error(`${c[0]} is missing`); continue; }
+          if(kind === 'num'){ const x = +String(v).replace(/[₹,\s]/g, ''); if(isNaN(x)) throw new Error(`${c[0]} "${v}" is not a number`); r[f] = x; }
+          else if(kind === 'date') r[f] = isoD(v);
+          else if(kind === 'upper') r[f] = String(v).trim().toUpperCase();
+          else if(kind.startsWith('sel:')){ const o = kind.slice(4).split('/').find(x => UPN(x) === UPN(v)); if(!o) throw new Error(`${c[0]} must be one of ${kind.slice(4).split('/').join(', ')}`); r[f] = o; }
+          else if(kind.startsWith('ref:')){ const t = kind.slice(4); const hit = UP_REF[t](v, r);
+            if(!hit){ if(req) throw new Error(`${UP_LBL[t]} "${v}" not found${t==='sardar' ? '' : ' — load it first'}`); warns.push(`${UP_LBL[t]} "${v}" not found, left blank`); continue; }
+            r[f] = hit.id; }
+          else r[f] = String(v).trim();
+        }
+        const rec = d.fix ? d.fix({...r}) : r;
+        recs.push({rn, rec, warns});
+      }catch(e){ res.err.push({row:rn, problem:e.message}); }
+    });
+    // insert in batches; a failing batch is retried row by row so one bad row does not stop the rest
+    const ins = async list => d.rpc === 'opening'
+      ? (await Promise.all(list.map(x => sb.rpc('wh_opening_enter', {p_location:x.rec.location_id, p_material:x.rec.material_id, p_physical:x.rec.physical_mt, p_sap:x.rec.sap_mt, p_reason:x.rec.reason || null})))).find(x => x.error) || {}
+      : await sb.from(d.t).insert(list.map(x => x.rec));
+    for(let i = 0; i < recs.length; i += 200){
+      prog(`Saving ${Math.min(i + 200, recs.length)} of ${recs.length}…`);
+      const chunk = recs.slice(i, i + 200); const {error} = d.rpc ? {error:'row by row'} : await ins(chunk);
+      if(!error){ res.ok += chunk.length; chunk.forEach(x => x.warns.length && res.warn.push({row:x.rn, problem:x.warns.join('; ')})); continue; }
+      for(const x of chunk){ const {error:e} = await ins([x]);
+        if(!e){ res.ok++; if(x.warns.length) res.warn.push({row:x.rn, problem:x.warns.join('; ')}); }
+        else if(/duplicate key|already exists/i.test(e.message || e)) res.skip++;
+        else res.err.push({row:x.rn, problem:niceErr(e.message || String(e))}); }
+    }
+    await loadMasters(); if(d.t === 'sys_plants'){ S.me = await rpc('wh_me'); S.locs = S.me.locations; }
+    prog('');
+    $('upR').innerHTML = `<p><b>${res.ok}</b> loaded · <b>${res.skip}</b> already in the system (skipped) · <b>${res.err.length}</b> not loaded${res.warn.length ? ` · <b>${res.warn.length}</b> loaded with a blank` : ''}</p>`
+      + (res.err.length ? '<h2>Not loaded — fix and upload again</h2>' + table([{h:'Excel row',k:'row'},{h:'Problem',k:'problem'}], res.err.sort((a,b) => a.row - b.row)) : '')
+      + (res.warn.length ? '<h2>Loaded, but something was left blank</h2>' + table([{h:'Excel row',k:'row'},{h:'Note',k:'problem'}], res.warn) : '')
+      + (res.err.length + res.warn.length ? '<button class="ghost sm" id="upCsv">Download this list</button>' : '');
+    if($('upCsv')) $('upCsv').onclick = () => csv([...res.err.map(x => ({...x, status:'not loaded'})), ...res.warn.map(x => ({...x, status:'loaded with blank'}))], 'upload-' + d.k + '-issues');
+  }catch(e){ prog(''); $('upR').innerHTML = `<div class="issues">${esc(niceErr(e.message))}</div>`; }
+  $('upClose').disabled = false; $('upClose').onclick = () => { closeModal(); go(); };
+}
+
+/* ---- data gaps across masters ---- */
+VIEWS.up_gaps = async m => {
+  const [vend, sold, ship, plants, fleet] = await Promise.all([qAll('sys_vendors', b => b.order('vendor_code')), qAll('sys_sold_to', b => b.order('sap_code')), qAll('sys_ship_to', b => b.is('destination_id', null).order('sap_code')),
+    q('sys_plants', b => b.order('code')), qAll('ft_fleet_gaps', b => b.eq('source','import').order('id')).catch(() => [])]);
+  const cl = id => clientCode(id);
+  const G = [
+    {n:'Vendors without PAN or mobile', go:'#vn/vn_list', rows:vend.filter(v => v.incomplete).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:[!v.pan && 'PAN', !v.phone && 'mobile'].filter(Boolean).join(', '), note:v.note || ''})), why:'Can be used in entries, but no payment until completed.'},
+    {n:'Vendors without bank details', go:'#vn/vn_list', rows:vend.filter(v => !v.bank_account && v.is_active).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:'bank account + IFSC', note:''})), why:'No bank payment until filled.'},
+    {n:'Sold-To parties without contact number', go:'#md/masters', rows:sold.filter(s => !String(s.contact_phone||'').trim()).map(s => ({record:`${cl(s.client_id)} · ${s.sap_code} · ${s.name}`, missing:'contact number', note:''})), why:'Needed for delivery messages to the buyer.'},
+    {n:'Ship-To parties without destination', go:'#md/masters', rows:ship.map(s => ({record:`${cl(s.client_id)} · ${s.sap_code} · ${s.name}`, missing:'destination', note:''})), why:'Challans and reports show no destination for these.'},
+    {n:'Sidings without district', go:'#md/masters', rows:plants.filter(p => p.kind === 'siding' && !p.district_id).map(p => ({record:`${p.code} · ${p.name}`, missing:'district', note:''})), why:''},
+    {n:'Warehouses / sidings without our company', go:'#md/masters', rows:plants.filter(p => p.kind !== 'plant' && !p.company_id).map(p => ({record:`${p.code} · ${p.name}`, missing:'run by (our company)', note:''})), why:'Inter-company billing needs it.'},
+    {n:'Existing trucks with gaps', go:'#fl/ft_gaps', rows:fleet.filter(g => g.no_chassis || g.docs_missing || g.loan_state === 'missing' || g.no_emis).map(g => ({record:g.registration_no, missing:[g.no_chassis && 'chassis', g.docs_missing && 'documents', g.loan_state === 'missing' && 'loan yes/no', g.no_emis && 'EMI schedule'].filter(Boolean).join(', '), note:''})), why:'Full list in Fleet › Data gaps.'},
+  ];
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Data gaps</h1><button class="ghost sm" id="ugCsv">Download all (CSV)</button></div>
+  <p class="muted">What was loaded with details missing. Complete them on the record, or fill the blanks in your Excel and upload it again.</p>
+  <div class="kpi">${G.map(x => `<div><span>${esc(x.n)}</span><b ${x.rows.length ? 'style="color:var(--alert)"' : ''}>${x.rows.length}</b></div>`).join('')}</div>
+  ${G.filter(x => x.rows.length).map(x => `<details class="card"><summary><b>${esc(x.n)}</b> · ${x.rows.length}${x.why ? ` <span class="muted">— ${esc(x.why)}</span>` : ''} ${linkBtn(x.go, 'Open')}</summary>
+    ${table([{h:'Record',k:'record'},{h:'Missing',k:'missing'},{h:'Note',k:'note'}], x.rows.slice(0, 500))}${x.rows.length > 500 ? `<p class="muted">First 500 of ${x.rows.length} shown; download the CSV for all.</p>` : ''}</details>`).join('') || '<div class="card"><div class="empty">No gaps. Every loaded record is complete.</div></div>'}`;
+  $('ugCsv').onclick = () => csv(G.flatMap(x => x.rows.map(r => ({list:x.n, ...r}))), 'data-gaps');
+};
+
 /* ============ VENDOR MASTER ============ */
 // A vendor has one or more types; every vendor dropdown shows only its type. HO / Admin (vendor_admin) create and edit.
 // Mandatory: name, type, mobile, PAN. One PAN = one vendor. GSTIN must contain the PAN. Bank details before a bank payment.
@@ -1546,8 +1705,8 @@ function vnForm(v, preset, done){
     ['pan','gstin','bank_ifsc'].forEach(k => r[k] = r[k] && r[k].toUpperCase().replace(/\s/g,''));
     if(!r.vendor_name) throw new Error('Enter the vendor name');
     if(!r.kinds.length) throw new Error('Tick at least one vendor type');
-    const ph = (r.phone||'').replace(/^(\+?91|0)|[^0-9]/g, '');
-    if(!/^[6-9][0-9]{9}$/.test(ph.slice(-10))) throw new Error('Enter a valid 10-digit mobile number');
+    let ph = (r.phone||'').replace(/[^0-9]/g, ''); if(/^0\d{10}$/.test(ph) || /^91\d{10}$/.test(ph)) ph = ph.slice(-10);
+    if(!/^[6-9][0-9]{9}$/.test(ph)) throw new Error('Enter a valid 10-digit mobile number'); r.phone = ph;
     if(!r.pan || !PAN_RE.test(r.pan)) throw new Error('Enter a valid PAN (format ABCDE1234F)');
     if(r.gstin && !GST_RE.test(r.gstin)) throw new Error('GSTIN is not valid');
     if(r.gstin && r.gstin.slice(2,12) !== r.pan) throw new Error('GSTIN does not contain this PAN — check both');
@@ -1568,18 +1727,18 @@ VIEWS.vn_list = async m => {
   const all = await qAll('vn_vendor_list', b => b.order('vendor_name').order('id'));
   const qs = F.q.trim().toUpperCase();
   const rows = all.filter(v => (!F.type || (v.kinds||[]).includes(F.type)) && (F.status==='all' || (F.status==='active') === v.is_active)
-    && (!F.gap || (F.gap==='gstin' && !v.gstin) || (F.gap==='bank' && !v.bank_account) || (F.gap==='cheque' && !v.cheque_docs))
+    && (!F.gap || (F.gap==='incomplete' && v.incomplete) || (F.gap==='gstin' && !v.gstin) || (F.gap==='bank' && !v.bank_account) || (F.gap==='cheque' && !v.cheque_docs))
     && (!qs || [v.vendor_name, v.vendor_code, v.pan, v.phone, v.gstin, v.busy_name].some(x => (x||'').toUpperCase().includes(qs))));
   const cnt = c => all.filter(v => v.is_active && (v.kinds||[]).includes(c)).length;
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Vendors</h1><div class="row">${can('vendor_admin') ? '<button class="primary sm" id="vnAdd">+ New vendor</button>' : ''}<button class="ghost sm" id="vnCsv">Download CSV</button></div></div>
   ${can('vendor_admin') ? '' : '<p class="muted">View only. HO / Admin add and edit vendors.</p>'}
   <div class="row"><select id="vnT" style="width:auto"><option value="">All types</option>${S.vtypes.map(t => `<option value="${t.code}" ${t.code===F.type?'selected':''}>${esc(t.name)} (${cnt(t.code)})</option>`).join('')}</select>
     <select id="vnS" style="width:auto">${[['active','Active'],['inactive','Inactive'],['all','All']].map(([k,l]) => `<option value="${k}" ${k===F.status?'selected':''}>${l}</option>`).join('')}</select>
-    <select id="vnG" style="width:auto">${[['','Any details'],['gstin','GSTIN missing'],['bank','Bank missing'],['cheque','Cheque copy missing']].map(([k,l]) => `<option value="${k}" ${k===F.gap?'selected':''}>${l}</option>`).join('')}</select>
+    <select id="vnG" style="width:auto">${[['','Any details'],['incomplete','PAN / mobile missing'],['gstin','GSTIN missing'],['bank','Bank missing'],['cheque','Cheque copy missing']].map(([k,l]) => `<option value="${k}" ${k===F.gap?'selected':''}>${l}</option>`).join('')}</select>
     <input id="vnQ" placeholder="Search name / PAN / mobile / code" value="${esc(F.q)}" style="max-width:280px"></div>
   <div class="card">${table([{h:'Vendor',f:v=>`<b>${esc(v.vendor_name)}</b><div class="muted">${esc(v.vendor_code)}${v.busy_name && v.busy_name!==v.vendor_name ? ' · BUSY: ' + esc(v.busy_name) : ''}</div>`},
-    {h:'Types',f:v=>`<div style="display:flex;flex-wrap:wrap;gap:4px">${(v.kinds||[]).map(k => chip(vtName(k), 'info')).join('')}</div>`},{h:'Contact',f:v=>`${esc(v.phone)}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
-    {h:'PAN / GSTIN',f:v=>`${esc(v.pan)}<div class="muted">${v.gstin ? esc(v.gstin) : 'no GSTIN'}</div>`},
+    {h:'Types',f:v=>`<div style="display:flex;flex-wrap:wrap;gap:4px">${(v.kinds||[]).map(k => chip(vtName(k), 'info')).join('')}</div>`},{h:'Contact',f:v=>`${v.phone ? esc(v.phone) : chip('mobile missing','bad')}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
+    {h:'PAN / GSTIN',f:v=>`${v.pan ? esc(v.pan) : chip('PAN missing','bad')}<div class="muted">${v.gstin ? esc(v.gstin) : 'no GSTIN'}</div>`},
     {h:'Bank',f:v=>v.bank_account ? `${esc(v.bank_name||'')} …${esc(v.bank_account.slice(-4))} · ${esc(v.bank_ifsc)}${v.cheque_docs ? '' : ' ' + chip('no cheque copy','warn')}` : chip('missing','warn')},
     {h:'Used in',n:1,f:v=>v.used_count ? v.used_count + ' doc(s)' : '—'},{h:'Status',f:v=>v.is_active ? chip('active','ok') : chip('inactive')},
     {h:'',f:v=>(v.cheque_docs ? `<button class="ghost sm" data-ev="${v.id}">Cheque</button> ` : '') + (can('vendor_admin') ? `<button class="ghost sm" data-ed="${v.id}">Edit</button>` : '')}], rows, 'No vendors match.')}</div>`;
@@ -1595,7 +1754,7 @@ VIEWS.vn_list = async m => {
 const VN_COLS = ['vendor_code','vendor_name','busy_name','types','contact_person','phone','email','pan','gstin','address','state','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','vendor_since','note'];
 VIEWS.vn_import = async m => {
   m.innerHTML = `<h1>Import vendors from Excel</h1>
-  <p class="muted">One row per vendor. Required: vendor_name, types, phone, pan. vendor_code: keep your existing code (e.g. VD0123); blank = next VD number. Types = names or codes from the Types sheet, separated by commas (e.g. "Body builder, RTO agent"). A PAN already in the system is not duplicated: its new types are added and blank details filled; nothing is overwritten. Rows with a problem are listed and skipped.</p>
+  <p class="muted">One row per vendor. Required: vendor_name and types. PAN, mobile and bank can be missing for now: such vendors load as "incomplete" (no payment until completed) and show in Data Upload › Data gaps. vendor_code: keep your existing code (e.g. VD0123); blank = next VD number. Types = names or codes from the Types sheet, separated by commas (e.g. "Body builder, RTO agent"). A PAN already in the system is not duplicated: its new types are added and blank details filled; nothing is overwritten. Rows with a problem are listed and skipped.</p>
   <div class="card"><div class="row"><button class="ghost sm" id="viT">Download template</button><input type="file" id="viF" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="viGo">Import</button></div><div id="viOut"></div></div>`;
   $('viT').onclick = () => { const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{vendor_code:'', vendor_name:'MAA TARA TRANSPORT', busy_name:'Maa Tara Transport', bank_name:'STATE BANK OF INDIA', bank_branch:'HOWRAH', vendor_since:'', types:'Truck vendor (transporter)', contact_person:'Ramesh Das', phone:'9830012345', email:'', pan:'ABCDE1234F', gstin:'19ABCDE1234F1Z5', address:'Kolkata', state:'West Bengal', bank_account:'12345678901', bank_ifsc:'SBIN0001234', bank_holder:'MAA TARA TRANSPORT', note:''}], {header:VN_COLS}), 'Vendors');
@@ -1611,10 +1770,10 @@ VIEWS.vn_import = async m => {
     for(let i = 0; i < rows.length; i += 250){
       $('viOut').innerHTML = `<p class="muted">Importing ${Math.min(i + 250, rows.length)} of ${rows.length}…</p>`;
       const r = await rpc('vn_import', {p_rows:rows.slice(i, i + 250)});
-      res.created += r.created; res.updated += r.updated; res.errors.push(...r.errors.map(e => ({...e, row:e.row + i})));
+      res.created += r.created; res.updated += r.updated; res.incomplete = (res.incomplete||0) + (r.incomplete||0); res.errors.push(...r.errors.map(e => ({...e, row:e.row + i})));
     }
     await loadMasters();
-    $('viOut').innerHTML = `<p><b>${res.created}</b> created · <b>${res.updated}</b> existing PAN(s) updated · of ${rows.length} row(s).</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Code',k:'vendor_code'},{h:'Vendor',k:'vendor_name'},{h:'Problem',k:'error'}], res.errors) : '');
+    $('viOut').innerHTML = `<p><b>${res.created}</b> created${res.incomplete ? ` (<b>${res.incomplete}</b> with PAN / mobile / bank missing — see Data gaps)` : ''} · <b>${res.updated}</b> existing vendor(s) updated · of ${rows.length} row(s).</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Code',k:'vendor_code'},{h:'Vendor',k:'vendor_name'},{h:'Problem',k:'error'}], res.errors) : '');
     return res; }, r => `${r.created} vendor(s) created`);
 };
 
@@ -2947,7 +3106,7 @@ VIEWS.masters = async (m, whOnly = false) => {
   const rows = await q(M.t, b => { Object.entries(M.where||{}).forEach(([k,v]) => b = b.eq(k, v)); return b.limit(BULK[S.mst] ? 5000 : 500); });
   if(BULK[S.mst]) return bulkRates(m, S.mst, rows);
   const plants = S.plants;
-  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if(k==='is_live') return v ? chip('Live','ok') : chip('Opening stock pending','warn'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((plants.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name);
+  const show = (k, v) => { if(k==='contact_phone' && !v) return chip('missing','bad'); if((k==='destination_id' || (k==='district_id' && M.t==='sys_plants')) && !v) return chip('missing','bad'); if(k==='is_live') return v ? chip('Live','ok') : chip('Opening stock pending','warn'); if(v==null) return ''; if(k==='client_id') return esc((S.clients.find(c=>c.id===v)||{}).name); if(k==='material_id') return esc(mat(v)); if(k==='location_id') return esc((plants.find(l=>l.id===v)||{}).code); if(k==='vendor_id') return esc((S.vendors.find(x=>x.id===v)||{}).vendor_name);
     if(k==='plant_id' || k==='parent_id' || k==='siding_id') return esc((plants.find(x=>x.id===v)||{}).code); if(k==='sardar_id') return esc(sardarName(v)); if(k==='category_id') return esc((S.cats.find(x=>x.id===v)||{}).code); if(k==='dcwc_bearer') return v==='ssl' ? chip('SSL','warn') : chip('customer');
     if(k==='state_id') return esc((S.states.find(x=>x.id===v)||{}).name); if(k==='company_id') return esc((S.companies.find(x=>x.id===v)||{}).code); if(k==='district_id') return esc(distLabel(S.districts.find(x=>x.id===v)));
     if(k==='destination_id'){ const x = S.dests.find(y=>y.id===v); return x ? esc(`${x.name} · ${distLabel(S.districts.find(d=>d.id===x.district_id))}`) : ''; }
