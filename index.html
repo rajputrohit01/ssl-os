@@ -1222,7 +1222,8 @@ const plantCode = id => (S.plants.find(p => p.id===id)||{}).code || '';
 const localDT = d => { const x = d ? new Date(d) : new Date(); return new Date(x.getTime() - x.getTimezoneOffset()*60000).toISOString().slice(0,16); };
 const isoDT = v => v ? new Date(v).toISOString() : null;
 const bearerTxt = b => b==='ssl' ? 'SSL bears DC/WC' : b==='customer' ? 'Customer bears DC/WC' : 'DC/WC bearer not set';
-const rkBearer = (clientId) => (S.terms.find(x => x.siding_id===S.loc.id && x.client_id===clientId) || {}).dcwc_bearer;
+// terms in force on a date (effective-dated; latest effective_from on or before the date)
+const rkBearer = (clientId, on) => { on = on || today(); return (S.terms.filter(x => x.siding_id===S.loc.id && x.client_id===clientId && x.effective_from <= on).sort((a,b) => b.effective_from.localeCompare(a.effective_from))[0] || {}).dcwc_bearer; };
 function clockBar(pct, running, label){
   if(pct==null) return '';
   const c = pct>=90 ? 'var(--alert)' : pct>=75 ? '#D97F06' : pct>=50 ? '#B89400' : 'var(--moss)';
@@ -1271,9 +1272,10 @@ function rkPlanForm(r, after){
     $('pCat').innerHTML = opt(cats, 'id', c => `${c.name} (${c.code})`, r.category_id || (cats.length===1 ? cats[0].id : ''), cats.length===1 ? undefined : 'Select category') + addOpt('cat'); $('pCat').dataset.prev = $('pCat').value;
     $('pCatW').style.display = cats.length===1 ? 'none' : '';
     $('pW').innerHTML = whOpts(cid);
-    const b = cid ? rkBearer(cid) : null; $('pB').innerHTML = cid ? (b ? bearerTxt(b) : '<span style="color:var(--alert)">Set who bears DC/WC for this customer at this siding in Siding setup before planning.</span>') + (cats.length ? '' : ' · <span style="color:var(--alert)">This customer has no material category yet.</span>') : '';
+    const b = cid ? rkBearer(cid, ($('pE').value || '').slice(0,10) || today()) : null; $('pB').innerHTML = cid ? (b ? bearerTxt(b) : '<span style="color:var(--alert)">Set who bears DC/WC for this customer at this siding (Master Data › Customer DC/WC bearer), effective on or before the expected arrival date.</span>') + (cats.length ? '' : ' · <span style="color:var(--alert)">This customer has no material category yet.</span>') : '';
   };
   $('pC').onchange = () => { r.category_id = null; r.warehouse_id = null; upd(); }; upd();
+  $('pE').addEventListener('change', upd);
   $('pCat')._opts = () => opt(S.cats.filter(c => c.client_id===$('pC').value && c.is_active), 'id', c => `${c.name} (${c.code})`, undefined, 'Select category');
   $('pCat')._preset = () => ({client_id:$('pC').value}); wireAdd($('modalBox'));
   $('pGo').onclick = e => act(e.target, async () => {
@@ -1732,7 +1734,7 @@ const MASTERS = {
   'Labour Sardars': {grp:'rk', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor']], note:'A siding can have more than one Sardar. Add the Sardar in Master data › Vendors first.'},
   'Sardar activity rates': {grp:'rk', t:'rk_labor_rates', cols:['sardar_id','activity','rate_per_mt','effective_from'], form:[['sardar_id','Sardar','sardar'],['activity','Activity','sel',['wagon_platform','platform_truck','wagon_truck']],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Per siding × Sardar × activity. Effective-dated: a change is a new row.'},
   'Platform shortage recovery rate': {grp:'rk', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
-  'Customer DC/WC bearer': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['note','Note']], upsert:'siding_id,client_id', note:'Required for every customer served at the siding: who bears railway demurrage and wharfage.'},
+  'Customer DC/WC bearer': {grp:'rk', t:'rk_siding_client_terms', cols:['siding_id','client_id','dcwc_bearer','effective_from','note'], form:[['siding_id','Siding','siding'],['client_id','Customer','client'],['dcwc_bearer','DC/WC borne by','sel',['ssl','customer']],['effective_from','Effective from','date'],['note','Note']], note:'Required for every customer served at the siding: who bears railway demurrage and wharfage. Effective-dated: when terms change, add a new row with the new effective date; old rows stay as history. A rake takes the terms in force on its arrival date.'},
   'Customer email settings': {wh:1, t:'wh_client_settings', cols:['client_id','email_to','sap_grn_pattern'], form:[['client_id','Customer','client'],['email_to','Email to (comma separated)'],['sap_grn_pattern','SAP GRN format (regex, e.g. ^[0-9]{10}$)']], upsert:'client_id'},
 };
 VIEWS.whsetup = m => VIEWS.masters(m, true);
@@ -1832,7 +1834,7 @@ const EDIT_CFG = {'Our companies':{lock:['code']}, 'Customers':{lock:['code']}, 
   'Sidings':{lock:['code']}, 'Vendors':{lock:['vendor_code']}, 'Own trucks':{}, 'Materials':{lock:['client_id']}, 'SAP product mapping':{lock:['client_id']},
   'Sold-To parties':{lock:['client_id','sap_code']}, 'Ship-To parties':{lock:['client_id']}, 'Destinations':{}, 'Districts':{},
   'Labor contractors':{lock:['location_id','vendor_id']}, 'Labour Sardars':{lock:['siding_id','vendor_id']},
-  'Customer DC/WC bearer':{key:['siding_id','client_id'], lock:['siding_id','client_id']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}};
+  'Customer DC/WC bearer':{key:['siding_id','client_id','effective_from'], lock:['siding_id','client_id','effective_from']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}};
 function editMaster(key, row, after){
   const M = MASTERS[key], C = EDIT_CFG[key], lock = C.lock || []; S.qaN = (S.qaN||0) + 1; const pre = 'ed' + S.qaN + '_';
   const fields = M.form.concat(M.cols.includes('is_active') ? [['is_active','Status','active']] : []);
