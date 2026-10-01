@@ -216,6 +216,10 @@
   .clkB{height:8px;border-radius:99px;background:#E9F2F1;overflow:hidden}
   .clkB i{display:block;height:100%;border-radius:99px;transition:width .3s}
   .steps{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 14px}
+  .rtabs{display:flex;gap:4px;overflow-x:auto;margin:0 0 14px;border-bottom:2px solid var(--line);-webkit-overflow-scrolling:touch}
+  .rtabs button{flex:0 0 auto;background:none;border:0;border-bottom:3px solid transparent;margin-bottom:-2px;padding:10px 14px;font-weight:700;font-size:14px;color:var(--slate);border-radius:0;box-shadow:none;min-height:0}
+  .rtabs button.on{color:var(--deep);border-bottom-color:var(--deep)}
+  .rtb{display:inline-block;min-width:18px;padding:0 6px;border-radius:99px;background:var(--deep);color:#fff;font-size:11px;line-height:18px;text-align:center}
   .steps span{font-size:12px;font-weight:700;padding:6px 10px;border-radius:99px;background:#fff;border:1px solid var(--line);color:var(--slate)}
   .steps span.done{background:#DDF3EA;border-color:#BFE3D2;color:var(--ok)}
   .steps span.cur{background:var(--grad);border-color:transparent;color:#fff}
@@ -1318,7 +1322,8 @@ async function rkDetail(m, id){
   const truckMt = wid => tlines.filter(l => l.wagon_id===wid && l.actual_mt!=null).reduce((a,l) => a + +l.actual_mt, 0);
   const unlMt = wid => uslips.filter(u => u.wagon_id===wid && u.status==='returned').reduce((a,u) => a + +u.good_mt + +u.damaged_mt, 0);
   const tsIds = [...new Set(tlines.map(l => l.truck_slip_id))];
-  const openTrucks = tsIds.length ? await q('rk_truck_slips', b => b.in('id', tsIds).eq('status', 'open')) : [];
+  const allTrucks = tsIds.length ? await q('rk_truck_slips', b => b.in('id', tsIds)) : [];
+  const openTrucks = allTrucks.filter(t => t.status==='open');
   const canCorr = can('rk_correct') && r.status!=='closed';
   const cMode = canCorr && S.corrMode === id;
 
@@ -1326,19 +1331,19 @@ async function rkDetail(m, id){
   const nx = []; const lotLeft = lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005).sort((a,b) => (a.sheet_sr||0)-(b.sheet_sr||0));
   const lotTxt = lotLeft.map(x => `Platform-Sr ${x.sheet_sr} (${+x.balance_mt > 0 ? n3(x.balance_mt) + ' MT left' : 'loaded ' + n3(-x.balance_mt) + ' MT more than unloaded'})`).join(', ');
   const go2 = (t, btn, lab) => nx.push(`<li>${t}${btn ? ` <button class="primary sm" data-nx="${btn}">${esc(lab)}</button>` : ''}</li>`);
-  if(r.status==='planned') go2('Upload the RR PDF and the wagon sheet (below).');
-  else if(r.status==='wagons_updated') go2('Mark the rake arrival and untick wagons that were not placed (below).');
+  if(r.status==='planned') go2('Upload the RR PDF and the wagon sheet (Arrival tab).');
+  else if(r.status==='wagons_updated') go2('Mark the rake arrival and untick wagons that were not placed (Arrival tab).');
   else if(r.status!=='closed'){
     const notStarted = wagons.filter(w => w.status==='arrived'), inProg = wagons.filter(w => w.status==='unloading');
     if(notStarted.length) go2(`${notStarted.length} wagon(s) not started: take the before-photo and start unloading (Sr ${notStarted.map(w => w.sheet_sr).join(', ')}).`);
     if(inProg.length) go2(`${inProg.length} wagon(s) being unloaded: return the unloading slip, take the after-photo and mark empty (Sr ${inProg.map(w => w.sheet_sr).join(', ')}).`);
-    if(openTrucks.length) go2(`${openTrucks.length} truck slip(s) waiting for the labour-confirmed quantity: ${openTrucks.map(t => esc(t.slip_no)).join(', ')} (Trucks).`);
+    if(openTrucks.length) go2(`${openTrucks.length} truck slip(s) waiting for the labour-confirmed quantity: ${openTrucks.map(t => esc(t.slip_no)).join(', ')} (Dispatch tab).`);
     if(['unloaded','released'].includes(r.status) && lotLeft.length) go2(`Platform not at zero: ${lotTxt}. Load it on a truck, or close the platform difference if it is a real shortage / excess.`, can('rk_platform_diff_close') ? 'rkDiff' : '', 'Close platform difference');
     else if(['arrived','unloading'].includes(r.status) && +r.lot_mt > 0 && can('rk_truck')) go2(`${n3(r.lot_mt)} MT on the platform waiting for trucks.`, 'rkTruck', '+ Load a truck');
     if(r.status==='unloaded') go2('All wagons empty. Record the rake release (railway and operational times).', can('rk_release_clear') ? 'rkRel' : '', 'Record release');
     if(r.status==='released' && !lotLeft.length) go2('Platform is at zero. Record platform clear.', can('rk_release_clear') ? 'rkClr' : '', 'Record platform clear');
     if(si >= rkIdx('unloaded') && !r.charges_at) go2('Enter the DC / WC assessed, waived and paid by the railway.', can('rk_charges') ? 'rkChg' : '', 'Enter DC/WC');
-    if(diffs.some(d => d.status==='pending')) go2('Record the Sardar recovery for the platform shortage (Platform difference).');
+    if(diffs.some(d => d.status==='pending')) go2('Record the Sardar recovery for the platform shortage (Platform tab).');
     if(r.status==='cleared'){ if(!msgs.some(x => x.kind==='rake_closure')) go2('Draft the final shortage report for the customer.', can('rk_rake_close') ? 'rkRep' : '', 'Draft final report'); else go2('Everything done? Close the rake.', can('rk_rake_close') ? 'rkClose' : '', 'Close rake'); }
   }
   // figures that look like a wrong entry (more than 2 MT off the sheet)
@@ -1387,7 +1392,16 @@ async function rkDetail(m, id){
   // wagons
   if(si >= rkIdx('arrived')){
     const canC = cMode;
-    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Wagons</h2>${canC ? '<button class="ghost sm" id="rkCorrArr">Correct arrival (placed / positions)</button>' : ''}</div>${table([
+    const placedN = wagons.filter(w => w.status!=='missing' && w.status!=='expected').length;
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Arrival</h2>${canC ? '<button class="ghost sm" id="rkCorrArr">Correct arrival (placed / positions)</button>' : ''}</div>
+      <div class="grid"><div><label>RR / FNR</label>${esc(r.rr_no||'—')} / ${esc(r.fnr||'—')}</div><div><label>RR date</label>${r.rr_date ? d8(r.rr_date) : '—'}</div>
+       <div><label>RR quantity</label>${r.rr_wagon_count ?? '—'} wagons · ${r.rr_bags ?? '—'} bags · ${n3(r.rr_mt)} MT</div><div><label>Batch</label>${esc(r.batch||'—')}</div>
+       <div><label>Arrived</label>${dt(r.arrived_at)}</div><div><label>Placed (DC clock starts)</label>${dt(r.placed_at)}</div>
+       <div><label>Wagons placed</label>${placedN} of ${wagons.length}${r.wagons_missing ? ' ' + chip(r.wagons_missing + ' missing','bad') : ''}${wagons.some(w => w.late) ? ' ' + chip(wagons.filter(w => w.late).length + ' late','warn') : ''}</div>
+       <div><label>DC free till</label>${r.dc_free_until ? dt(r.dc_free_until) : (r.dc_free_hours != null ? r.dc_free_hours + ' h' : '—')}</div><div><label>WC free till</label>${r.wc_free_until ? dt(r.wc_free_until) : (r.wc_free_hours != null ? r.wc_free_hours + ' h after unloading' : '—')}</div>
+       <div><label>Rates</label>DC ${inr(r.dc_rate)}/wagon/h · WC ${inr(r.wc_rate)}/MT/h${r.penal_dc ? ' ' + chip('penal DC','bad') : ''}</div></div>
+      ${wagons.some(w => w.status==='missing') ? `<p class="muted" style="margin-top:8px">Missing: ${wagons.filter(w => w.status==='missing').map(w => 'Sr ' + w.sheet_sr + ' · ' + esc(w.wagon_no)).join(', ')} — use "Arrived late" on the Wagons tab when it is placed.</p>` : ''}</div>`;
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Wagons</h2></div>${table([
       {h:'Pos',k:'position'},{h:'Wagon',f:w=>`<b>${esc(w.wagon_no)}</b>${w.late?' '+chip('late','warn'):''}<br><span class="muted">${esc(w.wagon_type||'')}</span>`},
       {h:'Sheet',f:w=>`${esc(mat(w.material_id))} · ${w.sheet_bags} bags · ${n3(w.sheet_mt)} MT`},
       {h:'Found',f:w=>w.found_material_id ? (w.found_material_id!==w.material_id ? chip(mat(w.found_material_id)+' ≠ sheet','bad') : esc(mat(w.found_material_id))) : ''},
@@ -1452,9 +1466,36 @@ async function rkDetail(m, id){
       <div class="row" style="margin-top:10px">${r.status==='cleared' && can('rk_rake_close') ? `<button class="ghost sm" id="rkRep">${msgs.some(x => x.kind==='rake_closure') ? 'Redraft final report' : 'Draft final report'}</button><button class="primary sm" id="rkClose" ${conds.every(x => x[0]) ? '' : 'disabled'}>Close rake</button>` : ''}
       ${r.status==='closed' && can('rk_rake_reopen') ? '<button class="ghost sm" id="rkReopen">Reopen</button>' : ''}</div></div>`;
   }
+  if(si >= rkIdx('arrived')){
+    const slipMt = sid => tlines.filter(l => l.truck_slip_id===sid).reduce((a,l) => a + +(l.actual_mt ?? l.planned_mt), 0);
+    const srcOf = sid => [...new Set(tlines.filter(l => l.truck_slip_id===sid).map(l => { const w = W(l.wagon_id || l.lot_wagon_id); return w ? (l.source==='wagon' ? 'Wagon Sr ' : 'Platform-Sr ') + w.sheet_sr : ''; }))].join(', ');
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Trucks from this rake</h2>${can('rk_truck') && ['arrived','unloading','unloaded','released'].includes(r.status) ? '<button class="primary sm" data-loadtruck="1">+ Load a truck</button>' : ''}</div>
+      ${table([{h:'Slip',f:t=>`<a href="#" data-ts="${t.id}"><b>${esc(t.slip_no)}</b></a>`},{h:'Truck',f:t=>`<span class="plate">${esc(t.truck_no)}</span> ${chip(t.truck_kind)}${t.is_damaged?' '+chip('damaged','bad'):''}`},
+        {h:'Loaded from',f:t=>esc(srcOf(t.id))},{h:'Ship-To',f:t=>esc(t.ship_to_code)+(t.to_location_id?' '+chip('our warehouse','info'):'')},{h:'MT (this rake)',n:1,f:t=>n3(slipMt(t.id))},
+        {h:'Status',f:t=>chip(t.status, t.status==='dispatched'?'ok':t.status==='open'?'warn':'')},{h:'',f:t=>`<button class="${t.status==='open'?'primary':'ghost'} sm" data-ts="${t.id}">Open</button>`}],
+        allTrucks.slice().sort((a,b) => (b.created_at||'').localeCompare(a.created_at||'')), 'No trucks loaded from this rake yet.')}</div>`;
+  }
   h += `<div class="card"><h2>Customer emails</h2>${table([{h:'Kind',f:x=>chip(x.kind.replace(/_/g,' '))},{h:'Subject',k:'subject'},{h:'Status',f:x=>x.status==='sent'?chip('sent '+(x.sent_via||''),'ok'):chip('draft','warn')},{h:'',f:x=>`<button class="ghost sm" data-msg="${x.id}">Open</button>`}], msgs, 'No emails yet.')}</div>
     <div class="card"><h2>History</h2>${table([{h:'When',f:x=>dt(x.at)},{h:'Event',f:x=>esc(x.event.replace(/_/g,' '))},{h:'Note',f:x=>esc(x.note||'') + corrList(x)}], events, 'Nothing yet.')}</div>`;
   m.innerHTML = h;
+  // ---- one tab per stage of the rake ----
+  const RTABS = [['summary','Summary'],['arrival','Arrival'],['wagons','Wagons'],['unloading','Unloading'],['platform','Platform'],['dispatch','Dispatch'],['charges','Times & DC/WC'],['close','Close & history']];
+  const tabOf = t => /^What to do next/.test(t) ? 'all' : /^Intimation/.test(t) ? 'summary' : /^(Add RR|Replace RR|Mark arrival|Arrival)$|^(Add RR|Replace RR|Mark arrival)/.test(t) ? 'arrival' : /^Wagons/.test(t) ? 'wagons'
+    : /^Unloading slips/.test(t) ? 'unloading' : /^Platform (lot|difference)/.test(t) ? 'platform' : /^Trucks from/.test(t) ? 'dispatch' : /^(Times|Demurrage)/.test(t) ? 'charges' : 'close';
+  const cards = [...m.querySelectorAll(':scope > .card')]; cards.forEach(cd => { const t = (cd.querySelector('h2')||{}).textContent || ''; cd.dataset.rtab = tabOf(t.trim()); });
+  const has = k => cards.some(cd => cd.dataset.rtab===k);
+  const badge = {unloading: uslips.filter(u => u.status==='open').length, platform: lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005).length, dispatch: openTrucks.length,
+    wagons: wagons.filter(w => ['arrived','unloading'].includes(w.status)).length};
+  S.rkTab = S.rkTab || {};
+  const defTab = ['planned','wagons_updated'].includes(r.status) ? 'arrival' : ['arrived','unloading'].includes(r.status) ? 'wagons' : 'summary';
+  const showTab = k => { if(!has(k)) k = has(defTab) ? defTab : 'summary'; S.rkTab[id] = k;
+    cards.forEach(cd => cd.classList.toggle('hide', cd.dataset.rtab !== 'all' && cd.dataset.rtab !== k));
+    m.querySelectorAll('[data-rt]').forEach(b => b.classList.toggle('on', b.dataset.rt === k)); };
+  const bar = document.createElement('div'); bar.className = 'rtabs';
+  bar.innerHTML = RTABS.filter(([k]) => has(k)).map(([k,l]) => `<button data-rt="${k}">${esc(l)}${badge[k] ? ` <span class="rtb">${badge[k]}</span>` : ''}</button>`).join('');
+  const firstTab = cards.find(cd => cd.dataset.rtab !== 'all'); m.insertBefore(bar, firstTab || null);
+  bar.querySelectorAll('[data-rt]').forEach(b => b.onclick = () => showTab(b.dataset.rt));
+  showTab(S.rkTab[id] || defTab);
 
   // ----- wiring -----
   $('rkBack').onclick = () => go();
@@ -1583,7 +1624,9 @@ async function rkDetail(m, id){
   });
   if($('rkTruck')) $('rkTruck').onclick = () => rkTruckForm(r.client_id, () => rkDetail(m, id));
   if($('rkCm')) $('rkCm').onclick = () => { S.corrMode = cMode ? null : id; back(); };
-  m.querySelectorAll('[data-nx]').forEach(b => b.onclick = () => { const t = $(b.dataset.nx); if(t){ t.scrollIntoView({behavior:'smooth', block:'center'}); t.click(); } });
+  m.querySelectorAll('[data-nx]').forEach(b => b.onclick = () => { const t = $(b.dataset.nx); if(!t) return; const cd = t.closest('.card'); if(cd && cd.dataset.rtab) m.querySelector(`[data-rt="${cd.dataset.rtab}"]`).click(); t.click(); });
+  m.querySelectorAll('[data-loadtruck]').forEach(b => b.onclick = () => rkTruckForm(r.client_id, () => rkDetail(m, id)));
+  m.querySelectorAll('[data-ts]').forEach(a => a.onclick = e => { e.preventDefault(); rkTruckDetail(m, a.dataset.ts, back); });
   // ----- corrections -----
   if($('rkCorrArr')) $('rkCorrArr').onclick = () => corrModal(r.rake_no + ' arrival', `<p class="muted">Tick wagons that were placed. A wagon already unloading or emptied cannot be marked missing. Free time and rates: use "Change free time / rates".</p>
     ${table([{h:'Placed',f:w=>`<input type="checkbox" data-cpl="${w.id}" ${w.status!=='missing'?'checked':''} ${['unloading','empty'].includes(w.status)?'disabled':''}>`},{h:'Sr',k:'sheet_sr'},{h:'Wagon',k:'wagon_no'},{h:'Status',k:'status'},{h:'Position',f:w=>`<input type="number" data-cpos="${w.id}" value="${w.position ?? ''}" style="width:90px;height:36px">`}], wagons)}`,
@@ -1761,7 +1804,7 @@ VIEWS.rk_trucks = async m => {
   m.querySelectorAll('[data-pc]').forEach(b => b.onclick = async () => { const ch = await q('wh_challans', x => x.eq('dispatch_id', b.dataset.pc)); printChallans(ch.map(c => c.id)); });
 };
 
-async function rkTruckDetail(m, id){
+async function rkTruckDetail(m, id, backFn){
   const [t] = await q('rk_truck_slips', b => b.eq('id', id)); const lines = await q('rk_truck_lines', b => b.eq('truck_slip_id', id));
   const rakes = await q('rk_rakes', b => b.in('id', [...new Set(lines.map(l => l.rake_id))]));
   const wagons = await q('rk_wagons', b => b.in('id', lines.map(l => l.wagon_id || l.lot_wagon_id).filter(Boolean).concat(['00000000-0000-0000-0000-000000000000'])));
@@ -1775,7 +1818,7 @@ async function rkTruckDetail(m, id){
     ${t.status==='open' ? `<div class="row" style="margin-top:10px"><button class="ghost sm" id="tPr">Print slip</button>${can('rk_truck') ? '<button class="primary" id="tConf">Labour confirmed → generate challans</button><button class="ghost sm" id="tCx">Cancel slip</button>' : ''}</div>
       <p class="muted">The quantity the labour writes on the returned slip goes on the delivery challan.</p>` : t.status==='dispatched' ? `<button class="ghost sm" id="tCh" style="margin-top:10px">Print challans</button>` : ''}
     ${can('rk_correct') && t.status!=='cancelled' ? '<button class="ghost sm" id="tCorr" style="margin-top:10px">✎ Correct a mistake on this slip</button>' : ''}</div>`;
-  $('tBack').onclick = () => go();
+  $('tBack').onclick = () => backFn ? backFn() : go();
   if($('tPr')) $('tPr').onclick = () => printTruckSlip(t, lines, rakes);
   const bpm = l => { const w = wagons.find(x => x.id===(l.wagon_id || l.lot_wagon_id)); return w && +w.sheet_mt ? w.sheet_bags / w.sheet_mt : 20; };
   m.querySelectorAll('[data-lb]').forEach(i => i.oninput = () => { const l = lines.find(x => x.id===i.dataset.lb); if(i.value) m.querySelector(`[data-lm="${l.id}"]`).value = (+i.value / bpm(l)).toFixed(3); });
@@ -1807,7 +1850,7 @@ async function rkTruckDetail(m, id){
         ...($('ctV') ? {vendor_id:$('ctV').value} : {}),
         lines: lines.map(l => { const v = document.querySelector(`[data-csrc="${l.id}"]`).value; const qv = document.querySelector(`[data-cq="${l.id}"]`).value;
           return {id:l.id, ...(l.source==='wagon' ? {wagon_id:v} : {lot_wagon_id:v}), ...(disp ? {actual_mt:qv, actual_bags:(document.querySelector(`[data-cb="${l.id}"]`)||{}).value ?? ''} : {planned_mt:qv})}; })}),
-      () => rkTruckDetail(m, id));
+      () => rkTruckDetail(m, id, backFn));
     $('ctP').value = t.ship_to_code;
   };
 }
