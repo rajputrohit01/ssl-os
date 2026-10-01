@@ -432,7 +432,8 @@ const MODULES = [
     usesLocation:true, locKinds:['siding'], visible: () => can('rk_view') || can('rk_master_admin'),
     screens: () => {
       const t = []; const L = S.loc;
-      if(L && can('rk_view')) t.push(['#', L.code + ' · siding'],['rk_board','Rakes'],['rk_trucks','Trucks'],['rk_lots','Platform lots']);
+      if(L && can('rk_view')) t.push(['#', L.code + ' · siding'],['rk_board','Rake intimation'],['rk_sheet','Wagon sheet (RR)'],['rk_arrival','Arrival'],['rk_wagons','Wagons'],
+        ['rk_unload','Unloading slips'],['rk_loading','Loading slips'],['rk_dispatch','Dispatch'],['rk_platform','Platform'],['rk_dcwc','Times & DC/WC'],['rk_close','Close & history']);
       if(can('rk_view')) t.push(['#','Office'],['rk_recov','Platform recoveries'],['rk_msgs','Customer emails'],['rk_reports','Reports']);
       if(can('rk_master_admin')) t.push(['#','Setup'],['rk_setup','Siding setup']);
       return t;
@@ -1252,7 +1253,7 @@ VIEWS.rk_board = async m => {
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Rakes · ${esc(S.loc.code)}</h1>${can('rk_rake_create') ? '<button class="primary" id="rkPlan">+ Plan rake</button>' : ''}</div>
     ${alert.length ? `<div class="warnbox"><b>Free time running out:</b> ${alert.map(r => esc(r.rake_no)).join(', ')}</div>` : ''}
     <div class="rkgrid">${open.map(rakeCard).join('') || '<div class="empty">No open rakes. Plan one from the customer\'s intimation.</div>'}</div>
-    <div class="card"><h2>Closed rakes</h2>${table([{h:'Rake',f:r=>`<a href="#" data-rk="${r.id}"><b>${esc(r.rake_no)}</b></a>`},{h:'Customer',k:'client_code'},{h:'RR / FNR',f:r=>`${esc(r.rr_no||'')} / ${esc(r.fnr||'')}`},{h:'MT',n:1,f:r=>n3(r.rr_mt)},{h:'Placed',f:r=>dt(r.placed_at)},{h:'Closed',f:r=>dt(r.closed_at)}], closed.slice(0,40), 'No closed rakes yet.')}</div>`;
+    <div class="card"><details><summary><b>Closed rakes (${closed.length})</b> <span class="muted">— open to see</span></summary>${table([{h:'Rake',f:r=>`<a href="#" data-rk="${r.id}"><b>${esc(r.rake_no)}</b></a>`},{h:'Customer',k:'client_code'},{h:'RR / FNR',f:r=>`${esc(r.rr_no||'')} / ${esc(r.fnr||'')}`},{h:'MT',n:1,f:r=>n3(r.rr_mt)},{h:'Placed',f:r=>dt(r.placed_at)},{h:'Closed',f:r=>dt(r.closed_at)}], closed.slice(0,40), 'No closed rakes yet.')}</details></div>`;
   if($('rkPlan')) $('rkPlan').onclick = () => rkPlanForm(null, id => rkDetail(m, id));
   m.querySelectorAll('[data-rk]').forEach(a => a.onclick = e => { e.preventDefault(); rkDetail(m, a.dataset.rk); });
 };
@@ -1306,7 +1307,7 @@ function corrModal(title, body, kind, id, payload, after){
   $('crGo').onclick = e => act(e.target, async () => { const res = await run(false); closeModal(); after && after(); return res; }, res => `Corrected · ${(res.changes||[]).length} item(s) updated`);
 }
 const corrList = ev => ev.event==='corrected' && ev.detail && ev.detail.changes ? `<details><summary>${(ev.detail.changes||[]).length} change(s)</summary>${(ev.detail.changes||[]).map(x => `<div class="muted">${esc(x.item)}: ${esc(x.before ?? '—')} → ${esc(x.after ?? '—')}</div>`).join('')}</details>` : '';
-async function rkDetail(m, id){
+async function rkDetail(m, id, opts = {}){
   const [r] = await q('rk_rake_list', b => b.eq('id', id));
   if(!r){ m.innerHTML = '<div class="issues">Rake not found or not at your siding.</div>'; return; }
   const [wagons, uslips, lot, diffs, msgs, events, tlines] = await Promise.all([
@@ -1318,7 +1319,7 @@ async function rkDetail(m, id){
   const [phB, phA, phD, phW] = await Promise.all([evidenceCount('rk_wagon_before', wids), evidenceCount('rk_wagon_after', wids), evidenceCount('rk_wagon_damage', wids), evidenceCount('rk_waiver', [id])]);
   const c = r.calc || {}; const si = rkIdx(r.status); const W = x => wagons.find(w => w.id===x);
   const openSlip = wid => uslips.find(u => u.wagon_id===wid && u.status==='open');
-  const back = () => rkDetail(m, id);
+  const back = () => opts.only ? go() : rkDetail(m, id);
   const truckMt = wid => tlines.filter(l => l.wagon_id===wid && l.actual_mt!=null).reduce((a,l) => a + +l.actual_mt, 0);
   const unlMt = wid => uslips.filter(u => u.wagon_id===wid && u.status==='returned').reduce((a,u) => a + +u.good_mt + +u.damaged_mt, 0);
   const tsIds = [...new Set(tlines.map(l => l.truck_slip_id))];
@@ -1331,31 +1332,33 @@ async function rkDetail(m, id){
   const nx = []; const lotLeft = lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005).sort((a,b) => (a.sheet_sr||0)-(b.sheet_sr||0));
   const lotTxt = lotLeft.map(x => `Platform-Sr ${x.sheet_sr} (${+x.balance_mt > 0 ? n3(x.balance_mt) + ' MT left' : 'loaded ' + n3(-x.balance_mt) + ' MT more than unloaded'})`).join(', ');
   const go2 = (t, btn, lab) => nx.push(`<li>${t}${btn ? ` <button class="primary sm" data-nx="${btn}">${esc(lab)}</button>` : ''}</li>`);
-  if(r.status==='planned') go2('Upload the RR PDF and the wagon sheet (Arrival tab).');
-  else if(r.status==='wagons_updated') go2('Mark the rake arrival and untick wagons that were not placed (Arrival tab).');
+  if(r.status==='planned') go2('Upload the RR PDF and the wagon sheet (Wagon sheet).');
+  else if(r.status==='wagons_updated') go2('Mark the rake arrival and untick wagons that were not placed (Arrival).');
   else if(r.status!=='closed'){
     const notStarted = wagons.filter(w => w.status==='arrived'), inProg = wagons.filter(w => w.status==='unloading');
     if(notStarted.length) go2(`${notStarted.length} wagon(s) not started: take the before-photo and start unloading (Sr ${notStarted.map(w => w.sheet_sr).join(', ')}).`);
     if(inProg.length) go2(`${inProg.length} wagon(s) being unloaded: return the unloading slip, take the after-photo and mark empty (Sr ${inProg.map(w => w.sheet_sr).join(', ')}).`);
-    if(openTrucks.length) go2(`${openTrucks.length} truck slip(s) waiting for the labour-confirmed quantity: ${openTrucks.map(t => esc(t.slip_no)).join(', ')} (Dispatch tab).`);
+    if(openTrucks.length) go2(`${openTrucks.length} truck slip(s) waiting for the labour-confirmed quantity: ${openTrucks.map(t => esc(t.slip_no)).join(', ')} (Loading slips).`);
     if(['unloaded','released'].includes(r.status) && lotLeft.length) go2(`Platform not at zero: ${lotTxt}. Load it on a truck, or close the platform difference if it is a real shortage / excess.`, can('rk_platform_diff_close') ? 'rkDiff' : '', 'Close platform difference');
     else if(['arrived','unloading'].includes(r.status) && +r.lot_mt > 0 && can('rk_truck')) go2(`${n3(r.lot_mt)} MT on the platform waiting for trucks.`, 'rkTruck', '+ Load a truck');
     if(r.status==='unloaded') go2('All wagons empty. Record the rake release (railway and operational times).', can('rk_release_clear') ? 'rkRel' : '', 'Record release');
     if(r.status==='released' && !lotLeft.length) go2('Platform is at zero. Record platform clear.', can('rk_release_clear') ? 'rkClr' : '', 'Record platform clear');
     if(si >= rkIdx('unloaded') && !r.charges_at) go2('Enter the DC / WC assessed, waived and paid by the railway.', can('rk_charges') ? 'rkChg' : '', 'Enter DC/WC');
-    if(diffs.some(d => d.status==='pending')) go2('Record the Sardar recovery for the platform shortage (Platform tab).');
+    if(diffs.some(d => d.status==='pending')) go2('Record the Sardar recovery for the platform shortage (Platform).');
     if(r.status==='cleared'){ if(!msgs.some(x => x.kind==='rake_closure')) go2('Draft the final shortage report for the customer.', can('rk_rake_close') ? 'rkRep' : '', 'Draft final report'); else go2('Everything done? Close the rake.', can('rk_rake_close') ? 'rkClose' : '', 'Close rake'); }
   }
   // figures that look like a wrong entry (more than 2 MT off the sheet)
   const odd = wagons.filter(w => w.status==='empty' && Math.abs(+w.diff_mt) > 2);
   const oddTxt = odd.map(w => `wagon Sr ${w.sheet_sr} (${+w.diff_mt < 0 ? 'excess ' + n3(-w.diff_mt) : 'short ' + n3(w.diff_mt)} MT)`).join(', ');
 
-  let h = `<div class="row" style="justify-content:space-between"><h1>${esc(r.rake_no)} · ${esc(r.client_name)}</h1><div class="row">${canCorr ? `<button class="${cMode ? 'danger' : 'ghost'} sm" id="rkCm">${cMode ? 'Exit correction mode' : '✎ Correct a mistake'}</button>` : ''}<button class="ghost sm" id="rkBack">All rakes</button></div></div>
+  let h = opts.only ? (canCorr ? `<div class="row" style="justify-content:flex-end;margin-top:-6px"><button class="${cMode ? 'danger' : 'ghost'} sm" id="rkCm">${cMode ? 'Exit correction mode' : '✎ Correct a mistake'}</button></div>` : '')
+    : `<div class="row" style="justify-content:space-between"><h1>${esc(r.rake_no)} · ${esc(r.client_name)}</h1><div class="row">${canCorr ? `<button class="${cMode ? 'danger' : 'ghost'} sm" id="rkCm">${cMode ? 'Exit correction mode' : '✎ Correct a mistake'}</button>` : ''}<button class="ghost sm" id="rkBack">All rakes</button></div></div>`;
+  h += `
   ${cMode ? `<div class="warnbox"><b>Correction mode.</b> A <b>Correct</b> button now shows on wagons, unloading slips and the arrival. Change the figure that was entered wrong (do not void and re-enter); press <b>Preview changes</b> to see everything it will update, give the reason, then save. Exit correction mode when done.</div>` : ''}
-  ${nx.length || odd.length ? `<div class="card" style="border-left:4px solid var(--deep)"><h2>What to do next</h2><ol style="margin:6px 0 0 18px;padding:0;line-height:1.9">${nx.join('')}</ol>
+  ${nx.length || odd.length ? `<div class="card" style="border-left:4px solid var(--deep)">${opts.only ? `<details><summary><h2 style="display:inline">What to do next</h2> <span class="muted">· ${nx.length} step(s) pending on ${esc(r.rake_no)} — tap to see</span></summary>` : '<h2>What to do next</h2>'}<ol style="margin:6px 0 0 18px;padding:0;line-height:1.9">${nx.join('')}</ol>${opts.only ? '</details>' : ''}
     ${odd.length ? `<div class="warnbox" style="margin-top:8px">Check ${oddTxt}: far from the wagon sheet, possibly a wrong entry.${canCorr ? ' Use <b>✎ Correct a mistake</b> to fix it.' : ' Ask your supervisor to correct it.'}</div>` : ''}</div>` : ''}
   <div class="steps">${RK_STEPS.map(([k,l],i) => `<span class="${i<si?'done':i===si?'cur':''}">${i<si?'✓ ':''}${esc(l)}</span>`).join('')}</div>
-  <div class="kpi"><div><span>RR / FNR</span><b style="font-size:15px">${esc(r.rr_no||'—')} / ${esc(r.fnr||'—')}</b></div><div><span>Batch</span><b>${esc(r.batch||'—')}</b></div>
+  <div class="kpi ${opts.only ? 'hide' : ''}"><div><span>RR / FNR</span><b style="font-size:15px">${esc(r.rr_no||'—')} / ${esc(r.fnr||'—')}</b></div><div><span>Batch</span><b>${esc(r.batch||'—')}</b></div>
    <div><span>Wagons empty</span><b>${r.wagons ? `${r.wagons_empty}/${r.wagons}` : '—'}</b></div><div><span>Missing</span><b style="color:${r.wagons_missing?'var(--alert)':'inherit'}">${r.wagons_missing}</b></div>
    <div><span>On platform MT</span><b>${n3(r.lot_mt)}</b></div><div><span>DC + WC (system)</span><b>${inr((+c.dc_calc||0) + (+c.wc_calc||0))}</b></div></div>`;
 
@@ -1420,9 +1423,13 @@ async function rkDetail(m, id){
           return x; }
         return '';
       })()}], wagons)}</div>`;
-    h += `<div class="card"><h2>Unloading slips</h2>${table([{h:'Slip',k:'slip_no'},{h:'Wagon',f:u=>esc((W(u.wagon_id)||{}).wagon_no)},{h:'Sardar',f:u=>esc(sardarName(u.sardar_id))},{h:'Company MT',n:1,f:u=>n3(u.company_mt)},
+    const readyW = wagons.filter(w => w.status==='unloading' && !openSlip(w.id)), notStartedW = wagons.filter(w => w.status==='arrived');
+    h += `<div class="card"><h2>Unloading slips</h2>
+      ${can('rk_unload') && (readyW.length || notStartedW.length) ? `<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">${readyW.length ? '<span class="muted">New slip for:</span>' : ''}${readyW.map(w => `<button class="primary sm" data-uslip="${w.id}">Wagon Sr ${w.sheet_sr} · ${esc(w.wagon_no)}</button>`).join('')}
+        ${notStartedW.length ? `<span class="muted">${notStartedW.length} wagon(s) not started yet — take the before-photo and start unloading on the Wagons page.</span>` : ''}</div>` : ''}
+      ${table([{h:'Slip',k:'slip_no'},{h:'Wagon',f:u=>{ const w = W(u.wagon_id)||{}; return `Sr ${w.sheet_sr ?? ''} · ${esc(w.wagon_no||'')}`; }},{h:'Sardar',f:u=>esc(sardarName(u.sardar_id))},{h:'Company MT',n:1,f:u=>n3(u.company_mt)},
       {h:'Good MT',n:1,f:u=>u.status==='returned'?n3(u.good_mt):''},{h:'Damaged MT',n:1,f:u=>u.status==='returned'&&+u.damaged_mt?n3(u.damaged_mt):''},{h:'Status',f:u=>chip(u.status, u.status==='returned'?'ok':u.status==='open'?'info':'')},
-      {h:'',f:u=>(u.status==='open'?`<button class="ghost sm" data-uprint="${u.id}">Print</button> ${can('rk_unload')?`<button class="ghost sm" data-ucx="${u.id}">Cancel</button>`:''}`:'') + (canC && u.status!=='cancelled' ? ` <button class="ghost sm" data-cu="${u.id}">Correct</button>` : '')}], uslips, 'No unloading slips yet.')}</div>`;
+      {h:'',f:u=>(u.status==='open'?`${can('rk_unload')?`<button class="primary sm" data-uret="${u.id}">Return slip</button> `:''}<button class="ghost sm" data-uprint="${u.id}">Print</button> ${can('rk_unload')?`<button class="ghost sm" data-ucx="${u.id}">Cancel</button>`:''}`:'') + (canC && u.status!=='cancelled' ? ` <button class="ghost sm" data-cu="${u.id}">Correct</button>` : '')}], uslips, 'No unloading slips yet.')}</div>`;
     h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Platform lot</h2>${can('rk_truck') && ['arrived','unloading','unloaded','released'].includes(r.status) ? '<button class="primary sm" id="rkTruck">+ Load a truck</button>' : ''}</div>
       ${table([{h:'Platform lot',f:x=>`<b>Platform-Sr ${x.sheet_sr ?? ''} · ${esc(x.wagon_no||'')}</b>`},{h:'Type',k:'material'},{h:'Condition',f:x=>x.kind==='damaged'?chip('damaged','bad'):chip('good','ok')},{h:'On platform MT',n:1,f:x=>n3(x.balance_mt)},{h:'On open trucks MT',n:1,f:x=>+x.reserved_mt?n3(x.reserved_mt):''},{h:'Free MT',n:1,f:x=>n3(x.available_mt)}], lot.slice().sort((a,b)=>(a.sheet_sr||0)-(b.sheet_sr||0)), 'Nothing unloaded to the platform yet.')}</div>`;
   }
@@ -1469,36 +1476,46 @@ async function rkDetail(m, id){
   if(si >= rkIdx('arrived')){
     const slipMt = sid => tlines.filter(l => l.truck_slip_id===sid).reduce((a,l) => a + +(l.actual_mt ?? l.planned_mt), 0);
     const srcOf = sid => [...new Set(tlines.filter(l => l.truck_slip_id===sid).map(l => { const w = W(l.wagon_id || l.lot_wagon_id); return w ? (l.source==='wagon' ? 'Wagon Sr ' : 'Platform-Sr ') + w.sheet_sr : ''; }))].join(', ');
-    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Trucks from this rake</h2>${can('rk_truck') && ['arrived','unloading','unloaded','released'].includes(r.status) ? '<button class="primary sm" data-loadtruck="1">+ Load a truck</button>' : ''}</div>
-      ${table([{h:'Slip',f:t=>`<a href="#" data-ts="${t.id}"><b>${esc(t.slip_no)}</b></a>`},{h:'Truck',f:t=>`<span class="plate">${esc(t.truck_no)}</span> ${chip(t.truck_kind)}${t.is_damaged?' '+chip('damaged','bad'):''}`},
-        {h:'Loaded from',f:t=>esc(srcOf(t.id))},{h:'Ship-To',f:t=>esc(t.ship_to_code)+(t.to_location_id?' '+chip('our warehouse','info'):'')},{h:'MT (this rake)',n:1,f:t=>n3(slipMt(t.id))},
-        {h:'Status',f:t=>chip(t.status, t.status==='dispatched'?'ok':t.status==='open'?'warn':'')},{h:'',f:t=>`<button class="${t.status==='open'?'primary':'ghost'} sm" data-ts="${t.id}">Open</button>`}],
-        allTrucks.slice().sort((a,b) => (b.created_at||'').localeCompare(a.created_at||'')), 'No trucks loaded from this rake yet.')}</div>`;
+    const tCols = [{h:'Slip',f:t=>`<a href="#" data-ts="${t.id}"><b>${esc(t.slip_no)}</b></a>`},{h:'Truck',f:t=>`<span class="plate">${esc(t.truck_no)}</span> ${chip(t.truck_kind)}${t.vendor_id ? ' ' + esc(vendorName(t.vendor_id)) : ''}${t.is_damaged?' '+chip('damaged','bad'):''}`},
+        {h:'Loaded from',f:t=>esc(srcOf(t.id))},{h:'Ship-To',f:t=>esc(t.ship_to_code)+(t.to_location_id?' '+chip('our warehouse','info'):'')},{h:'MT (this rake)',n:1,f:t=>n3(slipMt(t.id))}];
+    const byNew = arr => arr.slice().sort((a,b) => (b.created_at||'').localeCompare(a.created_at||''));
+    h += `<div class="card"><div class="row" style="justify-content:space-between"><h2>Loading slips</h2>${can('rk_truck') && ['arrived','unloading','unloaded','released'].includes(r.status) ? '<button class="primary sm" data-loadtruck="1">+ New loading slip</button>' : ''}</div>
+      <p class="muted">Trucks being loaded. When the labour returns the slip, open it and enter the quantity loaded: the challan is made.</p>
+      ${table(tCols.concat([{h:'Started',f:t=>dt(t.created_at)},{h:'',f:t=>`<button class="primary sm" data-ts="${t.id}">Open</button>`}]), byNew(allTrucks.filter(t => t.status==='open')), 'No truck is being loaded.')}</div>`;
+    h += `<div class="card"><h2>Dispatched trucks</h2>
+      ${table(tCols.concat([{h:'Dispatched',f:t=>dt(t.dispatched_at)},{h:'',f:t=>`<button class="ghost sm" data-ts="${t.id}">Open</button> <button class="ghost sm" data-pch="${t.dispatch_id}">Challans</button>`}]), byNew(allTrucks.filter(t => t.status==='dispatched')), 'No truck dispatched from this rake yet.')}
+      ${allTrucks.some(t => t.status==='cancelled') ? `<details style="margin-top:8px"><summary class="muted">Cancelled / voided slips (${allTrucks.filter(t => t.status==='cancelled').length})</summary>${table(tCols, allTrucks.filter(t => t.status==='cancelled'))}</details>` : ''}</div>`;
   }
   h += `<div class="card"><h2>Customer emails</h2>${table([{h:'Kind',f:x=>chip(x.kind.replace(/_/g,' '))},{h:'Subject',k:'subject'},{h:'Status',f:x=>x.status==='sent'?chip('sent '+(x.sent_via||''),'ok'):chip('draft','warn')},{h:'',f:x=>`<button class="ghost sm" data-msg="${x.id}">Open</button>`}], msgs, 'No emails yet.')}</div>
     <div class="card"><h2>History</h2>${table([{h:'When',f:x=>dt(x.at)},{h:'Event',f:x=>esc(x.event.replace(/_/g,' '))},{h:'Note',f:x=>esc(x.note||'') + corrList(x)}], events, 'Nothing yet.')}</div>`;
   m.innerHTML = h;
   // ---- one tab per stage of the rake ----
-  const RTABS = [['summary','Summary'],['arrival','Arrival'],['wagons','Wagons'],['unloading','Unloading'],['platform','Platform'],['dispatch','Dispatch'],['charges','Times & DC/WC'],['close','Close & history']];
-  const tabOf = t => /^What to do next/.test(t) ? 'all' : /^Intimation/.test(t) ? 'summary' : /^(Add RR|Replace RR|Mark arrival|Arrival)$|^(Add RR|Replace RR|Mark arrival)/.test(t) ? 'arrival' : /^Wagons/.test(t) ? 'wagons'
-    : /^Unloading slips/.test(t) ? 'unloading' : /^Platform (lot|difference)/.test(t) ? 'platform' : /^Trucks from/.test(t) ? 'dispatch' : /^(Times|Demurrage)/.test(t) ? 'charges' : 'close';
+  const RTABS = [['summary','Summary'],['sheet','Wagon sheet'],['arrival','Arrival'],['wagons','Wagons'],['unloading','Unloading'],['loading','Loading slips'],['dispatch','Dispatch'],['platform','Platform'],['charges','Times & DC/WC'],['close','Close & history']];
+  const tabOf = t => /^What to do next/.test(t) ? 'all' : /^Intimation/.test(t) ? 'summary' : /^(Add RR|Replace RR)/.test(t) ? 'sheet' : /^(Mark arrival|Arrival)/.test(t) ? 'arrival' : /^Wagons/.test(t) ? 'wagons'
+    : /^Unloading slips/.test(t) ? 'unloading' : /^Loading slips/.test(t) ? 'loading' : /^Dispatched trucks/.test(t) ? 'dispatch' : /^Platform (lot|difference)/.test(t) ? 'platform' : /^(Times|Demurrage)/.test(t) ? 'charges' : 'close';
   const cards = [...m.querySelectorAll(':scope > .card')]; cards.forEach(cd => { const t = (cd.querySelector('h2')||{}).textContent || ''; cd.dataset.rtab = tabOf(t.trim()); });
   const has = k => cards.some(cd => cd.dataset.rtab===k);
-  const badge = {unloading: uslips.filter(u => u.status==='open').length, platform: lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005).length, dispatch: openTrucks.length,
+  const badge = {unloading: uslips.filter(u => u.status==='open').length, platform: lot.filter(x => Math.abs(+x.balance_mt) >= 0.0005).length, loading: openTrucks.length,
     wagons: wagons.filter(w => ['arrived','unloading'].includes(w.status)).length};
   S.rkTab = S.rkTab || {};
-  const defTab = ['planned','wagons_updated'].includes(r.status) ? 'arrival' : ['arrived','unloading'].includes(r.status) ? 'wagons' : 'summary';
+  const defTab = r.status==='planned' ? 'sheet' : r.status==='wagons_updated' ? 'arrival' : ['arrived','unloading'].includes(r.status) ? 'wagons' : 'summary';
+  if(opts.only){
+    cards.forEach(cd => cd.classList.toggle('hide', cd.dataset.rtab !== 'all' && !opts.only.includes(cd.dataset.rtab)));
+    if(!cards.some(cd => opts.only.includes(cd.dataset.rtab))) m.insertAdjacentHTML('beforeend', `<div class="empty">${esc(opts.empty || 'Nothing for this rake at this stage.')}</div>`);
+  }
   const showTab = k => { if(!has(k)) k = has(defTab) ? defTab : 'summary'; S.rkTab[id] = k;
     cards.forEach(cd => cd.classList.toggle('hide', cd.dataset.rtab !== 'all' && cd.dataset.rtab !== k));
     m.querySelectorAll('[data-rt]').forEach(b => b.classList.toggle('on', b.dataset.rt === k)); };
   const bar = document.createElement('div'); bar.className = 'rtabs';
   bar.innerHTML = RTABS.filter(([k]) => has(k)).map(([k,l]) => `<button data-rt="${k}">${esc(l)}${badge[k] ? ` <span class="rtb">${badge[k]}</span>` : ''}</button>`).join('');
-  const firstTab = cards.find(cd => cd.dataset.rtab !== 'all'); m.insertBefore(bar, firstTab || null);
-  bar.querySelectorAll('[data-rt]').forEach(b => b.onclick = () => showTab(b.dataset.rt));
-  showTab(S.rkTab[id] || defTab);
+  if(!opts.only){
+    const firstTab = cards.find(cd => cd.dataset.rtab !== 'all'); m.insertBefore(bar, firstTab || null);
+    bar.querySelectorAll('[data-rt]').forEach(b => b.onclick = () => showTab(b.dataset.rt));
+    showTab(S.rkTab[id] || defTab);
+  }
 
   // ----- wiring -----
-  $('rkBack').onclick = () => go();
+  if($('rkBack')) $('rkBack').onclick = () => go();
   if($('rkEdit')) $('rkEdit').onclick = () => rkPlanForm(r, back);
   if($('rkDel')) $('rkDel').onclick = e => { if(confirm(`Delete ${r.rake_no}? This cannot be undone.`)) act(e.target, async () => { await rpc('rk_rake_delete', {p_rake:id}); go(); }, 'Rake deleted'); };
   m.querySelectorAll('[data-ev]').forEach(a => a.onclick = e => { e.preventDefault(); showEvidenceAll(a.dataset.ev); });
@@ -1622,10 +1639,15 @@ async function rkDetail(m, id){
     if(!confirm(`Mark ${w.wagon_no} empty?\nWagon sheet ${n3(w.sheet_mt)} MT, received ${n3(got)} MT → ${got < w.sheet_mt ? 'short ' + n3(w.sheet_mt - got) : got > w.sheet_mt ? 'excess ' + n3(got - w.sheet_mt) : 'tallies'}.`)) return;
     act(b, async () => { const x = await rpc('rk_wagon_close', {p_wagon:w.id}); back(); return x; }, x => x==='unloaded' ? 'All wagons empty — unloading complete' : 'Wagon settled');
   });
-  if($('rkTruck')) $('rkTruck').onclick = () => rkTruckForm(r.client_id, () => rkDetail(m, id));
+  if($('rkTruck')) $('rkTruck').onclick = () => rkTruckForm(r.client_id, back);
   if($('rkCm')) $('rkCm').onclick = () => { S.corrMode = cMode ? null : id; back(); };
-  m.querySelectorAll('[data-nx]').forEach(b => b.onclick = () => { const t = $(b.dataset.nx); if(!t) return; const cd = t.closest('.card'); if(cd && cd.dataset.rtab) m.querySelector(`[data-rt="${cd.dataset.rtab}"]`).click(); t.click(); });
-  m.querySelectorAll('[data-loadtruck]').forEach(b => b.onclick = () => rkTruckForm(r.client_id, () => rkDetail(m, id)));
+  const RK_PAGE = {summary:'rk_board', sheet:'rk_sheet', arrival:'rk_arrival', wagons:'rk_wagons', unloading:'rk_unload', loading:'rk_loading', dispatch:'rk_dispatch', platform:'rk_platform', charges:'rk_dcwc', close:'rk_close'};
+  m.querySelectorAll('[data-nx]').forEach(b => b.onclick = () => { const t = $(b.dataset.nx); if(!t) return; const cd = t.closest('.card'); const tab = cd && cd.dataset.rtab;
+    if(opts.only && tab && !opts.only.includes(tab)){ S.nxClick = b.dataset.nx; location.hash = 'rk/' + RK_PAGE[tab]; return; }
+    if(!opts.only && tab) m.querySelector(`[data-rt="${tab}"]`).click(); t.click(); });
+  if(S.nxClick && $(S.nxClick)){ const t = $(S.nxClick); S.nxClick = null; setTimeout(() => t.click(), 50); }
+  m.querySelectorAll('[data-pch]').forEach(b => b.onclick = async () => { const ch = await q('wh_challans', x => x.eq('dispatch_id', b.dataset.pch)); printChallans(ch.map(c => c.id)); });
+  m.querySelectorAll('[data-loadtruck]').forEach(b => b.onclick = () => rkTruckForm(r.client_id, back));
   m.querySelectorAll('[data-ts]').forEach(a => a.onclick = e => { e.preventDefault(); rkTruckDetail(m, a.dataset.ts, back); });
   // ----- corrections -----
   if($('rkCorrArr')) $('rkCorrArr').onclick = () => corrModal(r.rake_no + ' arrival', `<p class="muted">Tick wagons that were placed. A wagon already unloading or emptied cannot be marked missing. Free time and rates: use "Change free time / rates".</p>
@@ -1792,6 +1814,34 @@ async function rkTruckForm(clientId, after){
   }, 'Truck slip created');
 }
 
+
+/* ---------- one page per stage: rake picker on top, that rake's data only ---------- */
+async function rkStagePage(m, title, only, emptyMsg){
+  if(!S.loc){ m.innerHTML = '<div class="empty">No siding assigned.</div>'; return; }
+  const rakes = await q('rk_rake_list', b => b.eq('siding_id', S.loc.id).order('created_at', {ascending:false}));
+  const running = rakes.filter(r => r.status !== 'closed'), closed = rakes.filter(r => r.status === 'closed');
+  S.rkSel = S.rkSel || {};
+  let sel = rakes.find(r => r.id === S.rkSel[S.loc.id]) || running[0] || null;
+  const lab = r => `${r.rake_no} · ${r.client_code} · ${r.rr_no ? 'RR ' + r.rr_no : 'no RR yet'} · ${(RK_STEPS.find(x => x[0]===r.status)||[,r.status])[1]}`;
+  m.innerHTML = `<div class="row" style="justify-content:space-between;align-items:flex-end;margin-bottom:10px"><h1 style="margin:0">${esc(title)} · ${esc(S.loc.code)}</h1>
+      <div style="flex:1 1 320px;max-width:560px"><label>Rake</label><select id="rkPick">${rakes.length ? `
+        ${running.length ? `<optgroup label="Running (${running.length})">${running.map(r => `<option value="${r.id}" ${sel && r.id===sel.id ? 'selected' : ''}>${esc(lab(r))}</option>`).join('')}</optgroup>` : ''}
+        ${closed.length ? `<optgroup label="Closed (${closed.length})">${closed.map(r => `<option value="${r.id}" ${sel && r.id===sel.id ? 'selected' : ''}>${esc(lab(r))}</option>`).join('')}</optgroup>` : ''}` : '<option value="">No rake yet</option>'}</select></div></div>
+    ${!running.length && rakes.length && (!sel || sel.status==='closed') ? '<div class="muted" style="margin-bottom:8px">No rake is running at this siding. Closed rakes can be picked above.</div>' : ''}
+    <div id="rkStage"></div>`;
+  if(!sel){ $('rkStage').innerHTML = `<div class="empty">No rake running at ${esc(S.loc.code)}. Create one in <a href="#rk/rk_board">Rake intimation</a>.</div>`; }
+  else { S.rkSel[S.loc.id] = sel.id; await rkDetail($('rkStage'), sel.id, {only, empty:emptyMsg}); }
+  $('rkPick').onchange = () => { S.rkSel[S.loc.id] = $('rkPick').value; go(); };
+}
+VIEWS.rk_sheet = m => rkStagePage(m, 'Wagon sheet (RR)', ['sheet'], 'The RR and wagon sheet are already in for this rake (they can be replaced only before arrival).');
+VIEWS.rk_arrival = m => rkStagePage(m, 'Arrival', ['arrival'], 'Upload the RR and wagon sheet first (Wagon sheet page).');
+VIEWS.rk_wagons = m => rkStagePage(m, 'Wagons', ['wagons'], 'Wagons show here once the arrival is marked.');
+VIEWS.rk_unload = m => rkStagePage(m, 'Unloading slips', ['unloading'], 'Unloading starts after the arrival is marked.');
+VIEWS.rk_loading = m => rkStagePage(m, 'Loading slips', ['loading'], 'Trucks can be loaded once the rake has arrived.');
+VIEWS.rk_dispatch = m => rkStagePage(m, 'Dispatch', ['dispatch'], 'No dispatch yet for this rake.');
+VIEWS.rk_platform = m => rkStagePage(m, 'Platform', ['platform'], 'Nothing on the platform yet for this rake.');
+VIEWS.rk_dcwc = m => rkStagePage(m, 'Times & DC/WC', ['charges'], 'Times and DC/WC start once the rake has arrived.');
+VIEWS.rk_close = m => rkStagePage(m, 'Close & history', ['close'], 'Nothing yet.');
 VIEWS.rk_trucks = async m => {
   if(!S.loc){ m.innerHTML = '<div class="empty">No siding assigned.</div>'; return; }
   const [open, done] = await Promise.all([q('rk_truck_slips', b => b.eq('siding_id', S.loc.id).eq('status','open').order('created_at', {ascending:false})),
