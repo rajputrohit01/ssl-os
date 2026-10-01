@@ -310,6 +310,8 @@ $('modal').addEventListener('click', e => { if(e.target.id==='modal') closeModal
 const opt = (arr, val, lab, sel, blank) => (blank!==undefined ? `<option value="">${esc(blank)}</option>` : '') + arr.map(x => `<option value="${esc(x[val])}" ${x[val]===sel?'selected':''}>${esc(typeof lab==='function'?lab(x):x[lab])}</option>`).join('');
 const clientCode = id => (S.clients.find(c=>c.id===id)||{}).code || '';
 const matOpts = (sel, blank, clientId) => opt(S.materials.filter(m=>m.is_active && (!clientId || m.client_id===clientId)), 'id', m => clientId ? m.code : `${m.code} · ${clientCode(m.client_id)}`, sel, blank);
+// vendors offered in a dropdown = active vendors of that type (+ the one already chosen, so old documents still show it)
+const vOpts = (type, sel, blank='Select vendor') => opt(S.vendors.filter(v => (v.is_active && (!type || (v.kinds||[]).includes(type))) || v.id===sel), 'id', 'vendor_name', sel, blank);
 const contrOpts = () => opt(S.contractors.filter(c=>c.location_id===S.loc.id && c.is_active), 'id', 'vendor_name');
 // our own warehouses are chosen by plant code, never through a Ship-To party
 const ownWh = (clientId, opts = {}) => S.plants.filter(p => p.kind==='warehouse' && p.client_id===clientId && p.is_active !== false && p.id !== opts.exclude && (!opts.siding || S.links.some(l => l.plant_id===p.id && l.siding_id===opts.siding)));
@@ -396,7 +398,7 @@ async function loadMasters(){
     q('wh_materials', b => b.order('code')),
     q('wh_contractor_names'),
     q('wh_party_map', b => b.order('party_name')),
-    q('sys_vendors', b => b.eq('is_active', true).order('vendor_name')),
+    q('sys_vendors', b => b.order('vendor_name')),
   ]);
   S.trucks = await q('sys_trucks', b => b.eq('is_active', true).order('registration_no'));
   [S.cats, S.sardars, S.links, S.terms, S.plants, S.states, S.districts, S.dests, S.soldTos] = await Promise.all([
@@ -404,6 +406,7 @@ async function loadMasters(){
     q('sys_states', b => b.order('name')), q('sys_districts', b => b.order('name')), q('sys_destinations', b => b.order('name')), q('sys_sold_to', b => b.order('name'))]);
   S.companies = await q('sys_companies', b => b.order('code'));
   S.aliases = await q('rk_material_aliases');
+  S.vtypes = await q('sys_vendor_types', b => b.order('sort').order('name'));
   if(can('ft_view')) await ftMasters();
 }
 async function start(){
@@ -456,7 +459,7 @@ const MODULES = [
       if(can('wh_master_admin')){ t.push(['#','Setup']); t.push(['whsetup','Warehouse setup']); }
       return t;
     } },
-  { key:'md', name:'Master Data', icon:'masters', desc:'Our companies, customers, material categories and types, plants, warehouses and sidings, Sold-To and Ship-To parties, destinations, vendors, trucks',
+  { key:'md', name:'Master Data', icon:'masters', desc:'Our companies, customers, material categories and types, plants, warehouses and sidings, Sold-To and Ship-To parties, destinations, trucks',
     visible: () => can('wh_master_admin'), screens: () => [['#','Master data'],['masters','Masters']] },
   { key:'admin', name:'Users & Roles', icon:'users', desc:'Add users, set roles, permissions and locations',
     visible: () => can('sys_user_admin') || can('sys_role_admin'), screens: () => [['#','Administration'],['access','Users & roles']] },
@@ -869,8 +872,8 @@ const FT_ORDER_ST = {pending_approval:['waiting for MP approval','warn'], approv
 const FT_EMI_ST = {due:['due','info'], paid:['paid (NACH)','ok'], bounced:['BOUNCED','bad'], repaid:['bounced · repaid','warn']};
 const ftModel = id => { const x = (S.ftModels||[]).find(m => m.id===id); return x ? `${x.make} ${x.model}` : ''; };
 const ftVendor = id => (S.vendors.find(v => v.id===id)||{}).vendor_name || '';
-const vendOpts = (sel, kind) => { const vs = S.vendors.slice().sort((a,b) => ((b.kinds||[]).includes(kind)) - ((a.kinds||[]).includes(kind)) || a.vendor_name.localeCompare(b.vendor_name));
-  return opt(vs, 'id', v => v.vendor_name + ((v.kinds||[]).length ? ` · ${v.kinds.join(', ')}` : ''), sel, 'Select vendor'); };
+const ftVT = k => ({body:'body', insurance:'insurance', gps:'gps', fastag:'fastag', dealer:'dealer'})[k] || 'rto';
+const vendOpts = (sel, kind) => vOpts(ftVT(kind), sel);
 const linkBtn = (href, label, cls='ghost') => `<a class="${cls} sm" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px" href="${href}">${label}</a>`;
 const isoD = v => { if(v==null || v==='') return null; if(v instanceof Date) return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`;
   v = String(v).trim(); let m;
@@ -950,7 +953,7 @@ VIEWS.ft_orders = async m => {
     act(b, async () => { await rpc('ft_order_cancel', {p_id:b.dataset.cx, p_reason:why}); go(); }, 'Cancelled'); });
   m.querySelectorAll('[data-pl]').forEach(b => b.onclick = () => { const o = R(b.dataset.pl);
     modal(`<h2>Place ${esc(o.order_no)} with the dealer</h2><p>${o.qty} × ${esc(o.make + ' ' + o.model)} at ${inr(o.rate)}</p>
-      <div class="field"><label>Dealer</label><select id="plD" data-mt="vendor">${vendOpts(o.dealer_id, 'dealer')}</select></div>
+      <div class="field"><label>Dealer</label><select id="plD" data-mt="vendor" data-vt="dealer">${vendOpts(o.dealer_id, 'dealer')}</select></div>
       <div class="row" style="margin-top:12px"><button class="primary" id="plGo">Placed</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
     $('plD')._opts = () => vendOpts(null, 'dealer'); wireAdd($('modalBox'));
     $('plGo').onclick = e => act(e.target, async () => { if(!$('plD').value) throw new Error('Choose the dealer'); await rpc('ft_order_place', {p_id:o.id, p_dealer:$('plD').value}); closeModal(); go(); }, 'Order placed'); });
@@ -968,7 +971,7 @@ function ftOrderForm(o){
     <div class="field"><label>TCS amount per truck ₹</label><input type="number" min="0" step="0.01" id="foTcsA" value="${o ? o.tcs_amount : ''}"></div>
     <div class="field"><label>TCR (temporary registration charge)</label><select id="foTcr"><option value="included">Included (dealer does temporary registration)</option><option value="excluded">Excluded (we arrange it)</option></select></div>
     <div class="field"><label>TCR amount per truck ₹</label><input type="number" min="0" step="0.01" id="foTcrA" value="${o ? o.tcr_amount : ''}"></div>
-    <div class="field"><label>Dealer (if known)</label><select id="foDl" data-mt="vendor">${vendOpts(o && o.dealer_id, 'dealer')}</select></div>
+    <div class="field"><label>Dealer (if known)</label><select id="foDl" data-mt="vendor" data-vt="dealer">${vendOpts(o && o.dealer_id, 'dealer')}</select></div>
     <div class="field"><label>Note</label><input id="foN" value="${esc(o && o.note || '')}"></div>
   </div><p class="muted" id="foT"></p>
   <div class="row" style="margin-top:12px"><button class="primary" id="foGo">${o ? 'Save & send for approval again' : 'Send for MP approval'}</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
@@ -1082,7 +1085,7 @@ function ftStepForm(t, s, v, evN){
   modal(`<h2>${esc(D.n)} · ${esc(t.label)}</h2>
     ${s.status==='not_needed' ? `<div class="issues">Marked not needed: ${esc(s.not_needed_reason||'')}. Saving re-opens it.</div>` : ''}
     <div class="grid">
-    <div class="field"><label>Vendor (who does it / is paid)</label><select id="fsV" data-mt="vendor" ${paid ? 'disabled' : ''}>${vendOpts(s.vendor_id, s.step)}</select></div>
+    <div class="field"><label>Vendor (who does it / is paid)</label><select id="fsV" data-mt="vendor" data-vt="${ftVT(s.step)}" ${paid ? 'disabled' : ''}>${vendOpts(s.vendor_id, s.step)}</select></div>
     <div class="field"><label>Amount ₹ (blank / 0 if no cost to us)</label><input type="number" min="0" step="0.01" id="fsA" value="${s.amount ?? ''}" ${paid ? 'disabled' : ''}></div>
     <div class="field"><label>${esc(D.doc)}</label><input id="fsN" value="${esc(s.doc_no||'')}"></div>
     <div class="field"><label>${s.step==='gps' || s.step==='fastag' ? 'Installed on' : 'Issued on'}</label><input type="date" id="fsI" max="${today()}" value="${s.issued_on||''}"></div>
@@ -1251,6 +1254,131 @@ VIEWS.ft_import = async m => {
     return res; }, r => `${r.imported} truck(s) imported`);
 };
 
+/* ============ VENDOR MASTER ============ */
+// A vendor has one or more types; every vendor dropdown shows only its type. HO / Admin (vendor_admin) create and edit.
+// Mandatory: name, type, mobile, PAN. One PAN = one vendor. GSTIN must contain the PAN. Bank details before a bank payment.
+const vtName = c => (S.vtypes.find(t => t.code===c)||{}).name || c;
+const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/, GST_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'vn', name:'Vendors', icon:'vendor', desc:'Vendor master: labour contractors, Sardars, transporters, dealers, body builders, insurance, RTO, GPS, FASTag and more — each vendor tagged by type, with PAN, GST and bank',
+    visible: () => can('vendor_admin') || can('wh_master_admin') || can('rk_master_admin') || can('ft_view'),
+    screens: () => { const t = [['#','Vendors'],['vn_list','Vendor list']]; if(can('vendor_admin')) t.push(['vn_import','Import from Excel'],['vn_types','Vendor types']); return t; } });
+ICONS.vendor = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9h18v2a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z"/><path d="M5 13v8h14v-8"/><path d="M10 21v-5h4v5"/></svg>';
+
+// vendor form in its own layer, so it can open on top of another form (e.g. "+ Add new vendor…" inside a truck slip)
+function vnForm(v, preset, done){
+  if(!can('vendor_admin')) return toast('Only HO / Admin can add or edit vendors', 'warn');
+  const V = v || {kinds:[], ...(preset||{})}; S.qaN = (S.qaN||0) + 1; const P = 'vn' + S.qaN + '_';
+  const ov = document.createElement('div'); ov.className = 'modal'; ov.style.zIndex = 70 + S.qaN;
+  const f = (k, l, attrs='') => `<div class="field"><label>${l}</label><input id="${P}${k}" value="${esc(V[k]||'')}" ${attrs}></div>`;
+  ov.innerHTML = `<div class="box"><h2>${v ? 'Edit ' + esc(v.vendor_name) + ` <span class="muted">${esc(v.vendor_code)}</span>` : 'New vendor'}</h2>
+    <label>Vendor type (tick all that apply)</label>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin:6px 0 12px">${S.vtypes.filter(t => t.is_active || (V.kinds||[]).includes(t.code)).map(t => `<label style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:14px;font-weight:500;margin:0"><input type="checkbox" data-k="${t.code}" ${(V.kinds||[]).includes(t.code)?'checked':''} style="width:18px;height:18px"> ${esc(t.name)}</label>`).join('')}</div>
+    <div class="grid">
+      ${f('vendor_name','Vendor name *')}${f('busy_name','Name in BUSY (blank = same)')}
+      ${f('contact_person','Contact person')}${f('phone','Mobile *','inputmode="numeric" maxlength="14"')}${f('email','Email','type="email"')}
+      ${f('pan','PAN *','maxlength="10" style="text-transform:uppercase"')}${f('gstin','GSTIN (if registered)','maxlength="15" style="text-transform:uppercase"')}
+      <div class="field"><label>State</label><select id="${P}state_id">${opt(S.states,'id','name',V.state_id,'—')}</select></div>
+      <div class="field" style="grid-column:1/-1"><label>Address</label><input id="${P}address" value="${esc(V.address||'')}"></div>
+      ${f('bank_account','Bank account no.','inputmode="numeric"')}${f('bank_ifsc','IFSC','maxlength="11" style="text-transform:uppercase"')}${f('bank_holder','Account holder name')}
+      <div class="field"><label>Cancelled cheque / passbook${v && v.cheque_docs ? ` (${v.cheque_docs} uploaded)` : ''}</label><input type="file" id="${P}chq" accept="image/*,application/pdf"></div>
+      ${f('note','Note')}
+      ${v ? `<div class="field"><label>Status</label><select id="${P}is_active"><option value="true">Active</option><option value="false" ${v.is_active ? '' : 'selected'}>Inactive (hidden from all dropdowns)</option></select></div>` : ''}
+    </div><p class="muted">* required. One PAN = one vendor: if this vendor already exists for another type, edit it and tick the extra type. Bank details are needed before any bank payment.</p>
+    <div class="row" style="margin-top:12px"><button class="primary" data-vs>Save vendor</button><button class="ghost" data-vc>Cancel</button></div></div>`;
+  document.body.appendChild(ov);
+  const g = k => ov.querySelector('#' + P + k);
+  ov.querySelector('[data-vc]').onclick = () => ov.remove();
+  ov.querySelector('[data-vs]').onclick = e => act(e.target, async () => {
+    const r = {}; ['vendor_name','busy_name','contact_person','phone','email','pan','gstin','address','bank_account','bank_ifsc','bank_holder','note'].forEach(k => r[k] = g(k).value.trim() || null);
+    r.state_id = g('state_id').value || null; r.kinds = [...ov.querySelectorAll('[data-k]:checked')].map(i => i.dataset.k);
+    if(v) r.is_active = g('is_active').value === 'true';
+    ['pan','gstin','bank_ifsc'].forEach(k => r[k] = r[k] && r[k].toUpperCase().replace(/\s/g,''));
+    if(!r.vendor_name) throw new Error('Enter the vendor name');
+    if(!r.kinds.length) throw new Error('Tick at least one vendor type');
+    const ph = (r.phone||'').replace(/^(\+?91|0)|[^0-9]/g, '');
+    if(!/^[6-9][0-9]{9}$/.test(ph.slice(-10))) throw new Error('Enter a valid 10-digit mobile number');
+    if(!r.pan || !PAN_RE.test(r.pan)) throw new Error('Enter a valid PAN (format ABCDE1234F)');
+    if(r.gstin && !GST_RE.test(r.gstin)) throw new Error('GSTIN is not valid');
+    if(r.gstin && r.gstin.slice(2,12) !== r.pan) throw new Error('GSTIN does not contain this PAN — check both');
+    if(r.bank_ifsc && !IFSC_RE.test(r.bank_ifsc)) throw new Error('IFSC is not valid (format SBIN0001234)');
+    if(!!r.bank_account !== !!r.bank_ifsc) throw new Error('Enter both the bank account number and the IFSC');
+    if(!v){ const dup = S.vendors.find(x => x.pan === r.pan); if(dup) throw new Error(`PAN ${r.pan} already belongs to ${dup.vendor_name} (${dup.vendor_code}). Edit that vendor and tick the extra type.`); }
+    const res = v ? await sb.from('sys_vendors').update(r).eq('id', v.id).select() : await sb.from('sys_vendors').insert(r).select();
+    if(res.error) throw new Error(res.error.message);
+    const row = (res.data||[])[0];
+    if(!row) throw new Error('Not saved: only HO / Admin can add or edit vendors');
+    const file = g('chq').files[0]; if(file) await uploadPhotoFile('vendor_cheque', row.id, file, 'Cheque · ' + row.vendor_name);
+    await loadMasters(); ov.remove(); done && done(row); return row;
+  }, row => `${row.vendor_name} saved (${row.vendor_code})`);
+}
+
+VIEWS.vn_list = async m => {
+  S.vnF = S.vnF || {type:'', status:'active', gap:'', q:''}; const F = S.vnF;
+  const all = await q('vn_vendor_list', b => b.order('vendor_name').limit(5000));
+  const qs = F.q.trim().toUpperCase();
+  const rows = all.filter(v => (!F.type || (v.kinds||[]).includes(F.type)) && (F.status==='all' || (F.status==='active') === v.is_active)
+    && (!F.gap || (F.gap==='gstin' && !v.gstin) || (F.gap==='bank' && !v.bank_account) || (F.gap==='cheque' && !v.cheque_docs))
+    && (!qs || [v.vendor_name, v.vendor_code, v.pan, v.phone, v.gstin, v.busy_name].some(x => (x||'').toUpperCase().includes(qs))));
+  const cnt = c => all.filter(v => v.is_active && (v.kinds||[]).includes(c)).length;
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Vendors</h1><div class="row">${can('vendor_admin') ? '<button class="primary sm" id="vnAdd">+ New vendor</button>' : ''}<button class="ghost sm" id="vnCsv">Download CSV</button></div></div>
+  ${can('vendor_admin') ? '' : '<p class="muted">View only. HO / Admin add and edit vendors.</p>'}
+  <div class="row"><select id="vnT" style="width:auto"><option value="">All types</option>${S.vtypes.map(t => `<option value="${t.code}" ${t.code===F.type?'selected':''}>${esc(t.name)} (${cnt(t.code)})</option>`).join('')}</select>
+    <select id="vnS" style="width:auto">${[['active','Active'],['inactive','Inactive'],['all','All']].map(([k,l]) => `<option value="${k}" ${k===F.status?'selected':''}>${l}</option>`).join('')}</select>
+    <select id="vnG" style="width:auto">${[['','Any details'],['gstin','GSTIN missing'],['bank','Bank missing'],['cheque','Cheque copy missing']].map(([k,l]) => `<option value="${k}" ${k===F.gap?'selected':''}>${l}</option>`).join('')}</select>
+    <input id="vnQ" placeholder="Search name / PAN / mobile / code" value="${esc(F.q)}" style="max-width:280px"></div>
+  <div class="card">${table([{h:'Vendor',f:v=>`<b>${esc(v.vendor_name)}</b><div class="muted">${esc(v.vendor_code)}${v.busy_name && v.busy_name!==v.vendor_name ? ' · BUSY: ' + esc(v.busy_name) : ''}</div>`},
+    {h:'Types',f:v=>`<div style="display:flex;flex-wrap:wrap;gap:4px">${(v.kinds||[]).map(k => chip(vtName(k), 'info')).join('')}</div>`},{h:'Contact',f:v=>`${esc(v.phone)}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
+    {h:'PAN / GSTIN',f:v=>`${esc(v.pan)}<div class="muted">${v.gstin ? esc(v.gstin) : 'no GSTIN'}</div>`},
+    {h:'Bank',f:v=>v.bank_account ? `…${esc(v.bank_account.slice(-4))} · ${esc(v.bank_ifsc)}${v.cheque_docs ? '' : ' ' + chip('no cheque copy','warn')}` : chip('missing','warn')},
+    {h:'Used in',n:1,f:v=>v.used_count ? v.used_count + ' doc(s)' : '—'},{h:'Status',f:v=>v.is_active ? chip('active','ok') : chip('inactive')},
+    {h:'',f:v=>(v.cheque_docs ? `<button class="ghost sm" data-ev="${v.id}">Cheque</button> ` : '') + (can('vendor_admin') ? `<button class="ghost sm" data-ed="${v.id}">Edit</button>` : '')}], rows, 'No vendors match.')}</div>`;
+  $('vnT').onchange = () => { F.type = $('vnT').value; go(); }; $('vnS').onchange = () => { F.status = $('vnS').value; go(); };
+  $('vnG').onchange = () => { F.gap = $('vnG').value; go(); }; $('vnQ').onchange = () => { F.q = $('vnQ').value; go(); };
+  if($('vnAdd')) $('vnAdd').onclick = () => vnForm(null, {kinds: F.type ? [F.type] : []}, () => go());
+  m.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => vnForm(all.find(v => v.id===b.dataset.ed), null, () => go()));
+  m.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.ev));
+  $('vnCsv').onclick = () => csv(rows.map(v => ({code:v.vendor_code, name:v.vendor_name, busy_name:v.busy_name, types:(v.kinds||[]).map(vtName).join(', '), contact_person:v.contact_person||'', phone:v.phone, email:v.email||'',
+    pan:v.pan, gstin:v.gstin||'', state:v.state_name||'', address:v.address||'', bank_account:v.bank_account||'', ifsc:v.bank_ifsc||'', holder:v.bank_holder||'', active:v.is_active, used_in_docs:v.used_count})), 'vendors');
+};
+
+const VN_COLS = ['vendor_name','busy_name','types','contact_person','phone','email','pan','gstin','address','state','bank_account','bank_ifsc','bank_holder','note'];
+VIEWS.vn_import = async m => {
+  m.innerHTML = `<h1>Import vendors from Excel</h1>
+  <p class="muted">One row per vendor. Required: vendor_name, types, phone, pan. Types = names or codes from the Types sheet, separated by commas (e.g. "Body builder, RTO agent"). A PAN already in the system is not duplicated: its new types are added and blank details filled; nothing is overwritten. Rows with a problem are listed and skipped.</p>
+  <div class="card"><div class="row"><button class="ghost sm" id="viT">Download template</button><input type="file" id="viF" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="viGo">Import</button></div><div id="viOut"></div></div>`;
+  $('viT').onclick = () => { const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{vendor_name:'MAA TARA TRANSPORT', busy_name:'Maa Tara Transport', types:'Truck vendor (transporter)', contact_person:'Ramesh Das', phone:'9830012345', email:'', pan:'ABCDE1234F', gstin:'19ABCDE1234F1Z5', address:'Kolkata', state:'West Bengal', bank_account:'12345678901', bank_ifsc:'SBIN0001234', bank_holder:'MAA TARA TRANSPORT', note:''}], {header:VN_COLS}), 'Vendors');
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(S.vtypes.filter(t => t.is_active).map(t => ({type_name:t.name, code:t.code, used_in:t.used_in||''}))), 'Types');
+    XLSX.writeFile(wb, 'vendor_import_template.xlsx'); };
+  $('viGo').onclick = e => act(e.target, async () => {
+    const f = $('viF').files[0]; if(!f) throw new Error('Choose the filled Excel file');
+    const wb = XLSX.read(await f.arrayBuffer()); const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:false});
+    const rows = raw.map(r => { const o = {}; Object.entries(r).forEach(([k,v]) => { const key = String(k).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); if(v!==null && String(v).trim()!=='') o[key] = String(v).trim(); }); return o; }).filter(o => o.vendor_name || o.pan);
+    if(!rows.length) throw new Error('No vendor rows found. Use the template columns.');
+    const res = await rpc('vn_import', {p_rows:rows}); await loadMasters();
+    $('viOut').innerHTML = `<p><b>${res.created}</b> created · <b>${res.updated}</b> existing PAN(s) updated · of ${rows.length} row(s).</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Vendor',k:'vendor_name'},{h:'Problem',k:'error'}], res.errors) : '');
+    return res; }, r => `${r.created} vendor(s) created`);
+};
+
+VIEWS.vn_types = async m => {
+  const [types, vs] = await Promise.all([q('sys_vendor_types', b => b.order('sort').order('name')), q('sys_vendors', b => b.select('kinds,is_active'))]);
+  const n = c => vs.filter(v => v.is_active && (v.kinds||[]).includes(c)).length;
+  m.innerHTML = `<h1>Vendor types</h1><p class="muted">Every vendor dropdown in the system shows only vendors of its type. Add a type when a new kind of vendor starts (e.g. for a new module). A type cannot be deleted, only made inactive.</p>
+  <div class="card"><div class="row" style="align-items:flex-end"><div style="flex:1 1 220px"><label>New type name</label><input id="vtN" placeholder="e.g. Crane / hydra"></div><div style="flex:2 1 280px"><label>Used for</label><input id="vtU"></div><button class="primary sm" id="vtGo">Add type</button></div></div>
+  <div class="card">${table([{h:'Type',f:t=>`<b>${esc(t.name)}</b><div class="muted">${esc(t.code)}</div>`},{h:'Used for',k:'used_in'},{h:'Active vendors',n:1,f:t=>n(t.code)},{h:'Status',f:t=>t.is_active ? chip('active','ok') : chip('inactive')},
+    {h:'',f:t=>`<button class="ghost sm" data-rn="${t.code}">Rename</button> <button class="ghost sm" data-tg="${t.code}">${t.is_active ? 'Deactivate' : 'Activate'}</button>`}], types)}</div>`;
+  $('vtGo').onclick = e => act(e.target, async () => { const name = $('vtN').value.trim(); if(!name) throw new Error('Enter the type name');
+    const code = name.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'').replace(/^([0-9])/, 't$1').slice(0,30);
+    const {error} = await sb.from('sys_vendor_types').insert({code, name, used_in:$('vtU').value.trim() || null, sort:(types.reduce((a,t) => Math.max(a, t.sort), 0) + 10)}); if(error) throw new Error(error.message);
+    await loadMasters(); go(); }, 'Type added');
+  m.querySelectorAll('[data-rn]').forEach(b => b.onclick = () => { const t = types.find(x => x.code===b.dataset.rn); const nm = prompt('New name for ' + t.name, t.name); if(!nm || nm.trim()===t.name) return;
+    act(b, async () => { const {error} = await sb.from('sys_vendor_types').update({name:nm.trim()}).eq('code', t.code); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Renamed'); });
+  m.querySelectorAll('[data-tg]').forEach(b => b.onclick = () => { const t = types.find(x => x.code===b.dataset.tg);
+    if(t.is_active && n(t.code) && !confirm(`${n(t.code)} active vendor(s) carry "${t.name}". Deactivate the type anyway? They keep it on old documents but it is hidden from new forms.`)) return;
+    act(b, async () => { const {error} = await sb.from('sys_vendor_types').update({is_active:!t.is_active}).eq('code', t.code); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Saved'); });
+};
+
 /* ============ STOCK ============ */
 VIEWS.stock = async m => {
   const rows = await q('wh_stock_view', b => b.eq('location_id', S.loc.id).order('material').order('batch'));
@@ -1328,10 +1456,10 @@ VIEWS.dispatch = async m => {
     modal(`<h2>New truck at ${esc(S.loc.code)}</h2><div class="grid">
       <div><label>Truck kind</label><select id="nK"><option value="market">Market</option><option value="vendor">Vendor</option><option value="own">SSL own</option><option value="dealer">Dealer's own</option></select></div>
       <div><label>Truck no</label><input id="nT" list="ownTrucks2"><datalist id="ownTrucks2">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
-      <div id="nVW" class="hide"><label>Vendor</label><select id="nV" data-mt="vendor">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
+      <div id="nVW" class="hide"><label>Vendor</label><select id="nV" data-mt="vendor" data-vt="transporter">${vOpts('transporter')}</select></div>
       <div><label>Driver</label><input id="nD"></div></div>
       <div class="row" style="margin-top:10px"><button class="primary" id="nGo">Start loading</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
-    $('nK').onchange = () => $('nVW').classList.toggle('hide', $('nK').value!=='vendor'); $('nV')._opts = () => opt(S.vendors,'id','vendor_name','', 'Select vendor'); wireAdd($('modalBox'));
+    $('nK').onchange = () => $('nVW').classList.toggle('hide', $('nK').value!=='vendor'); $('nV')._opts = () => vOpts('transporter'); wireAdd($('modalBox'));
     $('nGo').onclick = e => act(e.target, async () => {
       const own = $('nK').value==='own'; const tr = S.trucks.find(t=>t.registration_no===$('nT').value.trim().toUpperCase());
       if(own && !tr) throw new Error('Own truck not found in the truck master');
@@ -2166,7 +2294,7 @@ async function rkTruckForm(clientId, after){
     <div><label>Labour Sardar</label><select id="tS" data-mt="sardar">${sardarOpts()}</select></div>
     <div><label>Truck kind</label><select id="tK"><option value="market">Market</option><option value="vendor">Vendor</option><option value="own">SSL own</option><option value="dealer">Dealer's own</option></select></div>
     <div><label>Truck no</label><input id="tT" list="ownTrucks3"><datalist id="ownTrucks3">${S.trucks.map(t=>`<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
-    <div id="tVW" class="hide"><label>Vendor</label><select id="tV" data-mt="vendor">${opt(S.vendors,'id','vendor_name','', 'Select vendor')}</select></div>
+    <div id="tVW" class="hide"><label>Vendor</label><select id="tV" data-mt="vendor" data-vt="transporter">${vOpts('transporter')}</select></div>
     <div><label>Driver</label><input id="tD"></div>
     <div><label class="row" style="margin-top:18px;text-transform:none;letter-spacing:0;font-size:14px"><input type="checkbox" id="tDmg"> Damaged bags (to our warehouse)</label></div>
     <div style="grid-column:1/-1"><label>Destination</label><select id="tP" data-mt="shipto" data-mv="sap_code"></select><div class="muted" id="tSo" style="margin-top:4px"></div></div></div>
@@ -2289,7 +2417,7 @@ async function rkTruckDetail(m, id, backFn){
       return `<select data-csrc="${l.id}" style="height:36px">${same.map(w => `<option value="${w.id}" ${w.id===cur?'selected':''}>${l.source==='wagon'?'Wagon ':'Platform-'}Sr ${w.sheet_sr} · ${esc(w.wagon_no)}</option>`).join('')}</select>`; };
     corrModal(`truck slip ${t.slip_no}`, `<div class="grid">
       <div><label>Truck no</label><input id="ctT" value="${esc(t.truck_no)}"></div>
-      ${t.truck_kind==='vendor' ? `<div><label>Vendor</label><select id="ctV">${opt(S.vendors,'id','vendor_name',t.vendor_id)}</select></div>` : ''}
+      ${t.truck_kind==='vendor' ? `<div><label>Vendor</label><select id="ctV">${vOpts('transporter', t.vendor_id)}</select></div>` : ''}
       <div><label>Driver</label><input id="ctD" value="${esc(t.driver_name||'')}"></div>
       <div><label>Labour Sardar</label><select id="ctS">${sardarOpts(t.sardar_id)}</select></div>
       <div style="grid-column:1/-1"><label>Destination</label><select id="ctP">${destOpts(t.client_id, {siding:t.siding_id, warehouseOnly:t.is_damaged})}</select></div></div>
@@ -2356,7 +2484,6 @@ const MASTERS = {
   'Plants': {t:'sys_plants', where:{kind:'plant'}, cols:['code','name','client_id','is_active'], form:[['client_id','Customer','client'],['code','Location code (e.g. HSP)'],['name','Plant name']], extra:r => ({...r, code:plantCode2(r), kind:'plant', is_live:true}), note:'Code is customer code + location code, e.g. UTC-HSP — type only HSP. Warehouses and rake sidings have their own lists.'},
   'Warehouses': {t:'sys_plants', where:{kind:'warehouse'}, cols:['code','name','company_id','client_id','parent_id','return_intimation','responsibility_start','is_live'], form:[['client_id','Customer','client'],['code','Location code (e.g. HSP)'],['name','Warehouse name'],['company_id','Run by (our company)','company'],['parent_id','Inside plant (optional)','plant'],['return_intimation','Return intimation','sel',['hard','soft']],['responsibility_start','Responsibility start','date']], extra:r => ({...r, code:plantCode2(r), kind:'warehouse'}), labels:{parent_id:'Inside plant', is_live:'Go-live'}, note:'Go-live: a new warehouse is live once its opening stock is entered and signed off (Warehouse › Opening stock). Code is customer code + location code, e.g. UTC-HSP — type only HSP. SSL-run warehouses. Return intimation: hard = no unloading of a dealer return until the customer is informed; soft = unload, flagged until informed.'},
   'Sidings': {t:'sys_plants', where:{kind:'siding'}, cols:['code','name','company_id','district_id','is_active'], form:[['code','Railway code (e.g. HPO, DKAE)'],['name','Siding name'],['company_id','Run by (our company)','company'],['district_id','District','district']], extra:r => ({...r, kind:'siding', station_code:r.code, is_live:true}), labels:{code:'Railway code'}, note:'A rake siding belongs to no customer. Link the warehouses it feeds in Rake Operations › Siding setup.'},
-  'Vendors': {t:'sys_vendors', cols:['company_id','vendor_code','vendor_name','busy_name','is_active'], form:[['company_id','Our company','company'],['vendor_code','Vendor code'],['vendor_name','Vendor name'],['busy_name','Name in BUSY']], note:'Labor contractors and transport vendors. The full vendor master comes with the Vendor module.'},
   'Own trucks': {t:'sys_trucks', cols:['company_id','registration_no','is_active'], form:[['company_id','Our company','company'],['registration_no','Registration no']], note:'SSL own fleet. The full truck master comes with the Truck module.'},
   'Materials': {t:'wh_materials', cols:['client_id','category_id','code','name','is_active'], form:[['client_id','Customer','client'],['category_id','Category','cat'],['code','Type (PSC, OPC, CHD…)'],['name','Name']], note:'Material type under a customer\'s category. If the customer has one category it is picked automatically. The same type name can exist for two customers.'},
   'SAP product mapping': {wh:1, t:'wh_material_map', cols:['client_id','sap_product_code','sap_description','material_id'], form:[['client_id','Customer','client'],['sap_product_code','SAP PRODUCT code'],['sap_description','SAP description'],['material_id','Our material','mat']]},
@@ -2367,9 +2494,9 @@ const MASTERS = {
   'Bag conversion': {wh:1, t:'wh_bag_conversions', cols:['material_id','client_id','plant_id','bags_per_mt','effective_from'], form:[['material_id','Material','mat'],['client_id','Customer','client'],['plant_id','Plant / warehouse (blank = all)','plantall'],['bags_per_mt','Bags per MT','num'],['effective_from','Effective from','date']], note:'Effective-dated: a change is a new row, old rows cannot be edited.'},
   'Labor rates': {wh:1, t:'wh_labor_rates', cols:['location_id','activity','material_id','rate_per_mt','effective_from'], form:[['location_id','Location','loc'],['activity','Activity','sel',['unloading','loading','paltai']],['material_id','Material','mat'],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Same rate for every contractor at the location. Effective-dated.'},
   'Shortage recovery rates': {wh:1, t:'wh_recovery_rates', cols:['location_id','material_id','rate_per_bag','effective_from'], form:[['location_id','Warehouse','loc'],['material_id','Material (blank = warehouse default)','mat'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
-  'Labor contractors': {wh:1, t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Vendor','vendor'],['billing_cycle_days','Billing cycle (days)','num']]},
+  'Labor contractors': {wh:1, t:'wh_contractors', cols:['location_id','vendor_id','billing_cycle_days','is_active'], form:[['location_id','Location','loc'],['vendor_id','Labour contractor (vendor)','vendor','labour_contractor'],['billing_cycle_days','Billing cycle (days)','num']], note:'Only vendors of type Labour contractor are listed. HO adds vendors in the Vendors module.'},
   'Siding ↔ warehouse links': {grp:'rk', t:'sys_plant_sidings', cols:['siding_id','plant_id'], form:[['siding_id','Rake siding','siding'],['plant_id','Customer warehouse / plant','plantall']], note:'Which warehouses a siding feeds. The customers served by a siding come from these links.'},
-  'Labour Sardars': {grp:'rk', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor']], note:'A siding can have more than one Sardar. Add the Sardar in Master data › Vendors first.'},
+  'Labour Sardars': {grp:'rk', t:'rk_sardars', cols:['siding_id','vendor_id','is_active'], form:[['siding_id','Siding','siding'],['vendor_id','Sardar (from vendors)','vendor','sardar']], note:'A siding can have more than one Sardar. Only vendors of type Labour Sardar are listed; HO adds them in the Vendors module.'},
   'Sardar activity rates': {grp:'rk', t:'rk_labor_rates', cols:['sardar_id','activity','rate_per_mt','effective_from'], form:[['sardar_id','Sardar','sardar'],['activity','Activity','sel',['wagon_platform','platform_truck','wagon_truck']],['rate_per_mt','Rate per MT','num'],['effective_from','Effective from','date']], note:'Per siding × Sardar × activity. Effective-dated: a change is a new row.'},
   'Platform shortage recovery rate': {grp:'rk', t:'rk_recovery_rates', cols:['siding_id','rate_per_bag','effective_from'], form:[['siding_id','Siding','siding'],['rate_per_bag','Rate per bag','num'],['effective_from','Effective from','date']]},
   'Wagon sheet material names': {grp:'rk', t:'rk_material_aliases', cols:['client_id','sheet_name','material_id'], form:[['client_id','Customer','client'],['sheet_name','Name as in the wagon sheet'],['material_id','Our material type','mat']], extra:r => ({...r, sheet_name:(r.sheet_name||'').trim().toUpperCase()}), labels:{sheet_name:'Name in wagon sheet', material_id:'Our material type'}, note:'When the customer\'s wagon sheet names a material differently from our material type (e.g. W.PLUS → WALL PLUS), map it once here or while uploading the wagon sheet; every later sheet is matched automatically.'},
@@ -2390,14 +2517,14 @@ const ADD_PRESET = {sardar:() => ({siding_id:S.loc && S.loc.kind==='siding' ? S.
 const ADD_NEW = '__add__';
 const masterPerm = M => M.grp==='ft' ? (M.t==='ft_financiers' ? can('ft_accounts') : can('ft_entry')) || can('wh_master_admin') : M.grp==='rk' ? (can('rk_master_admin') || can('wh_master_admin')) : can('wh_master_admin');
 const distLabel = d => d ? `${d.name} · ${(S.states.find(x=>x.id===d.state_id)||{}).name||''}` : '';
-function typeOpts(t){
+function typeOpts(t, vt){
   const P = S.plants, pl = x => `${x.code} · ${x.name}`;
   switch(t){
     case 'client': return opt(S.clients,'id','name');
     case 'company': return opt(S.companies.filter(c=>c.is_active),'id',c=>`${c.code} · ${c.name}`);
     case 'mat': return matOpts();
     case 'loc': return opt(P,'id',pl);
-    case 'vendor': return opt(S.vendors,'id','vendor_name');
+    case 'vendor': return opt(S.vendors.filter(v => v.is_active && (!vt || (v.kinds||[]).includes(vt))),'id','vendor_name');
     case 'plantall': return opt(P.filter(x=>x.kind!=='siding'),'id',pl);
     case 'plant': return opt(P.filter(x=>x.kind==='plant'),'id',pl);
     case 'siding': return opt(P.filter(x=>x.kind==='siding'),'id',pl);
@@ -2411,13 +2538,13 @@ function typeOpts(t){
     case 'soldto': return opt(S.soldTos,'id',x=>`${x.name} · ${x.sap_code} · ${clientCode(x.client_id)}`);
   }
 }
-const addOpt = t => ADD_FOR[t] && masterPerm(MASTERS[ADD_FOR[t]]) ? `<option value="${ADD_NEW}">+ Add new ${esc(ADD_LABEL[t])}…</option>` : '';
+const addOpt = t => t==='vendor' ? (can('vendor_admin') ? `<option value="${ADD_NEW}">+ Add new vendor…</option>` : '') : ADD_FOR[t] && masterPerm(MASTERS[ADD_FOR[t]]) ? `<option value="${ADD_NEW}">+ Add new ${esc(ADD_LABEL[t])}…</option>` : '';
 function masterInput([k,l,t,o], pre){
   const id = pre + k;
   if(t==='sel') return `<div><label>${esc(l)}</label><select id="${id}">${o.map(x=>`<option>${x}</option>`).join('')}</select></div>`;
   if(t==='active') return `<div><label>${esc(l)}</label><select id="${id}"><option value="true">Active</option><option value="false">Inactive (hidden from new entries)</option></select></div>`;
-  const to = typeOpts(t);
-  if(to !== undefined) return `<div><label>${esc(l)}</label><select id="${id}" data-mt="${t}"><option value=""></option>${to}${addOpt(t)}</select></div>`;
+  const to = typeOpts(t, t==='vendor' ? o : undefined);
+  if(to !== undefined) return `<div><label>${esc(l)}</label><select id="${id}" data-mt="${t}"${t==='vendor' && o ? ` data-vt="${o}"` : ''}><option value=""></option>${to}${addOpt(t)}</select></div>`;
   return `<div><label>${esc(l)}</label><input id="${id}" type="${t==='num'?'number':t==='date'?'date':'text'}" step="any"></div>`;
 }
 // makes every <select data-mt="…"> inside root offer "+ Add new"; s._opts may give its own option list, data-mv the value column
@@ -2429,12 +2556,14 @@ function wireAdd(root){
     s.addEventListener('change', () => {
       if(s.value !== ADD_NEW){ s.dataset.prev = s.value; return; }
       s.value = s.dataset.prev || '';
-      quickAdd(s.dataset.mt, row => {
+      const after = row => {
         const t = s.dataset.mt;
-        s.innerHTML = (s._opts ? s._opts() : '<option value=""></option>' + typeOpts(t)) + addOpt(t);
+        s.innerHTML = (s._opts ? s._opts() : '<option value=""></option>' + typeOpts(t, s.dataset.vt)) + addOpt(t);
         s.value = row ? row[s.dataset.mv || 'id'] : ''; s.dataset.prev = s.value;
         s.dispatchEvent(new Event('change'));
-      }, s._preset ? s._preset() : null);
+      };
+      if(s.dataset.mt === 'vendor') vnForm(null, {kinds: s.dataset.vt ? [s.dataset.vt] : []}, after);
+      else quickAdd(s.dataset.mt, after, s._preset ? s._preset() : null);
     });
   });
 }
@@ -2474,7 +2603,7 @@ function quickAdd(t, done, preset){
 // what can be changed on an existing master row (codes and owners stay fixed: documents already carry them);
 // effective-dated rates are never edited — a change is a new row with a new date
 const EDIT_CFG = {'Our companies':{lock:['code']}, 'Customers':{lock:['code']}, 'Material categories':{lock:['client_id']}, 'Plants':{lock:['client_id','code']}, 'Warehouses':{lock:['client_id','code']},
-  'Sidings':{lock:['code']}, 'Vendors':{lock:['vendor_code']}, 'Own trucks':{}, 'Materials':{lock:['client_id']}, 'SAP product mapping':{lock:['client_id']},
+  'Sidings':{lock:['code']}, 'Own trucks':{}, 'Materials':{lock:['client_id']}, 'SAP product mapping':{lock:['client_id']},
   'Sold-To parties':{lock:['client_id','sap_code']}, 'Ship-To parties':{lock:['client_id']}, 'Destinations':{}, 'Districts':{},
   'Labor contractors':{lock:['location_id','vendor_id']}, 'Labour Sardars':{lock:['siding_id','vendor_id']},
   'Wagon sheet material names':{lock:['client_id','sheet_name']}, 'Customer DC/WC bearer':{key:['siding_id','client_id','effective_from'], lock:['siding_id','client_id','effective_from']}, 'Siding ↔ warehouse links':{remove:true, key:['plant_id','siding_id']}, 'Customer email settings':{key:['client_id'], lock:['client_id']}, 'Truck models':{}, 'Financiers':{}};
