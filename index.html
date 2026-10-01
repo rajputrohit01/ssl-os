@@ -1425,7 +1425,7 @@ async function rkDetail(m, id, opts = {}){
       })()}], wagons)}</div>`;
     const readyW = wagons.filter(w => w.status==='unloading' && !openSlip(w.id)), notStartedW = wagons.filter(w => w.status==='arrived');
     h += `<div class="card"><h2>Unloading slips</h2>
-      ${can('rk_unload') && (readyW.length || notStartedW.length) ? `<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">${readyW.length ? '<span class="muted">New slip for:</span>' : ''}${readyW.map(w => `<button class="primary sm" data-uslip="${w.id}">Wagon Sr ${w.sheet_sr} · ${esc(w.wagon_no)}</button>`).join('')}
+      ${can('rk_unload') && r.status!=='closed' && (readyW.length || notStartedW.length) ? `<div class="row" style="flex-wrap:wrap;gap:6px;margin-bottom:10px">${readyW.length ? '<span class="muted">New slip for:</span>' : ''}${readyW.map(w => `<button class="primary sm" data-uslip="${w.id}">Wagon Sr ${w.sheet_sr} · ${esc(w.wagon_no)}</button>`).join('')}
         ${notStartedW.length ? `<span class="muted">${notStartedW.length} wagon(s) not started yet — take the before-photo and start unloading on the Wagons page.</span>` : ''}</div>` : ''}
       ${table([{h:'Slip',k:'slip_no'},{h:'Wagon',f:u=>{ const w = W(u.wagon_id)||{}; return `Sr ${w.sheet_sr ?? ''} · ${esc(w.wagon_no||'')}`; }},{h:'Sardar',f:u=>esc(sardarName(u.sardar_id))},{h:'Company MT',n:1,f:u=>n3(u.company_mt)},
       {h:'Good MT',n:1,f:u=>u.status==='returned'?n3(u.good_mt):''},{h:'Damaged MT',n:1,f:u=>u.status==='returned'&&+u.damaged_mt?n3(u.damaged_mt):''},{h:'Status',f:u=>chip(u.status, u.status==='returned'?'ok':u.status==='open'?'info':'')},
@@ -1824,14 +1824,14 @@ async function rkStagePage(m, title, only, emptyMsg){
   let sel = rakes.find(r => r.id === S.rkSel[S.loc.id]) || running[0] || null;
   const lab = r => `${r.rake_no} · ${r.client_code} · ${r.rr_no ? 'RR ' + r.rr_no : 'no RR yet'} · ${(RK_STEPS.find(x => x[0]===r.status)||[,r.status])[1]}`;
   m.innerHTML = `<div class="row" style="justify-content:space-between;align-items:flex-end;margin-bottom:10px"><h1 style="margin:0">${esc(title)} · ${esc(S.loc.code)}</h1>
-      <div style="flex:1 1 320px;max-width:560px"><label>Rake</label><select id="rkPick">${rakes.length ? `
+      <div style="flex:1 1 320px;max-width:560px"><label>Rake</label><select id="rkPick">${!sel && rakes.length ? '<option value="" selected>— Choose a rake —</option>' : ''}${rakes.length ? `
         ${running.length ? `<optgroup label="Running (${running.length})">${running.map(r => `<option value="${r.id}" ${sel && r.id===sel.id ? 'selected' : ''}>${esc(lab(r))}</option>`).join('')}</optgroup>` : ''}
         ${closed.length ? `<optgroup label="Closed (${closed.length})">${closed.map(r => `<option value="${r.id}" ${sel && r.id===sel.id ? 'selected' : ''}>${esc(lab(r))}</option>`).join('')}</optgroup>` : ''}` : '<option value="">No rake yet</option>'}</select></div></div>
-    ${!running.length && rakes.length && (!sel || sel.status==='closed') ? '<div class="muted" style="margin-bottom:8px">No rake is running at this siding. Closed rakes can be picked above.</div>' : ''}
+    ${sel && sel.status==='closed' ? `<div class="warnbox" style="margin-bottom:8px">Closed rake ${esc(sel.rake_no)}: view only. To change anything, reopen it from Close &amp; history.</div>` : ''}
     <div id="rkStage"></div>`;
-  if(!sel){ $('rkStage').innerHTML = `<div class="empty">No rake running at ${esc(S.loc.code)}. Create one in <a href="#rk/rk_board">Rake intimation</a>.</div>`; }
+  if(!sel){ $('rkStage').innerHTML = `<div class="empty">No rake is running at ${esc(S.loc.code)}.${closed.length ? ` Pick a closed rake above to see its ${esc(title.toLowerCase())}.` : ''} New rakes are created in <a href="#rk/rk_board">Rake intimation</a>.</div>`; }
   else { S.rkSel[S.loc.id] = sel.id; await rkDetail($('rkStage'), sel.id, {only, empty:emptyMsg}); }
-  $('rkPick').onchange = () => { S.rkSel[S.loc.id] = $('rkPick').value; go(); };
+  $('rkPick').onchange = () => { if(!$('rkPick').value) return; S.rkSel[S.loc.id] = $('rkPick').value; go(); };
 }
 VIEWS.rk_sheet = m => rkStagePage(m, 'Wagon sheet (RR)', ['sheet'], 'The RR and wagon sheet are already in for this rake (they can be replaced only before arrival).');
 VIEWS.rk_arrival = m => rkStagePage(m, 'Arrival', ['arrival'], 'Upload the RR and wagon sheet first (Wagon sheet page).');
