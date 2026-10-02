@@ -1556,6 +1556,8 @@ const UP_SETS = [
   {k:'fleet', g:'7 · Fleet', n:'Existing trucks, loans, EMIs, documents', link:'#fl/ft_import', perm:'ft_import', note:'Fleet has its own upload: only registration no. + company are required; re-upload fills blanks.'},
   {k:'fastag', g:'7 · Fleet', n:'FASTag list', link:'#fl/fl_fastag', perm:'ft_import', note:'Bank / issuer tag list mapped to trucks by vehicle number.'},
   {k:'opening', g:'8 · Opening balances', n:'Warehouse opening stock', rpc:'opening', perm:'wh_operate', cols:[['Warehouse','location_id','ref:warehouse',1],['Material type','material_id','ref:mat',1],['Physical MT','physical_mt','num',1],['Customer SAP MT','sap_mt','num',1],['Reason if different','reason','text']], note:'Only for warehouses not yet live. A difference needs a reason and approval, as on the Opening stock screen.'},
+  {k:'pd_hist', g:'9 · Trip Entry', n:'Plant Dispatch history (old sheet)', link:'#pd/pd_import', perm:'pd_admin', note:'One time per plant before go-live: the old sheet in row order; the balance must match the sheet.'},
+  {k:'pd_sap', g:'9 · Trip Entry', n:'Customer SAP shipment report', link:'#pd/pd_sap', perm:'pd_admin', note:'Customer freight (revenue) per delivery + truck.'},
 ];
 const upCan = d => can(d.perm) || can('wh_master_admin') && d.perm !== 'vendor_admin' && d.perm !== 'ft_import' || S.me.admin;
 
@@ -1662,6 +1664,424 @@ VIEWS.up_gaps = async m => {
     ${table([{h:'Record',k:'record'},{h:'Missing',k:'missing'},{h:'Note',k:'note'}], x.rows.slice(0, 500))}${x.rows.length > 500 ? `<p class="muted">First 500 of ${x.rows.length} shown; download the CSV for all.</p>` : ''}</details>`).join('') || '<div class="card"><div class="empty">No gaps. Every loaded record is complete.</div></div>'}`;
   $('ugCsv').onclick = () => csv(G.flatMap(x => x.rows.map(r => ({list:x.n, ...r}))), 'data-gaps');
 };
+
+/* ============ TRIP ENTRY (Plant Dispatch) ============ */
+// Standalone on our database: no Google Sheet write-back or sync. The old Plant Dispatch sheet is loaded once (History import) and then frozen.
+// Plant cash book: + cash received, + shortage recovered; − trip cash advance, − incident expense paid by pass code. Diesel is pump credit, never cash.
+// Own truck = vendor VD0001: cash advance by rule (plant × truck type); a different amount needs a reason. Market truck: cash typed, within the plant cap.
+const PD_TT = ['04WH-LCV','06WH-HCV','10WH','12WH','14WH','16WH-HCV','TRACTOR TRAILER'];
+const PD_RULE_COLS = [['driver','Driver'],['khamali_per_mt','Khamali / MT'],['staff_commission','Staff comm.'],['driver_extra','Driver extra'],['plant_exps','Plant exps'],['police_exps','Police exps'],['parking','Parking'],['gdn_jalpani','GDN jalpani'],['token','Token']];
+const PD_KIND = {opening:'Opening balance', trip:'Trip', cash_received:'Cash received', shortage:'Shortage received', expense:'Expense passed', diesel_adjust:'Diesel adjusted', empty_run_diesel:'Empty-run diesel'};
+const PD_INC_TYPES = ['Police','Breakdown / repair','Tyre puncture','Toll','Parking','Loading / unloading','Accident','Other'];
+const pdNorm = v => String(v || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const pdOwnTruck = no => S.trucks.find(t => pdNorm(t.registration_no) === pdNorm(no));
+const pdVendorLbl = v => `${v.vendor_code} · ${v.vendor_name}`;
+const pdFindVendor = s => { const c = String(s || '').trim().split(/\s*·\s*/)[0].toUpperCase(); return S.vendors.find(v => v.vendor_code === c) || S.vendors.find(v => v.vendor_name && v.vendor_name.toUpperCase() === String(s || '').trim().toUpperCase()); };
+const pdMonth = () => { S.pdM = S.pdM || localMonth(); return S.pdM; };
+const pdMonthSel = id => `<select id="${id}" style="width:auto">${monthsBack(12).map(p => `<option value="${p}" ${p===pdMonth()?'selected':''}>${monthLbl(p)}</option>`).join('')}</select>`;
+const pdRange = () => { const a = pdMonth(); return [a + 'T00:00:00+05:30', addMonths(a, 1) + 'T00:00:00+05:30']; };
+async function pdCfgs(){ S.pdCfg = await q('pd_plant_config'); return S.pdCfg; }
+async function pdCfg(L){ if(!L) return null; await pdCfgs(); return S.pdCfg.find(c => c.plant_id === L.id) || null; }
+const pdNoCfg = m => { m.innerHTML = `<div class="card"><div class="empty">${S.loc ? esc(S.loc.code) + ' is not set up for trip entry yet.' : 'No plant assigned to you.'}${can('pd_admin') ? ' ' + linkBtn('#pd/pd_setup', 'Open setup') : ' Ask HO to set it up.'}</div></div>`; };
+const pdPlantName = id => { const p = S.plants.find(x => x.id === id); return p ? p.code : ''; };
+
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'pd', name:'Trip Entry', icon:'truck', desc:'Plant dispatch: trips with LR and cash advance, plant cash book, diesel by pump, incidents paid by pass code, customer SAP freight, reports',
+    usesLocation:true, locKinds:['plant'],
+    visible: () => can('pd_view'),
+    screens: () => { const t = [], L = S.loc;
+      if(L) t.push(['#', L.code + ' · plant']);
+      if(L && can('pd_entry')) t.push(['pd_trip','New trip']);
+      if(L) t.push(['pd_cash','Cash book'],['pd_trips','Trips'],['pd_diesel','Diesel by pump']);
+      t.push(['#','Office']);
+      if(can('pd_incident_raise') || can('pd_incident_approve')) t.push(['pd_inc','Incidents']);
+      t.push(['pd_reports','Reports'],['pd_sap','Customer SAP freight'],['pd_gaps','Trip gaps']);
+      if(can('pd_admin')) t.push(['#','Setup'],['pd_setup','Plant setup & rules'],['pd_import','History import']);
+      return t; } });
+ICONS.truck = ICONS.truck || '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5h13v11H1z"/><path d="M14 9h4l3 3v4h-7"/><circle cx="5.5" cy="18.5" r="1.8"/><circle cx="17.5" cy="18.5" r="1.8"/></svg>';
+MOD_SHORT.pd = 'Plant trips, cash book, diesel, incidents';
+
+/* ---- new trip (mobile first) ---- */
+VIEWS.pd_trip = async m => {
+  const L = S.loc, cfg = await pdCfg(L); if(!cfg) return pdNoCfg(m);
+  const recent = await q('pd_trip_list', b => b.eq('plant_id', L.id).order('seq', {ascending:false}).limit(10));
+  const mats = S.materials.filter(x => x.is_active && x.client_id === L.client_id);
+  const pumps = S.vendors.filter(v => v.is_active && (v.kinds||[]).includes('diesel'));
+  const parties = S.parties.filter(p => p.client_id === L.client_id && p.is_active !== false);
+  m.innerHTML = `<h1>New trip · ${esc(L.code)}</h1>
+  <p class="muted">Next LR <b>${esc((cfg.lr_prefix||'') + String(cfg.lr_next).padStart(cfg.lr_digits, '0'))}</b> · consignment <b>${cfg.consignment_next}</b>. Own truck (VD0001): the cash advance comes from the rule.</p>
+  <div class="card"><div class="grid">
+    <div class="field"><label>Delivery no. *</label><input id="tDel" inputmode="numeric" autocomplete="off"></div>
+    <div class="field"><label>Truck no. *</label><input id="tTruck" autocomplete="off" style="text-transform:uppercase" list="tTruckL"><datalist id="tTruckL">${S.trucks.map(t => `<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
+    <div class="field"><label>Vendor *</label><input id="tVen" list="tVenL" autocomplete="off" placeholder="code or name"><datalist id="tVenL">${S.vendors.filter(v => v.is_active && (v.kinds||[]).includes('transporter')).map(v => `<option value="${esc(pdVendorLbl(v))}">`).join('')}</datalist><div class="muted" id="tVenInfo" style="font-size:12px"></div></div>
+    <div class="field"><label>Quantity (MT) *</label><input id="tQty" type="number" step="0.001" min="0" inputmode="decimal"></div>
+    <div class="field"><label>Material *</label><select id="tMat">${opt(mats, 'id', 'code', mats.length === 1 ? mats[0].id : '', 'Select')}</select></div>
+    <div class="field"><label>Ship-To party</label><input id="tParty" list="tPartyL" autocomplete="off" placeholder="name as in SAP"><datalist id="tPartyL">${parties.map(p => `<option value="${esc(p.sap_code + ' · ' + p.party_name)}">`).join('')}</datalist></div>
+    <div class="field"><label>Destination</label><input id="tDest" autocomplete="off"></div>
+    <div class="field"><label>District</label><input id="tDist" list="tDistL" autocomplete="off"><datalist id="tDistL">${S.districts.map(d => `<option value="${esc(d.name)}">`).join('')}</datalist></div>
+    <div class="field"><label>Petrol pump</label><select id="tPump">${opt(pumps, 'id', 'vendor_name', pumps.length === 1 ? pumps[0].id : '', 'No diesel')}</select></div>
+    <div class="field"><label>Diesel ₹</label><input id="tDiesel" type="number" step="1" min="0" inputmode="numeric"></div>
+    <div class="field"><label>Cash advance ₹</label><input id="tCash" type="number" step="1" min="0" inputmode="numeric"><div class="muted" id="tAdv" style="font-size:12px"></div></div>
+    <div class="field hide" id="tReasonF"><label>Reason for a different advance *</label><input id="tReason"></div>
+    <div class="field"><label>Invoice no.</label><input id="tInv" autocomplete="off"></div>
+    <div class="field"><label>Order type</label><select id="tOt"><option value="trade">Trade</option><option value="non_trade">Non-trade</option><option value="sto">Stock transfer (STO)</option></select></div>
+    <div class="field"><label>Customer mobile</label><input id="tMob" inputmode="tel"></div>
+    <div class="field"><label>Tarpaulin</label><select id="tTarp"><option value="">—</option><option value="true">Yes</option><option value="false">No</option></select></div>
+  </div><div class="row" style="margin-top:12px"><button class="primary" id="tSave">Save trip</button></div></div>
+  <div class="card"><h2>Last trips</h2>${table([{h:'LR',k:'lr_no'},{h:'Time',f:r=>dt(r.trip_at)},{h:'Delivery',k:'delivery_no'},{h:'Truck',f:r=>esc(r.truck_no) + (r.own_truck ? ' ' + chip('own') : '')},{h:'Vendor',k:'vendor_code'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Cash',n:1,f:r=>inr(r.cash_amt) + (r.cash_reason && !r.cash_auto && r.own_truck ? ' ' + chip('changed','warn') : '')},{h:'Diesel',n:1,f:r=>inr(r.diesel_amt)}], recent, 'No trips yet.')}</div>`;
+  let adv = null;
+  const ven = () => pdFindVendor($('tVen').value);
+  const refresh = async () => {
+    const tr = pdOwnTruck($('tTruck').value), v = ven(), own = v && v.vendor_code === 'VD0001';
+    $('tVenInfo').textContent = tr && !own ? 'This truck is in our fleet: use VD0001.' : own && !tr && $('tTruck').value ? 'Not in our fleet: VD0001 is only for our own trucks.' : own && tr ? 'Own truck · type ' + (tr.truck_type || 'not set') : '';
+    adv = null; $('tAdv').textContent = '';
+    if(own && tr){
+      const qty = +$('tQty').value;
+      if(!tr.truck_type){ $('tAdv').textContent = 'Truck type not set: enter the cash advance (HO to set the type in setup).'; }
+      else if(qty > 0){ adv = await rpc('pd_advance', {p_plant:L.id, p_truck_type:tr.truck_type, p_qty:qty, p_on:today()});
+        if(adv && adv.total != null){ $('tCash').placeholder = adv.total; if(!$('tCash').value) $('tCash').value = adv.total;
+          $('tAdv').innerHTML = 'By rule ' + inr(adv.total) + ' = ' + Object.entries(adv.breakdown || {}).map(([k, x]) => `${k.replace(/_/g,' ')} ${inr(x)}`).join(' + '); }
+        else $('tAdv').textContent = 'No advance rule for ' + tr.truck_type + ': enter the amount.'; }
+    } else if(v && !own && cfg.market_cash_cap) $('tAdv').textContent = 'Market truck: cash up to ' + inr(cfg.market_cash_cap);
+    $('tReasonF').classList.toggle('hide', !(adv && adv.total != null && $('tCash').value !== '' && +$('tCash').value !== +adv.total));
+  };
+  $('tTruck').onchange = () => { $('tTruck').value = pdNorm($('tTruck').value); if(pdOwnTruck($('tTruck').value) && !$('tVen').value){ const o = S.vendors.find(v => v.vendor_code === 'VD0001'); if(o) $('tVen').value = pdVendorLbl(o); } $('tCash').value = ''; refresh(); };
+  $('tVen').onchange = () => { $('tCash').value = ''; refresh(); };
+  $('tQty').onchange = () => { if(adv) $('tCash').value = ''; refresh(); };
+  $('tCash').oninput = () => $('tReasonF').classList.toggle('hide', !(adv && adv.total != null && $('tCash').value !== '' && +$('tCash').value !== +adv.total));
+  $('tParty').onchange = () => { const code = $('tParty').value.split(' · ')[0].trim(); const p = parties.find(x => x.sap_code === code); if(p){ if(!$('tDest').value) $('tDest').value = p.destination || ''; if(!$('tDist').value) $('tDist').value = p.district || ''; } };
+  $('tSave').onclick = e => {
+    const v = ven(); if(!v) return toast('Choose the vendor from the list', 'err');
+    const code = $('tParty').value.split(' · ')[0].trim(); const p = parties.find(x => x.sap_code === code);
+    const dist = S.districts.find(d => d.name.toUpperCase() === $('tDist').value.trim().toUpperCase());
+    const payload = {plant_id:L.id, delivery_no:$('tDel').value.trim(), truck_no:$('tTruck').value, vendor_id:v.id, qty_mt:$('tQty').value, material_id:$('tMat').value,
+      party_name:p ? p.party_name : $('tParty').value.trim(), ship_to_id:p ? p.id : null, destination:$('tDest').value, district:$('tDist').value, district_id:dist ? dist.id : null,
+      pump_id:$('tPump').value || null, diesel_amt:$('tDiesel').value, cash_amt:$('tCash').value, cash_reason:$('tReason').value, invoice_no:$('tInv').value,
+      order_type:$('tOt').value, customer_mobile:$('tMob').value, tarpaulin:$('tTarp').value || null};
+    act(e.target, () => rpc('pd_trip_save', {p:payload})).then(r => {
+      modal(`<h2>Trip saved</h2><div class="kpi"><div><span>LR no.</span><b>${esc(r.lr_no)}</b></div><div><span>Consignment</span><b>${r.consignment_no}</b></div><div><span>Pay cash</span><b>${inr(r.cash_amt)}</b></div></div>
+        <div class="row"><button class="primary" id="tNext">Next trip</button></div>`);
+      $('tNext').onclick = () => { closeModal(); go(); };
+    }).catch(() => {});
+  };
+};
+
+/* ---- plant cash book ---- */
+VIEWS.pd_cash = async m => {
+  const L = S.loc, cfg = await pdCfg(L); if(!cfg) return pdNoCfg(m);
+  const [a, z] = pdRange();
+  const [rows, before, last] = await Promise.all([
+    qAll('pd_cash_book', b => b.eq('plant_id', L.id).gte('at_', a).lt('at_', z).order('seq')),
+    q('pd_cash_book', b => b.eq('plant_id', L.id).lt('at_', a).order('seq', {ascending:false}).limit(1)),
+    q('pd_cash_book', b => b.eq('plant_id', L.id).order('seq', {ascending:false}).limit(1))]);
+  const sum = k => rows.reduce((s, r) => s + (+r[k] || 0), 0);
+  const tdy = rows.filter(r => String(r.at_).slice(0, 10) === today());
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Cash book · ${esc(L.code)}</h1><div class="row">${pdMonthSel('cbM')}<button class="ghost sm" id="cbCsv">Download CSV</button></div></div>
+  <div class="kpi"><div><span>Cash in hand now</span><b>${inr(last[0] ? last[0].balance : cfg.opening_balance)}</b></div><div><span>Month opening</span><b>${inr(before[0] ? before[0].balance : 0)}</b></div>
+    <div><span>Received this month</span><b>${inr(sum('cash_in'))}</b></div><div><span>Paid this month</span><b>${inr(sum('cash_out'))}</b></div><div><span>Paid today</span><b>${inr(tdy.reduce((s, r) => s + (+r.cash_out||0), 0))}</b></div></div>
+  ${can('pd_entry') ? `<div class="row" style="margin-bottom:12px"><button class="primary sm" data-k="cash_received">+ Cash received</button><button class="ghost sm" data-k="shortage">+ Shortage received</button>
+    <button class="ghost sm" data-k="pass">Pay incident (pass code)</button><button class="ghost sm" data-k="diesel_adjust">Diesel adjusted</button><button class="ghost sm" data-k="empty_run_diesel">Empty-run diesel</button></div>` : ''}
+  <div class="card">${table([{h:'Time',f:r=>r.kind === 'opening' ? d8(r.at_) : dt(r.at_)},{h:'Type',f:r=>esc(PD_KIND[r.kind] || r.kind) + (r.source === 'import' ? ' ' + chip('old sheet') : '')},{h:'Detail',f:r=>esc([r.delivery_no, r.ref_text].filter(Boolean).join(' · '))},{h:'Truck',k:'truck_no'},
+    {h:'In',n:1,f:r=>+r.cash_in ? inr(r.cash_in) : ''},{h:'Out',n:1,f:r=>+r.cash_out ? inr(r.cash_out) : ''},{h:'Diesel',n:1,f:r=>+r.diesel ? inr(r.diesel) : ''},{h:'Balance',n:1,f:r=>'<b>' + inr(r.balance) + '</b>'}], rows.slice().reverse(), 'No entries this month.')}</div>`;
+  $('cbM').onchange = () => { S.pdM = $('cbM').value; go(); };
+  $('cbCsv').onclick = () => csv(rows.map(r => ({time:r.at_, type:PD_KIND[r.kind] || r.kind, delivery:r.delivery_no, detail:r.ref_text, truck:r.truck_no, cash_in:r.cash_in, cash_out:r.cash_out, diesel:r.diesel, balance:r.balance})), 'cash-book-' + L.code + '-' + pdMonth().slice(0, 7));
+  m.querySelectorAll('[data-k]').forEach(b => b.onclick = () => pdEntryForm(b.dataset.k));
+};
+function pdEntryForm(k){
+  const L = S.loc; const pumps = S.vendors.filter(v => v.is_active && (v.kinds||[]).includes('diesel'));
+  if(k === 'pass'){
+    modal(`<h2>Pay incident</h2><p class="muted">The driver gives the 6-digit pass code issued when the incident was approved. The approved amount is paid from plant cash.</p>
+      <div class="field"><label>Pass code</label><input id="pcCode" inputmode="numeric" maxlength="6" style="font-size:22px;letter-spacing:.3em"></div>
+      <div class="row"><button class="primary" id="pcGo">Check and pay</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('pcGo').onclick = e => act(e.target, () => rpc('pd_incident_pay', {p_plant:L.id, p_pass_code:$('pcCode').value.trim()})).then(r => {
+      modal(`<h2>Pay ${inr(r.amount)}</h2><p>Incident <b>${esc(r.incident_no)}</b> · truck <b>${esc(r.truck_no)}</b>. Entered in the cash book.</p><button class="primary" onclick="closeModal();go()">Done</button>`); }).catch(() => {});
+    return;
+  }
+  const cash = k === 'cash_received' || k === 'shortage';
+  modal(`<h2>${esc(PD_KIND[k])}</h2><div class="grid">
+    ${cash ? `<div class="field"><label>Amount ₹ *</label><input id="peAmt" type="number" min="0" step="1"></div>
+      <div class="field" style="grid-column:1/-1"><label>${k === 'cash_received' ? 'Received from *' : 'Details * (challan, customer, bags, truck)'}</label><input id="peRef"></div>
+      ${k === 'shortage' ? '<div class="field"><label>Truck</label><input id="peTruck" style="text-transform:uppercase"></div><div class="field"><label>Bags</label><input id="peBags" type="number" min="0"></div><div class="field"><label>Customer</label><input id="peCust"></div>' : ''}`
+    : `<div class="field"><label>Petrol pump *</label><select id="pePump">${opt(pumps, 'id', 'vendor_name', pumps.length === 1 ? pumps[0].id : '', 'Select')}</select></div>
+      <div class="field"><label>Diesel ₹ *</label><input id="peD" type="number" min="0" step="1"></div>
+      <div class="field"><label>Truck${k === 'empty_run_diesel' ? ' *' : ''}</label><input id="peTruck" style="text-transform:uppercase"></div>
+      <div class="field" style="grid-column:1/-1"><label>${k === 'diesel_adjust' ? 'Adjusted against (other plant trip / reason)' : 'Reason / approved by'}</label><input id="peRef"></div>`}
+  </div><p class="muted">${cash ? 'Adds to plant cash.' : k === 'diesel_adjust' ? 'Reduces the diesel owed to the pump. No cash effect.' : 'Diesel on pump credit for a truck running empty. No cash effect.'}</p>
+  <div class="row"><button class="primary" id="peSave">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  const v = id => $(id) ? $(id).value : null;
+  $('peSave').onclick = e => act(e.target, () => rpc('pd_entry_save', {p:{plant_id:L.id, kind:k, amount:v('peAmt'), ref_text:v('peRef'), pump_id:v('pePump') || null, diesel_amt:v('peD'), truck_no:v('peTruck'), bags:v('peBags'), for_customer:v('peCust')}}), 'Saved').then(() => { closeModal(); go(); }).catch(() => {});
+}
+
+/* ---- trips list (month) ---- */
+VIEWS.pd_trips = async m => {
+  const L = S.loc; if(!L) return pdNoCfg(m);
+  const [a, z] = pdRange();
+  const rows = await qAll('pd_trip_list', b => b.eq('plant_id', L.id).gte('trip_at', a).lt('trip_at', z).order('seq', {ascending:false}));
+  const act_ = rows.filter(r => r.status === 'active');
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Trips · ${esc(L.code)}</h1><div class="row">${pdMonthSel('trM')}<input id="trF" placeholder="Find truck / delivery / LR" style="width:200px"><button class="ghost sm" id="trCsv">Download CSV</button></div></div>
+  <div class="kpi"><div><span>Trips</span><b>${act_.length}</b></div><div><span>MT</span><b>${n3(act_.reduce((s, r) => s + (+r.qty_mt||0), 0))}</b></div><div><span>Own / market</span><b>${act_.filter(r => r.own_truck).length} / ${act_.filter(r => !r.own_truck).length}</b></div>
+    <div><span>Cash advance</span><b>${inr(act_.reduce((s, r) => s + (+r.cash_amt||0), 0))}</b></div><div><span>Diesel</span><b>${inr(act_.reduce((s, r) => s + (+r.diesel_amt||0), 0))}</b></div><div><span>Customer freight (SAP)</span><b>${inr(act_.reduce((s, r) => s + (+r.cust_freight||0), 0))}</b></div></div>
+  <div class="card" id="trT"></div>`;
+  const draw = () => { const f = pdNorm($('trF').value); const list = f ? rows.filter(r => [r.truck_no, r.delivery_no, r.lr_no].some(x => pdNorm(x).includes(f))) : rows;
+    $('trT').innerHTML = table([{h:'LR',k:'lr_no'},{h:'Time',f:r=>dt(r.trip_at)},{h:'Delivery',k:'delivery_no'},{h:'Truck',f:r=>esc(r.truck_no) + (r.own_truck ? ' ' + chip('own') : '')},{h:'Vendor',f:r=>esc(r.vendor_code || '') + (r.vendor_name ? '' : ' ' + chip('not in master','bad'))},
+      {h:'Party · destination',f:r=>esc([r.party_name, r.destination].filter(Boolean).join(' · '))},{h:'Material',k:'material'},{h:'MT',n:1,f:r=>n3(r.qty_mt)},{h:'Cash',n:1,f:r=>inr(r.cash_amt) + (r.own_truck && r.cash_reason ? ' ' + chip(r.cash_reason,'warn') : '')},{h:'Diesel',n:1,f:r=>inr(r.diesel_amt)},
+      {h:'SAP rate',n:1,f:r=>r.cust_rate == null ? chip('not in SAP','warn') : inr(r.cust_rate)},{h:'',f:r=>r.status === 'cancelled' ? chip('cancelled: ' + (r.cancel_reason || ''),'bad') : can('pd_correct') ? `<button class="ghost sm" data-c="${r.id}">Cancel</button>` : ''}], list.slice(0, 1000), 'No trips this month.');
+    $('trT').querySelectorAll('[data-c]').forEach(b => b.onclick = () => pdCancel('trip', b.dataset.c)); };
+  draw(); $('trF').oninput = draw;
+  $('trM').onchange = () => { S.pdM = $('trM').value; go(); };
+  $('trCsv').onclick = () => csv(rows.map(r => ({lr:r.lr_no, consignment:r.consignment_no, time:r.trip_at, delivery:r.delivery_no, truck:r.truck_no, own:r.own_truck ? 'yes' : 'no', vendor:r.vendor_code, busy_name:r.busy_name, party:r.party_name, destination:r.destination, district:r.district,
+    material:r.material, qty_mt:r.qty_mt, pump:r.pump, diesel:r.diesel_amt, cash:r.cash_amt, cash_rule:r.cash_auto ? 'rule' : r.cash_reason || '', invoice:r.invoice_no, order_type:r.order_type, sap_rate:r.cust_rate, sap_freight:r.cust_freight, vendor_rate:r.vendor_rate, status:r.status})), 'trips-' + L.code + '-' + pdMonth().slice(0, 7));
+};
+function pdCancel(kind, id){
+  modal(`<h2>Cancel this ${kind}</h2><p class="muted">It stays in the record as cancelled and drops out of the cash book and reports.</p><div class="field"><label>Reason *</label><input id="pcR"></div>
+    <div class="row"><button class="primary" id="pcOk">Cancel it</button><button class="ghost" onclick="closeModal()">Keep</button></div>`);
+  $('pcOk').onclick = e => act(e.target, () => rpc('pd_cancel', {p_kind:kind, p_id:id, p_reason:$('pcR').value}), 'Cancelled').then(() => { closeModal(); go(); }).catch(() => {});
+}
+
+/* ---- diesel by pump ---- */
+VIEWS.pd_diesel = async m => {
+  const L = S.loc; if(!L) return pdNoCfg(m);
+  const [a, z] = pdRange();
+  const [all, trips, ents] = await Promise.all([q('pd_pump_diesel', b => b.eq('plant_id', L.id)),
+    qAll('pd_trips', b => b.eq('plant_id', L.id).eq('status', 'active').gt('diesel_amt', 0).gte('trip_at', a).lt('trip_at', z)),
+    qAll('pd_entries', b => b.eq('plant_id', L.id).eq('status', 'active').neq('diesel_amt', 0).gte('entry_at', a).lt('entry_at', z))]);
+  const g = {}; const add = (pid, k, v) => { const n = (S.vendors.find(x => x.id === pid) || {}).vendor_name || '(pump not mapped)'; g[n] = g[n] || {pump:n, trips:0, passed:0, adjusted:0}; g[n][k] += v; };
+  trips.forEach(t => { add(t.pump_id, 'passed', +t.diesel_amt); add(t.pump_id, 'trips', 1); });
+  ents.forEach(e => add(e.pump_id, +e.diesel_amt > 0 ? 'passed' : 'adjusted', +e.diesel_amt));
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Diesel by pump · ${esc(L.code)}</h1>${pdMonthSel('dpM')}</div>
+  <p class="muted">Diesel passed to trucks on pump credit, less diesel adjusted. This is what the pump will bill; it never touches plant cash.</p>
+  <div class="card"><h2>${monthLbl(pdMonth())}</h2>${table([{h:'Pump',k:'pump'},{h:'Trips',n:1,k:'trips'},{h:'Passed',n:1,f:r=>inr(r.passed)},{h:'Adjusted',n:1,f:r=>inr(r.adjusted)},{h:'Net',n:1,f:r=>'<b>' + inr(r.passed + r.adjusted) + '</b>'}], Object.values(g), 'No diesel this month.')}</div>
+  <div class="card"><h2>Since the start (incl. old sheet)</h2>${table([{h:'Pump',k:'pump'},{h:'Passed',n:1,f:r=>inr(r.passed)},{h:'Adjusted',n:1,f:r=>inr(r.adjusted)},{h:'Net',n:1,f:r=>'<b>' + inr(r.net) + '</b>'}], all)}</div>`;
+  $('dpM').onchange = () => { S.pdM = $('dpM').value; go(); };
+};
+
+/* ---- incidents: raise → approve (another person) → pass code → plant pays ---- */
+const PD_INC_COLS = 'id,incident_no,plant_id,truck_no,amount,incident_type,detail,location,driver_name,driver_phone,status,raised_by,raised_at,decided_by,decided_at,reject_reason,paid_at,source';
+VIEWS.pd_inc = async m => {
+  await pdCfgs(); S.pdIncF = S.pdIncF || 'open';
+  const {data, error} = await (() => { let b = sb.from('pd_incidents').select(PD_INC_COLS).eq('source', 'entry').order('raised_at', {ascending:false}).limit(500);
+    if(S.pdIncF === 'open') b = b.in('status', ['pending','approved']); return b; })();
+  if(error) throw new Error(error.message);
+  const rows = data || [];
+  const ST = {pending:['waiting approval','warn'], approved:['approved · code with driver',''], paid:['paid','ok'], rejected:['rejected','bad'], cancelled:['cancelled','bad']};
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Incidents</h1><div class="row"><select id="icF" style="width:auto"><option value="open" ${S.pdIncF==='open'?'selected':''}>Open</option><option value="all" ${S.pdIncF==='all'?'selected':''}>All (last 500)</option></select>${can('pd_incident_raise') ? '<button class="primary sm" id="icNew">+ Raise incident</button>' : ''}</div></div>
+  <p class="muted">Only for our own trucks. One person raises, another approves; approval gives a 6-digit pass code for the driver. The plant enters the code and pays the approved amount from plant cash.</p>
+  <div class="card">${table([{h:'No.',k:'incident_no'},{h:'Raised',f:r=>dt(r.raised_at)},{h:'Plant',f:r=>esc(pdPlantName(r.plant_id))},{h:'Truck',k:'truck_no'},{h:'Type',k:'incident_type'},{h:'Detail',f:r=>esc([r.detail, r.location, r.driver_name, r.driver_phone].filter(Boolean).join(' · '))},
+    {h:'Amount',n:1,f:r=>inr(r.amount)},{h:'Status',f:r=>chip(...(ST[r.status] || [r.status])) + (r.reject_reason ? ' ' + esc(r.reject_reason) : '')},
+    {h:'',f:r=>r.status === 'pending' && can('pd_incident_approve') ? `<button class="primary sm" data-a="${r.id}">Approve</button> <button class="ghost sm" data-r="${r.id}">Reject</button>`
+      : r.status === 'approved' ? `<button class="ghost sm" data-code="${r.id}">Show code</button>${can('pd_correct') ? ` <button class="ghost sm" data-x="${r.id}">Cancel</button>` : ''}` : ''}], rows, 'No incidents.')}</div>`;
+  $('icF').onchange = () => { S.pdIncF = $('icF').value; go(); };
+  if($('icNew')) $('icNew').onclick = pdIncForm;
+  const showCode = (r, code) => modal(`<h2>Pass code for ${esc(r.incident_no)}</h2><p>Give this code to the driver of <b>${esc(r.truck_no)}</b>. The plant pays <b>${inr(r.amount)}</b> against it, once.</p><div style="font-size:40px;letter-spacing:.3em;font-weight:700;text-align:center;margin:16px 0">${esc(code)}</div><button class="primary" onclick="closeModal();go()">Done</button>`);
+  m.querySelectorAll('[data-a]').forEach(b => b.onclick = () => { const r = rows.find(x => x.id === b.dataset.a); act(b, () => rpc('pd_incident_decide', {p_id:r.id, p_approve:true, p_reason:null})).then(x => showCode(r, x.pass_code)).catch(() => {}); });
+  m.querySelectorAll('[data-code]').forEach(b => b.onclick = () => { const r = rows.find(x => x.id === b.dataset.code); act(b, () => rpc('pd_incident_code', {p_id:r.id})).then(c => showCode(r, c)).catch(() => {}); });
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => pdCancel('incident', b.dataset.x));
+  m.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { modal(`<h2>Reject incident</h2><div class="field"><label>Reason *</label><input id="irR"></div><div class="row"><button class="primary" id="irOk">Reject</button><button class="ghost" onclick="closeModal()">Back</button></div>`);
+    $('irOk').onclick = e => act(e.target, () => rpc('pd_incident_decide', {p_id:b.dataset.r, p_approve:false, p_reason:$('irR').value}), 'Rejected').then(() => { closeModal(); go(); }).catch(() => {}); });
+};
+function pdIncForm(){
+  const plants = S.plants.filter(p => S.pdCfg.some(c => c.plant_id === p.id));
+  modal(`<h2>Raise incident</h2><div class="grid">
+    <div class="field"><label>Plant (pays the cash) *</label><select id="inP">${opt(plants, 'id', p => p.code + ' · ' + p.name, S.loc && plants.some(p => p.id === S.loc.id) ? S.loc.id : '', 'Select')}</select></div>
+    <div class="field"><label>Our truck *</label><input id="inT" list="inTL" style="text-transform:uppercase"><datalist id="inTL">${S.trucks.map(t => `<option value="${esc(t.registration_no)}">`).join('')}</datalist></div>
+    <div class="field"><label>Type *</label><select id="inK">${PD_INC_TYPES.map(x => `<option>${esc(x)}</option>`).join('')}</select></div>
+    <div class="field"><label>Amount ₹ *</label><input id="inA" type="number" min="0" step="1"></div>
+    <div class="field"><label>Where</label><input id="inL"></div>
+    <div class="field"><label>Driver name</label><input id="inD"></div>
+    <div class="field"><label>Driver mobile</label><input id="inM" inputmode="tel"></div>
+    <div class="field" style="grid-column:1/-1"><label>What happened</label><input id="inX"></div></div>
+  <div class="row"><button class="primary" id="inSave">Raise</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('inSave').onclick = e => act(e.target, () => rpc('pd_incident_raise', {p:{plant_id:$('inP').value, truck_no:$('inT').value, incident_type:$('inK').value, amount:$('inA').value, location:$('inL').value, driver_name:$('inD').value, driver_phone:$('inM').value, detail:$('inX').value}}),
+    r => r.incident_no + ' raised. Another person must approve it.').then(() => { closeModal(); go(); }).catch(() => {});
+}
+
+/* ---- reports ---- */
+VIEWS.pd_reports = async m => {
+  await pdCfgs(); const plants = S.plants.filter(p => S.pdCfg.some(c => c.plant_id === p.id));
+  S.pdRP = S.pdRP || (S.loc && plants.some(p => p.id === S.loc.id) ? S.loc.id : (plants[0] || {}).id); const [a, z] = pdRange();
+  const rows = S.pdRP ? await qAll('pd_trip_list', b => b.eq('plant_id', S.pdRP).eq('status', 'active').gte('trip_at', a).lt('trip_at', z).order('seq')) : [];
+  const grp = (key, lab) => { const g = {}; rows.forEach(r => { const k = key(r); g[k] = g[k] || {k, lab:lab(r), trips:0, mt:0, cash:0, diesel:0, freight:0, nosap:0, vpay:0, norate:0};
+    const x = g[k]; x.trips++; x.mt += +r.qty_mt||0; x.cash += +r.cash_amt||0; x.diesel += +r.diesel_amt||0; x.freight += +r.cust_freight||0; if(r.cust_rate == null) x.nosap++;
+    if(!r.own_truck){ if(r.vendor_rate == null) x.norate++; else x.vpay += (+r.vendor_rate) * (+r.qty_mt||0); } }); return Object.values(g); };
+  const day = grp(r => new Date(r.trip_at).toLocaleDateString('en-CA', {timeZone:'Asia/Kolkata'}), r => d8(r.trip_at)).sort((x, y) => x.k.localeCompare(y.k));
+  const ven = grp(r => r.vendor_code || '?', r => `${r.vendor_code || '?'} · ${r.busy_name || r.vendor_name || 'not in vendor master'}`).sort((x, y) => y.mt - x.mt);
+  const cols = [{h:'Trips',n:1,k:'trips'},{h:'MT',n:1,f:x=>n3(x.mt)},{h:'Cash',n:1,f:x=>inr(x.cash)},{h:'Diesel',n:1,f:x=>inr(x.diesel)},{h:'Customer freight',n:1,f:x=>inr(x.freight) + (x.nosap ? ' ' + chip(x.nosap + ' not in SAP','warn') : '')}];
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Reports</h1><div class="row"><select id="rpP" style="width:auto">${opt(plants, 'id', 'code', S.pdRP)}</select>${pdMonthSel('rpM')}<button class="ghost sm" id="rpCsv">Vendor-wise CSV</button></div></div>
+  <div class="card"><h2>Daily dispatch</h2>${table([{h:'Date',k:'lab'}, ...cols], day, 'No trips this month.')}</div>
+  <div class="card"><h2>Vendor-wise</h2><p class="muted">Vendor freight = vendor rate card × MT (market trucks). "No rate" = the rate card has nothing for that trip yet.</p>${table([{h:'Vendor',k:'lab'}, ...cols, {h:'Vendor freight',n:1,f:x=>x.k === 'VD0001' ? '<span class="muted">own</span>' : inr(x.vpay) + (x.norate ? ' ' + chip(x.norate + ' no rate','warn') : '')}], ven)}</div>`;
+  $('rpP').onchange = () => { S.pdRP = $('rpP').value; go(); };
+  $('rpM').onchange = () => { S.pdM = $('rpM').value; go(); };
+  $('rpCsv').onclick = () => csv(ven.map(x => ({vendor:x.lab, trips:x.trips, mt:x.mt, cash:x.cash, diesel:x.diesel, customer_freight:x.freight, vendor_freight:x.vpay, trips_without_rate:x.norate})), 'vendor-wise-' + pdPlantName(S.pdRP) + '-' + pdMonth().slice(0, 7));
+};
+
+/* ---- customer SAP shipment upload + reconciliation ---- */
+const PD_SAP_H = {actualgidate:'gi_date', gidate:'gi_date', delivery:'delivery_no', deliveryno:'delivery_no', shipment:'shipment_no', serviceentry:'service_entry', truckno:'truck_no', truck:'truck_no', quantity:'qty_mt', qty:'qty_mt',
+  shiptoparty:'ship_to', plant:'sap_plant', trnstype:'trns_type', freightrate:'freight_rate', rate:'freight_rate', amount:'amount', district:'district', citycode:'city_code', destination:'destination', shtype:'sh_type', lrnumber:'lr_no'};
+VIEWS.pd_sap = async m => {
+  await pdCfgs(); const plants = S.plants.filter(p => S.pdCfg.some(c => c.plant_id === p.id));
+  S.pdRP = S.pdRP || (S.loc && plants.some(p => p.id === S.loc.id) ? S.loc.id : (plants[0] || {}).id);
+  const rec = S.pdRP ? await qAll('pd_sap_recon', b => b.eq('plant_id', S.pdRP).order('delivery_no')) : [];
+  const cnt = s => rec.filter(r => r.state === s).length;
+  const SL = {matched:'Matched', missing_in_sap:'Trip not in SAP yet', missing_in_trips:'In SAP, no trip entered', qty_mismatch:'Quantity differs'};
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Customer SAP freight</h1><div class="row"><select id="spP" style="width:auto">${opt(plants, 'id', 'code', S.pdRP)}</select>${can('pd_admin') ? '<button class="primary sm" id="spUp">Upload SAP shipment report</button>' : ''}<button class="ghost sm" id="spCsv">Download differences</button></div></div>
+  <p class="muted">The customer's shipment report (delivery, truck, quantity, freight rate, amount) is our revenue. Upload it as it comes; uploading again updates rows. Trips match on delivery no. + truck no.</p>
+  <div class="kpi">${Object.keys(SL).map(s => `<div><span>${SL[s]}</span><b ${s !== 'matched' && cnt(s) ? 'style="color:var(--alert)"' : ''}>${cnt(s)}</b></div>`).join('')}</div>
+  <div class="card"><h2>Differences</h2>${table([{h:'Delivery',k:'delivery_no'},{h:'Truck',k:'truck_no'},{h:'Trip date',f:r=>d8(r.trip_at)},{h:'SAP GI date',f:r=>d8(r.gi_date)},{h:'Trip MT',n:1,f:r=>n3(r.trip_qty)},{h:'SAP MT',n:1,f:r=>n3(r.sap_qty)},{h:'Rate',n:1,f:r=>inr(r.freight_rate)},{h:'Issue',f:r=>chip(SL[r.state],'warn')}],
+    rec.filter(r => r.state !== 'matched').slice(0, 1000), 'Everything matches.')}</div><input type="file" id="spFile" accept=".xlsx,.xls,.csv" style="display:none">`;
+  $('spP').onchange = () => { S.pdRP = $('spP').value; go(); };
+  $('spCsv').onclick = () => csv(rec.filter(r => r.state !== 'matched').map(r => ({delivery:r.delivery_no, truck:r.truck_no, trip_date:r.trip_at, sap_gi_date:r.gi_date, trip_mt:r.trip_qty, sap_mt:r.sap_qty, rate:r.freight_rate, amount:r.amount, issue:SL[r.state]})), 'sap-differences-' + pdPlantName(S.pdRP));
+  if($('spUp')) $('spUp').onclick = () => { const f = $('spFile'); f.value = ''; f.onchange = async () => {
+    const file = f.files[0]; if(!file) return;
+    modal(`<h2>Uploading SAP shipment report</h2><div id="spPr" class="muted">Reading…</div><div id="spR"></div><div class="row" style="margin-top:12px"><button class="ghost" id="spClose" disabled>Close</button></div>`);
+    try{
+      const wb = XLSX.read(await file.arrayBuffer(), {cellDates:true});
+      const sn = wb.SheetNames.find(n => /ship/i.test(n)) || wb.SheetNames[0];
+      const raw = XLSX.utils.sheet_to_json(wb.Sheets[sn], {defval:null, raw:true});
+      const rows = raw.map(r => { const o = {}; Object.entries(r).forEach(([h, v]) => { const k = PD_SAP_H[UPN(h)]; if(k && v != null && o[k] == null) o[k] = v instanceof Date ? isoD(v) : String(v).trim(); }); return o; }).filter(o => o.delivery_no && o.truck_no);
+      if(!rows.length) throw new Error('No rows with DELIVERY and TRUCK NO. found in sheet "' + sn + '"');
+      let c = 0, u = 0; const errs = [];
+      for(let i = 0; i < rows.length; i += 500){ $('spPr').textContent = `Saving ${Math.min(i + 500, rows.length)} of ${rows.length}…`;
+        const r = await rpc('pd_sap_upload', {p_plant:S.pdRP, p_rows:rows.slice(i, i + 500)}); c += r.created; u += r.updated; (r.errors || []).forEach(x => errs.push({row:i + x.row + 1, problem:x.error})); }
+      $('spPr').textContent = ''; $('spR').innerHTML = `<p><b>${c}</b> new · <b>${u}</b> updated · <b>${errs.length}</b> not loaded (sheet "${esc(sn)}")</p>` + (errs.length ? table([{h:'Excel row',k:'row'},{h:'Problem',k:'problem'}], errs) : '');
+    }catch(e){ $('spPr').textContent = ''; $('spR').innerHTML = `<div class="issues">${esc(niceErr(e.message))}</div>`; }
+    $('spClose').disabled = false; $('spClose').onclick = () => { closeModal(); go(); };
+  }; f.click(); };
+};
+
+/* ---- trip gaps ---- */
+VIEWS.pd_gaps = async m => {
+  await pdCfgs(); const plants = S.plants.filter(p => S.pdCfg.some(c => c.plant_id === p.id));
+  S.pdRP = S.pdRP || (S.loc && plants.some(p => p.id === S.loc.id) ? S.loc.id : (plants[0] || {}).id);
+  const rows = S.pdRP ? await qAll('pd_trip_gaps', b => b.eq('plant_id', S.pdRP).order('seq')) : [];
+  const g = {}; rows.forEach(r => { const k = r.gap.replace(/".*"|VD\w+|\bVendor \S+/g, x => x.startsWith('Vendor') ? 'Vendor' : '…'); g[k] = g[k] || []; g[k].push(r); });
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Trip gaps</h1><div class="row"><select id="gpP" style="width:auto">${opt(plants, 'id', 'code', S.pdRP)}</select><button class="ghost sm" id="gpCsv">Download all</button></div></div>
+  <p class="muted">Trips (mostly from the old sheet) with something missing: vendor not in the vendor master, material or pump not mapped, quantity missing, not yet in the customer SAP report. Fix the master (or the mapping in Setup), and the gap clears by itself.</p>
+  <div class="kpi">${Object.entries(g).map(([k, v]) => `<div><span>${esc(k)}</span><b style="color:var(--alert)">${v.length}</b></div>`).join('') || '<div><span>Gaps</span><b>0</b></div>'}</div>
+  ${Object.entries(g).map(([k, v]) => `<details class="card"><summary><b>${esc(k)}</b> · ${v.length}</summary>${table([{h:'Time',f:r=>dt(r.trip_at)},{h:'Delivery',k:'delivery_no'},{h:'Truck',k:'truck_no'},{h:'Gap',k:'gap'}], v.slice(0, 300))}</details>`).join('')}`;
+  $('gpP').onchange = () => { S.pdRP = $('gpP').value; go(); };
+  $('gpCsv').onclick = () => csv(rows.map(r => ({time:r.trip_at, delivery:r.delivery_no, truck:r.truck_no, gap:r.gap})), 'trip-gaps-' + pdPlantName(S.pdRP));
+};
+
+/* ---- setup: plant numbering, cash cap, advance rules, own-truck types, name mapping, vendor rate card ---- */
+VIEWS.pd_setup = async m => {
+  await pdCfgs();
+  const plants = S.plants.filter(p => p.kind === 'plant');
+  S.pdSP = S.pdSP || (S.pdCfg[0] || plants[0] || {}).plant_id || (plants[0] || {}).id;
+  const P = plants.find(p => p.id === S.pdSP) || plants[0]; const cfg = P && S.pdCfg.find(c => c.plant_id === P.id);
+  const [rules, aliases, rates] = P ? await Promise.all([q('pd_advance_rules', b => b.eq('plant_id', P.id).order('truck_type').order('effective_from', {ascending:false})), q('pd_aliases', b => b.eq('plant_id', P.id).order('kind').order('raw')), q('pd_vendor_rates', b => b.eq('plant_id', P.id).order('effective_from', {ascending:false}))]) : [[], [], []];
+  const nm = (arr, id, k) => (arr.find(x => x.id === id) || {})[k] || '';
+  const tgt = a => a.kind === 'pump' ? nm(S.vendors, a.target_id, 'vendor_name') : nm(S.materials, a.target_id, 'code');
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Trip Entry setup</h1><select id="suP" style="width:auto">${opt(plants, 'id', p => p.code + (S.pdCfg.some(c => c.plant_id === p.id) ? '' : ' (not set up)'), P && P.id)}</select></div>
+  <div class="card"><h2>${P ? esc(P.code + ' · ' + P.name) : 'No plant'}</h2>${cfg ? `<div class="kpi"><div><span>Opening balance</span><b>${inr(cfg.opening_balance)}</b></div><div><span>Opening date</span><b>${d8(cfg.opening_date)}</b></div><div><span>Next LR</span><b>${esc((cfg.lr_prefix||'') + String(cfg.lr_next).padStart(cfg.lr_digits, '0'))}</b></div><div><span>Next consignment</span><b>${cfg.consignment_next}</b></div><div><span>Market truck cash cap</span><b>${cfg.market_cash_cap == null ? 'no cap' : inr(cfg.market_cash_cap)}</b></div></div>` : '<p class="muted">Not set up for trip entry.</p>'}
+    ${P ? `<button class="${cfg ? 'ghost' : 'primary'} sm" id="suCfg">${cfg ? 'Edit' : 'Set up this plant'}</button>` : ''}</div>
+  ${cfg ? `<div class="card"><div class="row" style="justify-content:space-between"><h2>Own-truck cash advance rules</h2><button class="primary sm" id="suRule">+ Rule / new rates</button></div>
+    <p class="muted">Advance = Khamali per MT × quantity + all other amounts. A new rate from a date is a new line; earlier trips keep the rate of their day.</p>
+    ${table([{h:'Truck type',k:'truck_type'},{h:'From',f:r=>d8(r.effective_from)}, ...PD_RULE_COLS.map(([k, l]) => ({h:l, n:1, f:r=>+r[k] ? inr(r[k]) : ''})), {h:'',f:r=>`<button class="ghost sm" data-ru="${r.id}">Edit</button>`}], rules, 'No rules: own trucks will need the cash typed.')}</div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2>Old-sheet names → our masters</h2><button class="ghost sm" id="suAl">+ Mapping</button></div>
+    <p class="muted">Pump and material names as typed in the old sheet, pointed at the vendor / material in the system.</p>${table([{h:'Kind',k:'kind'},{h:'Name in sheet',k:'raw'},{h:'Our master',f:r=>esc(tgt(r))}], aliases)}</div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2>Vendor rate card (market trucks)</h2><button class="ghost sm" id="suVr">+ Rate</button></div>
+    <p class="muted">Plant → state → district → destination → vendor: the most specific line wins.</p>${table([{h:'From',f:r=>d8(r.effective_from)},{h:'State',f:r=>esc(nm(S.states, r.state_id, 'name'))},{h:'District',f:r=>esc(nm(S.districts, r.district_id, 'name'))},{h:'Destination',f:r=>esc(nm(S.dests, r.destination_id, 'name'))},{h:'Vendor',f:r=>esc(nm(S.vendors, r.vendor_id, 'vendor_code'))},{h:'Rate / MT',n:1,f:r=>inr(r.rate_per_mt)}], rates, 'No rates yet: vendor freight shows as "no rate".')}</div>` : ''}
+  <div class="card"><div class="row" style="justify-content:space-between"><h2>Own-truck types</h2><div class="row"><input id="ttF" placeholder="Find truck" style="width:160px"><button class="primary sm" id="ttSave">Save changes</button></div></div>
+    <p class="muted">The type picks the advance rule. ${S.trucks.filter(t => !t.truck_type).length} of ${S.trucks.length} trucks have no type yet.</p><div id="ttT"></div></div>`;
+  $('suP').onchange = () => { S.pdSP = $('suP').value; go(); };
+  if($('suCfg')) $('suCfg').onclick = () => pdCfgForm(P, cfg);
+  if($('suRule')) $('suRule').onclick = () => pdRuleForm(P, null);
+  m.querySelectorAll('[data-ru]').forEach(b => b.onclick = () => pdRuleForm(P, rules.find(r => r.id === b.dataset.ru)));
+  if($('suAl')) $('suAl').onclick = () => { const pumps = S.vendors.filter(v => (v.kinds||[]).includes('diesel'));
+    modal(`<h2>Map an old-sheet name</h2><div class="grid"><div class="field"><label>Kind</label><select id="alK"><option value="pump">Petrol pump</option><option value="material">Material</option></select></div>
+      <div class="field"><label>Name exactly as in the sheet</label><input id="alR"></div><div class="field"><label>Our master</label><select id="alT"></select></div></div>
+      <div class="row"><button class="primary" id="alOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    const fill = () => $('alT').innerHTML = $('alK').value === 'pump' ? opt(pumps, 'id', 'vendor_name', '', 'Select pump') : opt(S.materials.filter(x => x.client_id === P.client_id), 'id', 'code', '', 'Select material');
+    fill(); $('alK').onchange = fill;
+    $('alOk').onclick = e => act(e.target, async () => { const {error} = await sb.from('pd_aliases').insert({plant_id:P.id, kind:$('alK').value, raw:$('alR').value.trim(), target_id:$('alT').value || null}); if(error) throw error; }, 'Saved').then(() => { closeModal(); go(); }).catch(() => {}); };
+  if($('suVr')) $('suVr').onclick = () => {
+    modal(`<h2>Vendor rate</h2><p class="muted">Fill only the levels this rate is for. Blank = any.</p><div class="grid">
+      <div class="field"><label>State</label><select id="vrS">${opt(S.states, 'id', 'name', '', 'Any')}</select></div>
+      <div class="field"><label>District</label><select id="vrD">${opt(S.districts, 'id', 'name', '', 'Any')}</select></div>
+      <div class="field"><label>Destination</label><select id="vrX">${opt(S.dests, 'id', 'name', '', 'Any')}</select></div>
+      <div class="field"><label>Vendor</label><input id="vrV" list="vrVL" placeholder="Any"><datalist id="vrVL">${S.vendors.filter(v => (v.kinds||[]).includes('transporter')).map(v => `<option value="${esc(pdVendorLbl(v))}">`).join('')}</datalist></div>
+      <div class="field"><label>Rate per MT ₹ *</label><input id="vrR" type="number" min="0" step="0.01"></div>
+      <div class="field"><label>From *</label><input id="vrF" type="date" value="${today()}"></div></div>
+      <div class="row"><button class="primary" id="vrOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('vrOk').onclick = e => act(e.target, async () => { const v = $('vrV').value.trim() ? pdFindVendor($('vrV').value) : null; if($('vrV').value.trim() && !v) throw new Error('Choose the vendor from the list');
+      const {error} = await sb.from('pd_vendor_rates').insert({plant_id:P.id, state_id:$('vrS').value || null, district_id:$('vrD').value || null, destination_id:$('vrX').value || null, vendor_id:v ? v.id : null, rate_per_mt:$('vrR').value || null, effective_from:$('vrF').value}); if(error) throw error; }, 'Saved').then(() => { closeModal(); go(); }).catch(() => {}); };
+  const changed = {};
+  const draw = () => { const f = pdNorm($('ttF').value); const list = S.trucks.filter(t => !f || pdNorm(t.registration_no).includes(f)).slice(0, 300);
+    $('ttT').innerHTML = table([{h:'Truck',k:'registration_no'},{h:'Type',f:t=>`<select data-tt="${esc(t.registration_no)}" style="width:auto"><option value="">—</option>${PD_TT.map(x => `<option ${(changed[t.registration_no] ?? t.truck_type) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>`}], list, 'No own trucks in the fleet.');
+    $('ttT').querySelectorAll('[data-tt]').forEach(s => s.onchange = () => { changed[s.dataset.tt] = s.value; }); };
+  draw(); $('ttF').oninput = draw;
+  $('ttSave').onclick = e => { const rows = Object.entries(changed).map(([truck_no, truck_type]) => ({truck_no, truck_type})); if(!rows.length) return toast('Nothing changed', 'warn');
+    act(e.target, () => rpc('pd_truck_type_set', {p_rows:rows}), r => `${r.updated} trucks updated` + (r.errors.length ? `, ${r.errors.length} not` : '')).then(async () => { await loadMasters(); go(); }).catch(() => {}); };
+};
+function pdCfgForm(P, c){
+  modal(`<h2>${c ? 'Edit' : 'Set up'} ${esc(P.code)}</h2><div class="grid">
+    <div class="field"><label>Opening date *</label><input id="cfD" type="date" value="${c ? c.opening_date : today()}" ${c ? 'disabled' : ''}></div>
+    <div class="field"><label>Opening cash balance ₹</label><input id="cfB" type="number" step="0.01" value="${c ? c.opening_balance : 0}" ${c ? 'disabled' : ''}><div class="muted" style="font-size:12px">Leave 0 when the old sheet (with its OPENING BALANCE line) will be imported.</div></div>
+    <div class="field"><label>LR prefix</label><input id="cfP" value="${esc(c ? c.lr_prefix || '' : '')}"></div>
+    <div class="field"><label>LR digits</label><input id="cfG" type="number" min="1" max="10" value="${c ? c.lr_digits : 6}"></div>
+    <div class="field"><label>Next LR number</label><input id="cfN" type="number" min="1" value="${c ? c.lr_next : 1}"></div>
+    <div class="field"><label>Next consignment no.</label><input id="cfC" type="number" min="1" value="${c ? c.consignment_next : 10100001}"></div>
+    <div class="field"><label>Market truck cash cap ₹</label><input id="cfM" type="number" min="0" value="${c && c.market_cash_cap != null ? c.market_cash_cap : ''}" placeholder="no cap"></div>
+    <div class="field"><label>Run by (our company)</label><select id="cfO">${opt(S.companies, 'id', 'code', c ? c.company_id : '', '—')}</select></div></div>
+  <p class="muted">Opening date and balance are fixed once set; corrections go through a cash entry.</p>
+  <div class="row"><button class="primary" id="cfOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('cfOk').onclick = e => act(e.target, async () => {
+    const rec = {lr_prefix:$('cfP').value.trim() || null, lr_digits:+$('cfG').value || 6, lr_next:+$('cfN').value || 1, consignment_next:+$('cfC').value || 10100001, market_cash_cap:$('cfM').value === '' ? null : +$('cfM').value, company_id:$('cfO').value || null};
+    const {error} = c ? await sb.from('pd_plant_config').update(rec).eq('plant_id', P.id) : await sb.from('pd_plant_config').insert({...rec, plant_id:P.id, opening_date:$('cfD').value, opening_balance:+$('cfB').value || 0});
+    if(error) throw error; }, 'Saved').then(() => { closeModal(); go(); }).catch(() => {});
+}
+function pdRuleForm(P, r){
+  modal(`<h2>${r ? 'Edit rule' : 'New advance rule'} · ${esc(P.code)}</h2><div class="grid">
+    <div class="field"><label>Truck type *</label><select id="rlT" ${r ? 'disabled' : ''}>${PD_TT.map(x => `<option ${r && r.truck_type === x ? 'selected' : ''}>${x}</option>`).join('')}</select></div>
+    <div class="field"><label>From *</label><input id="rlF" type="date" value="${r ? r.effective_from : today()}" ${r ? 'disabled' : ''}></div>
+    ${PD_RULE_COLS.map(([k, l]) => `<div class="field"><label>${l} ₹</label><input data-rl="${k}" type="number" min="0" step="0.01" value="${r ? +r[k] : 0}"></div>`).join('')}</div>
+  <p class="muted">${r ? 'Changing an existing line changes the rate for trips not yet entered on or after its date. For a rate change from a new date, add a new rule instead.' : ''}</p>
+  <div class="row"><button class="primary" id="rlOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('rlOk').onclick = e => act(e.target, async () => { const rec = {}; $('modalBox').querySelectorAll('[data-rl]').forEach(i => rec[i.dataset.rl] = +i.value || 0);
+    const {error} = r ? await sb.from('pd_advance_rules').update(rec).eq('id', r.id) : await sb.from('pd_advance_rules').insert({...rec, plant_id:P.id, truck_type:$('rlT').value, effective_from:$('rlF').value});
+    if(error) throw error; }, 'Saved').then(() => { closeModal(); go(); }).catch(() => {});
+}
+
+/* ---- one-time history import from the old Plant Dispatch sheet ---- */
+const PD_HIST_H = {timestamp:'at', type:'type', cashreceivedfrom:'ref', deliveryno:'delivery_no', lrno:'lr_no', destination:'destination', partyname:'party', material:'material', truckno:'truck_no', qty:'qty',
+  petrolpumpname:'pump', petrolpump:'pump', dieselpassed:'diesel', incidentno:'incident_no', cashamount:'cash', vendorcode:'vendor_code', district:'district', invoiceno:'invoice_no', orderid:'order_id',
+  tripordertypeselection:'order_type', customermobilenumber:'mobile', tarpaulin:'tarpaulin', entryid:'entry_id', username:'user_name'};
+VIEWS.pd_import = async m => {
+  await pdCfgs(); const plants = S.plants.filter(p => S.pdCfg.some(c => c.plant_id === p.id));
+  m.innerHTML = `<h1>History import (old Plant Dispatch sheet)</h1>
+  <p class="muted">One time per plant, before go-live. Download the plant's Google Sheet as Excel and upload it here: the <b>Plant Dispatch</b> tab is read in row order, so the cash balance comes out exactly as in the sheet. Rows already loaded are skipped, so the file can be uploaded again after more rows were added during the parallel run. Once a plant has a live entry, history import is closed for it.</p>
+  <div class="card"><div class="grid"><div class="field"><label>Plant</label><select id="hiP">${opt(plants, 'id', p => p.code + ' · ' + p.name, '', 'Select')}</select></div>
+    <div class="field"><label>Balance expected at the end (from the sheet)</label><input id="hiB" type="number" step="0.01" placeholder="e.g. 37908"></div></div>
+    <div class="row" style="margin-top:10px"><button class="primary" id="hiGo">Choose Excel file and import</button></div><input type="file" id="hiFile" accept=".xlsx,.xls" style="display:none"></div>
+  <div id="hiOut"></div>`;
+  $('hiGo').onclick = () => { if(!$('hiP').value) return toast('Choose the plant', 'err'); const f = $('hiFile'); f.value = ''; f.onchange = () => f.files[0] && pdHistRun($('hiP').value, f.files[0], $('hiB').value); f.click(); };
+};
+async function pdHistRun(plant, file, expect){
+  const out = $('hiOut'); out.innerHTML = '<div class="card"><div id="hiPr" class="muted">Reading file…</div></div>';
+  const prog = t => { if($('hiPr')) $('hiPr').textContent = t; };
+  try{
+    const wb = XLSX.read(await file.arrayBuffer(), {cellDates:true});
+    const sn = wb.SheetNames.find(n => UPN(n) === 'plantdispatch') || wb.SheetNames.find(n => { const h = (XLSX.utils.sheet_to_json(wb.Sheets[n], {header:1, range:0})[0] || []).map(UPN); return h.includes('type') && h.includes('cashamount'); });
+    if(!sn) throw new Error('No "Plant Dispatch" tab found (needs columns Type and Cash Amount)');
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], {header:1, defval:null, raw:true});
+    const head = (aoa[0] || []).map(h => PD_HIST_H[UPN(h)] || null);
+    if(!head.includes('type') || !head.includes('cash')) throw new Error('Sheet "' + sn + '" has no Type / Cash Amount columns');
+    const rows = [];
+    for(let i = 1; i < aoa.length; i++){ const r = aoa[i]; const o = {row_no:i + 1};
+      head.forEach((k, j) => { if(!k || o[k] != null) return; const v = r[j]; if(v == null || String(v).trim() === '') return; o[k] = v instanceof Date ? v.toISOString() : String(v); });
+      if(o.type) rows.push(o); }
+    let n = 0, d = 0; const errs = [];
+    for(let i = 0; i < rows.length; i += 300){ prog(`Loading ${Math.min(i + 300, rows.length)} of ${rows.length} rows…`);
+      const r = await rpc('pd_import', {p_plant:plant, p_rows:rows.slice(i, i + 300)}); n += r.imported; d += r.skipped_duplicates; (r.errors || []).forEach(x => errs.push({row:x.row, problem:x.error})); }
+    const last = await q('pd_cash_book', b => b.eq('plant_id', plant).order('seq', {ascending:false}).limit(1));
+    const bal = last[0] ? +last[0].balance : 0; const ok = expect === '' || Math.abs(bal - +expect) < 0.5;
+    out.innerHTML = `<div class="card"><h2>Import done · sheet "${esc(sn)}"</h2><div class="kpi"><div><span>Rows loaded</span><b>${n}</b></div><div><span>Already loaded (skipped)</span><b>${d}</b></div><div><span>Not loaded</span><b ${errs.length ? 'style="color:var(--alert)"' : ''}>${errs.length}</b></div>
+      <div><span>Cash balance now</span><b ${ok ? '' : 'style="color:var(--alert)"'}>${inr(bal)}</b></div>${expect !== '' ? `<div><span>Sheet balance</span><b>${inr(+expect)}</b></div>` : ''}</div>
+      ${expect !== '' ? (ok ? '<p><b>Balance matches the sheet.</b></p>' : `<div class="issues">Balance differs from the sheet by ${inr(bal - +expect)}. Check the rows not loaded below.</div>`) : ''}
+      ${errs.length ? table([{h:'Sheet row',k:'row'},{h:'Problem',k:'problem'}], errs) : ''}
+      <div class="row">${linkBtn('#pd/pd_gaps', 'See trip gaps')} ${linkBtn('#pd/pd_cash', 'Open cash book')}</div></div>`;
+  }catch(e){ out.innerHTML = `<div class="issues">${esc(niceErr(e.message))}</div>`; }
+}
 
 /* ============ VENDOR MASTER ============ */
 // A vendor has one or more types; every vendor dropdown shows only its type. HO / Admin (vendor_admin) create and edit.
