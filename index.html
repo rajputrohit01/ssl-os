@@ -422,6 +422,7 @@ async function loadMasters(){
   S.aliases = await q('rk_material_aliases');
   S.vtypes = await q('sys_vendor_types', b => b.order('sort').order('name'));
   if(can('ft_view')) await ftMasters();
+  if(can('dr_view')) S.drTypes = await q('dr_licence_types', b => b.eq('is_active', true).order('sort'));
 }
 async function start(){
   const {data:{user}} = await sb.auth.getUser(); if(!user) return;
@@ -1760,6 +1761,123 @@ VIEWS.te_cancelled = async m => {
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Cancelled orders · ${esc(L.code)}</h1><select id="tcM" style="width:auto">${monthsBack(12).map(p => `<option value="${p}" ${p===S.teM?'selected':''}>${monthLbl(p)}</option>`).join('')}</select></div>
   <div class="card">${table([...teOrderCols(false), {h:'Cancelled',f:o=>dt(o.cancelled_at)}, {h:'Reason',k:'cancel_reason'}], rows, 'No cancelled orders this month.')}</div>`;
   $('tcM').onchange = () => { S.teM = $('tcM').value; go(); };
+};
+
+/* ============ DRIVERS (own trucks) ============ */
+// Approved 3 Oct 2026. Driver: name, mobile, licence no. and type required; expiry, address, emergency contact, joining date optional.
+// Four photos taken on the phone (licence, driver, Aadhaar, Parivahan verification) — all four before a truck can be assigned.
+// Assignment to an own truck from an effective date; one truck per driver and one driver per truck; removal needs reason + 1–5 rating.
+const DR_PHOTOS = [['dr_licence','Licence'],['dr_photo','Driver photo'],['dr_aadhaar','Aadhaar'],['dr_parivahan','Parivahan verification']];
+const DR_REASONS = ['Left job','Transferred to another truck','Misconduct','Accident','Absent / not reporting','Health','Other'];
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'dr', name:'Drivers', icon:'driver', desc:'Drivers of our own trucks: details, phone photos (licence, Aadhaar, Parivahan), assignment to trucks with effective date, removal with reason and rating',
+    visible: () => can('dr_view'),
+    screens: () => [['#','Drivers'],['dr_list','Drivers'],['dr_trucks','Trucks & drivers'],['dr_expiry','Licence expiry']] });
+ICONS.driver = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="4"/><path d="M4 21v-1a7 7 0 0 1 16 0v1"/><circle cx="12" cy="17" r="2"/></svg>';
+MOD_SHORT.dr = 'Driver master, photos, truck assignment';
+const drStars = n => n == null ? '' : '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n)) + ` ${n}`;
+const drLic = d => ({expired:chip('licence expired','bad'), expiring:chip('expires ' + d8(d.licence_expiry),'warn'), valid:'', 'not given':''})[d.licence_state] || '';
+
+VIEWS.dr_list = async m => {
+  const rows = await qAll('dr_driver_list', b => b.order('name').order('id'));
+  S.drF = S.drF ?? '';
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Drivers</h1><div class="row"><input id="drF" placeholder="Find name, mobile, licence, truck" style="width:240px" value="${esc(S.drF)}">${can('dr_manage') ? '<button class="primary sm" id="drNew">+ New driver</button>' : ''}</div></div>
+  <div class="kpi"><div><span>Active drivers</span><b>${rows.filter(d => d.is_active).length}</b></div><div><span>On a truck</span><b>${rows.filter(d => d.truck_no).length}</b></div>
+    <div><span>Photos missing</span><b ${rows.some(d => d.photos_missing.length) ? 'style="color:var(--alert)"' : ''}>${rows.filter(d => d.is_active && d.photos_missing.length).length}</b></div>
+    <div><span>Licence expired</span><b ${rows.some(d => d.licence_state === 'expired') ? 'style="color:var(--alert)"' : ''}>${rows.filter(d => d.licence_state === 'expired').length}</b></div></div>
+  <div class="card" id="drT"></div>`;
+  const draw = () => { const f = S.drF.toUpperCase().replace(/\s/g, ''); const list = rows.filter(d => !f || [d.name, d.mobile, d.licence_no, d.truck_no, d.driver_code].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f)));
+    $('drT').innerHTML = table([{h:'Code',k:'driver_code'},{h:'Name',f:d=>`<a href="#" data-d="${d.id}"><b>${esc(d.name)}</b></a>` + (d.is_active ? '' : ' ' + chip('inactive','bad'))},{h:'Mobile',k:'mobile'},
+      {h:'Licence',f:d=>esc(d.licence_no) + ` <span class="muted">${esc(d.licence_type)}</span> ` + drLic(d)},{h:'Truck',f:d=>d.truck_no ? `<b>${esc(d.truck_no)}</b> <span class="muted">since ${d8(d.on_truck_since)}</span>` : '<span class="muted">—</span>'},
+      {h:'Photos',f:d=>d.photos_missing.length ? chip(d.photos_missing.length + ' missing','bad') : chip('4 / 4','ok')},{h:'Rating',f:d=>d.avg_rating == null ? '' : drStars(+d.avg_rating)}], list, 'No drivers yet.');
+    $('drT').querySelectorAll('[data-d]').forEach(a => a.onclick = e => { e.preventDefault(); drFile(a.dataset.d); }); };
+  draw(); $('drF').oninput = () => { S.drF = $('drF').value; draw(); };
+  if($('drNew')) $('drNew').onclick = () => drForm(null);
+};
+function drForm(d){
+  const types = S.drTypes || [];
+  modal(`<h2>${d ? 'Edit ' + esc(d.driver_code) : 'New driver'}</h2><div class="grid">
+    <div class="field"><label>Name *</label><input id="dfN" value="${esc(d ? d.name : '')}"></div>
+    <div class="field"><label>Mobile *</label><input id="dfM" inputmode="tel" value="${esc(d ? d.mobile : '')}"></div>
+    <div class="field"><label>Licence no. *</label><input id="dfL" style="text-transform:uppercase" value="${esc(d ? d.licence_no : '')}"></div>
+    <div class="field"><label>Licence type *</label><select id="dfT">${opt(types, 'code', t => t.code + ' · ' + t.name, d ? d.licence_type : '', 'Select')}</select></div>
+    <div class="field"><label>Licence expiry</label><input id="dfE" type="date" value="${d && d.licence_expiry ? d.licence_expiry : ''}"></div>
+    <div class="field"><label>Joining date</label><input id="dfJ" type="date" value="${d && d.joining_date ? d.joining_date : ''}"></div>
+    <div class="field" style="grid-column:1/-1"><label>Address</label><input id="dfA" value="${esc(d ? d.address || '' : '')}"></div>
+    <div class="field"><label>Emergency contact name</label><input id="dfEN" value="${esc(d ? d.emergency_name || '' : '')}"></div>
+    <div class="field"><label>Emergency contact mobile</label><input id="dfEM" inputmode="tel" value="${esc(d ? d.emergency_mobile || '' : '')}"></div>
+    ${d ? `<div class="field"><label>Status</label><select id="dfS"><option value="true" ${d.is_active ? 'selected' : ''}>Active</option><option value="false" ${d.is_active ? '' : 'selected'}>Inactive</option></select></div>` : ''}</div>
+  <p class="muted">${d ? '' : 'After saving, take the 4 photos from the driver\'s file: licence, driver, Aadhaar, Parivahan verification.'}</p>
+  <div class="row"><button class="primary" id="dfOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('dfOk').onclick = e => act(e.target, () => rpc('dr_driver_save', {p:{id:d ? d.id : null, name:$('dfN').value, mobile:$('dfM').value, licence_no:$('dfL').value, licence_type:$('dfT').value,
+      licence_expiry:$('dfE').value || null, joining_date:$('dfJ').value || null, address:$('dfA').value, emergency_name:$('dfEN').value, emergency_mobile:$('dfEM').value, is_active:d ? $('dfS').value === 'true' : true}}), r => (d ? 'Saved ' : 'Driver ' + r.driver_code + ' created'))
+    .then(r => drFile(r.id)).catch(() => {});
+}
+async function drFile(id){
+  const [[d], hist, ev] = await Promise.all([q('dr_driver_list', b => b.eq('id', id)), q('dr_assignment_list', b => b.eq('driver_id', id).order('from_date', {ascending:false})),
+    q('wh_evidence', b => b.in('entity_type', DR_PHOTOS.map(x => x[0])).eq('entity_id', id).order('taken_at', {ascending:false}))]);
+  const urls = Object.fromEntries(await Promise.all(ev.map(async r => [r.id, (await sb.storage.from('wh-evidence').createSignedUrl(r.storage_path, 600)).data?.signedUrl])));
+  const ed = can('dr_manage');
+  modal(`<div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(d.driver_code)} · ${esc(d.name)} ${d.is_active ? '' : chip('inactive','bad')}</h2><button class="ghost sm" onclick="closeModal();go()">Close</button></div>
+    <div class="kpi" style="margin-top:10px"><div><span>Mobile</span><b style="font-size:16px">${esc(d.mobile)}</b></div><div><span>Licence</span><b style="font-size:14px;word-break:break-all">${esc(d.licence_no)}</b><span>${esc(d.licence_type)} ${d.licence_expiry ? '· till ' + d8(d.licence_expiry) : ''}</span></div>
+      <div><span>Truck now</span><b style="font-size:16px">${d.truck_no ? esc(d.truck_no) : '—'}</b>${d.truck_no ? `<span>since ${d8(d.on_truck_since)}</span>` : ''}</div><div><span>Rating</span><b style="font-size:16px">${d.avg_rating == null ? '—' : drStars(+d.avg_rating)}</b></div></div>
+    ${drLic(d)} ${d.joining_date ? `<span class="muted">Joined ${d8(d.joining_date)}</span>` : ''} ${d.address ? `<div class="muted">${esc(d.address)}</div>` : ''} ${d.emergency_name || d.emergency_mobile ? `<div class="muted">Emergency: ${esc([d.emergency_name, d.emergency_mobile].filter(Boolean).join(' · '))}</div>` : ''}
+    ${ed ? '<div class="row" style="margin:10px 0"><button class="ghost sm" id="dxEdit">Edit details</button></div>' : ''}
+    <h2>Photos</h2><div class="grid">${DR_PHOTOS.map(([t, l]) => { const p = ev.find(x => x.entity_type === t);
+      return `<div class="card" style="margin:0;padding:10px"><b>${l}</b> ${p ? chip('taken ' + d8(p.taken_at),'ok') : chip('missing','bad')}
+        ${p && urls[p.id] ? `<a href="${urls[p.id]}" target="_blank"><img src="${urls[p.id]}" style="width:100%;max-height:140px;object-fit:cover;border-radius:8px;margin-top:6px"></a>` : ''}
+        ${ed ? `<div style="margin-top:6px"><button class="${p ? 'ghost' : 'primary'} sm" data-ph="${t}">${p ? 'Retake' : 'Take photo'}</button></div>` : ''}</div>`; }).join('')}</div>
+    ${d.photos_missing.length ? `<p class="muted">Cannot be assigned to a truck until all 4 photos are taken.</p>` : ''}
+    <h2>Trucks</h2>${table([{h:'Truck',k:'truck_no'},{h:'From',f:a=>d8(a.from_date)},{h:'To',f:a=>a.to_date ? d8(a.to_date) : chip('now','ok')},{h:'Reason',k:'end_reason'},{h:'Rating',f:a=>a.end_rating ? drStars(a.end_rating) : ''},{h:'Comment',k:'end_comment'}], hist, 'Not yet on any truck.')}`);
+  if($('dxEdit')) $('dxEdit').onclick = () => drForm(d);
+  $('modalBox').querySelectorAll('[data-ph]').forEach(b => b.onclick = () => { const t = b.dataset.ph; capture(t, d.id, `${d.driver_code} ${d.name} · ${DR_PHOTOS.find(x => x[0] === t)[1]}`).then(() => drFile(d.id)).catch(() => {}); });
+}
+
+/* ---- trucks with their driver: assign, change, remove ---- */
+VIEWS.dr_trucks = async m => {
+  const [trucks, drivers] = await Promise.all([qAll('dr_truck_list', b => b.order('registration_no').order('truck_id')), qAll('dr_driver_list', b => b.eq('is_active', true).order('name').order('id'))]);
+  S.dtF = S.dtF ?? '';
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Trucks & drivers</h1><div class="row"><select id="dtS" style="width:auto"><option value="">All trucks</option><option value="no">Without driver</option><option value="yes">With driver</option></select><input id="dtF" placeholder="Find truck or driver" style="width:200px" value="${esc(S.dtF)}"></div></div>
+  <div class="kpi"><div><span>Own trucks</span><b>${trucks.length}</b></div><div><span>With driver</span><b>${trucks.filter(t => t.driver_id).length}</b></div><div><span>Without driver</span><b ${trucks.some(t => !t.driver_id) ? 'style="color:var(--alert)"' : ''}>${trucks.filter(t => !t.driver_id).length}</b></div></div>
+  <div class="card" id="dtT"></div>`;
+  const ed = can('dr_manage');
+  const draw = () => { const f = S.dtF.toUpperCase().replace(/\s/g, ''), s = $('dtS').value;
+    const list = trucks.filter(t => (!s || (s === 'yes') === !!t.driver_id) && (!f || [t.registration_no, t.driver_name, t.driver_mobile].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f))));
+    $('dtT').innerHTML = table([{h:'Truck',f:t=>`<b>${esc(t.registration_no)}</b> <span class="muted">${esc(t.company_code || '')}</span>`},{h:'Driver',f:t=>t.driver_id ? esc(t.driver_name) + ` <span class="muted">${esc(t.driver_code)}</span>` + (t.licence_expired ? ' ' + chip('licence expired','bad') : '') : '<span class="muted">—</span>'},
+      {h:'Mobile',k:'driver_mobile'},{h:'Since',f:t=>d8(t.from_date)},
+      {h:'',f:t=>!ed ? '' : t.driver_id ? `<button class="ghost sm" data-ch="${t.truck_id}">Change driver</button> <button class="ghost sm" data-rm="${t.truck_id}">Remove</button>` : `<button class="primary sm" data-as="${t.truck_id}">Assign driver</button>`}], list.slice(0, 500), 'No trucks.');
+    $('dtT').querySelectorAll('[data-as],[data-ch]').forEach(b => b.onclick = () => drAssignForm(trucks.find(t => t.truck_id === (b.dataset.as || b.dataset.ch)), drivers));
+    $('dtT').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => drRemoveForm(trucks.find(t => t.truck_id === b.dataset.rm))); };
+  draw(); $('dtF').oninput = () => { S.dtF = $('dtF').value; draw(); }; $('dtS').onchange = draw;
+};
+const drOutFields = (pfx) => `<div class="field"><label>Reason for removal *</label><select id="${pfx}R"><option value="">Select</option>${DR_REASONS.map(r => `<option>${esc(r)}</option>`).join('')}</select></div>
+  <div class="field"><label>Rating *</label><select id="${pfx}S"><option value="">Select</option>${[5,4,3,2,1].map(n => `<option value="${n}">${'★'.repeat(n)}${'☆'.repeat(5-n)} ${n}</option>`).join('')}</select></div>
+  <div class="field" style="grid-column:1/-1"><label>Comment</label><input id="${pfx}C"></div>`;
+function drAssignForm(t, drivers){
+  const free = drivers.filter(d => !d.truck_id);
+  modal(`<h2>${t.driver_id ? 'Change driver of ' : 'Assign driver to '}${esc(t.registration_no)}</h2><div class="grid">
+    <div class="field" style="grid-column:1/-1"><label>Driver *</label><select id="daD">${opt(free, 'id', d => `${d.name} · ${d.mobile} · ${d.driver_code}${d.photos_missing.length ? ' (photos missing)' : ''}${d.licence_state === 'expired' ? ' (licence expired)' : ''}`, '', 'Select driver not on a truck')}</select></div>
+    <div class="field"><label>Effective date *</label><input id="daF" type="date" value="${today()}"></div>
+    ${t.driver_id ? `<div class="field" style="grid-column:1/-1"><b>Outgoing: ${esc(t.driver_name)}</b> <span class="muted">on this truck since ${d8(t.from_date)}; his assignment ends on the effective date</span></div>${drOutFields('do')}` : ''}</div>
+  <div class="row"><button class="primary" id="daOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('daOk').onclick = e => act(e.target, () => rpc('dr_assign', {p_driver:$('daD').value || null, p_truck:t.truck_id, p_from:$('daF').value || null,
+      p_outgoing:t.driver_id ? {reason:$('doR').value, rating:$('doS').value, comment:$('doC').value} : null}), 'Driver assigned').then(() => { closeModal(); go(); }).catch(() => {});
+}
+function drRemoveForm(t){
+  modal(`<h2>Remove ${esc(t.driver_name)} from ${esc(t.registration_no)}</h2><p class="muted">On this truck since ${d8(t.from_date)}.</p><div class="grid">
+    <div class="field"><label>Left on *</label><input id="drTo" type="date" value="${today()}"></div>${drOutFields('dr')}</div>
+  <div class="row"><button class="primary" id="drOk">Remove</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('drOk').onclick = e => act(e.target, () => rpc('dr_unassign', {p_assignment:t.assignment_id, p_to:$('drTo').value || null, p_reason:$('drR').value, p_rating:$('drS').value ? +$('drS').value : null, p_comment:$('drC').value}), 'Driver removed')
+    .then(() => { closeModal(); go(); }).catch(() => {});
+}
+
+/* ---- licence expiry ---- */
+VIEWS.dr_expiry = async m => {
+  const rows = (await qAll('dr_driver_list', b => b.eq('is_active', true).not('licence_expiry', 'is', null).order('licence_expiry').order('id'))).filter(d => d.licence_state !== 'valid');
+  const none = (await qAll('dr_driver_list', b => b.eq('is_active', true).is('licence_expiry', null).order('name').order('id')));
+  m.innerHTML = `<h1>Licence expiry</h1><p class="muted">Expired licences and those expiring in the next 30 days. An expired licence blocks a new truck assignment.</p>
+  <div class="card">${table([{h:'Driver',f:d=>esc(d.name) + ` <span class="muted">${esc(d.driver_code)}</span>`},{h:'Mobile',k:'mobile'},{h:'Licence',f:d=>esc(d.licence_no) + ' ' + esc(d.licence_type)},{h:'Expiry',f:d=>d8(d.licence_expiry) + ' ' + drLic(d)},{h:'Truck',k:'truck_no'}], rows, 'No licence expired or expiring in 30 days.')}</div>
+  ${none.length ? `<details class="card"><summary><b>Expiry date not entered</b> · ${none.length}</summary>${table([{h:'Driver',k:'name'},{h:'Mobile',k:'mobile'},{h:'Licence',k:'licence_no'},{h:'Truck',k:'truck_no'}], none)}</details>` : ''}`;
 };
 
 /* ============ VENDOR MASTER ============ */
