@@ -1520,10 +1520,11 @@ const UP_REF = {
   mat: (v, r) => { const cid = r.client_id || (S.plants.find(p => p.id === r.location_id) || {}).client_id; return S.materials.find(m => (upEq(m.code, v) || upEq(m.name, v)) && (!cid || m.client_id === cid)); },
   warehouse: upPlant(['warehouse']), plant: upPlant(['plant']), siding: upPlant(['siding']), plantwh: upPlant(['plant','warehouse']), anyloc: upPlant(['warehouse','siding']),
   vendor: v => S.vendors.find(x => upEq(x.vendor_code, v)) || S.vendors.find(x => upEq(x.vendor_name, v)),
+  truck: v => S.trucks.find(t => upEq(t.registration_no, v)),
   soldto: (v, r) => S.soldTos.find(s => upEq(s.sap_code, v) && (!r.client_id || s.client_id === r.client_id)),
   sardar: (v, r) => { const vd = UP_REF.vendor(v); return vd && S.sardars.find(s => s.vendor_id === vd.id && s.siding_id === r.siding_id); },
 };
-const UP_LBL = {company:'company', client:'customer', state:'state', district:'district', dest:'destination', cat:'category', mat:'material type', warehouse:'warehouse', plant:'plant', siding:'siding', plantwh:'plant / warehouse', anyloc:'warehouse / siding', vendor:'vendor', soldto:'Sold-To', sardar:'Labour Sardar at this siding'};
+const UP_LBL = {company:'company', client:'customer', state:'state', district:'district', dest:'destination', cat:'category', mat:'material type', warehouse:'warehouse', plant:'plant', siding:'siding', plantwh:'plant / warehouse', anyloc:'warehouse / siding', vendor:'vendor', truck:'own truck', soldto:'Sold-To', sardar:'Labour Sardar at this siding'};
 // col: [header, field, kind, required, help]   kind: text | upper | num | date | ref:<type> | sel:a/b | bool
 const UP_SETS = [
   {k:'companies', g:'1 · Company & customers', n:'Our companies', t:'sys_companies', perm:'wh_master_admin', cols:[['Code','code','upper',1,'e.g. SSL'],['Company name','name','text',1],['GSTIN','gstin','upper'],['PAN','pan','upper'],['State','state_id','ref:state'],['Address','address','text'],['Name in BUSY','busy_company','text']]},
@@ -1552,9 +1553,16 @@ const UP_SETS = [
   {k:'sardar_rates', g:'6 · Vendors & labour', n:'Sardar rates', t:'rk_labor_rates', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Sardar (vendor code or name)','sardar_id','ref:sardar',1],['Activity','activity','sel:wagon_platform/platform_truck/wagon_truck',1],['Rate per MT','rate_per_mt','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.siding_id; return r; }},
   {k:'fleet', g:'7 · Fleet', n:'Existing trucks, loans, EMIs, documents', link:'#fl/ft_import', perm:'ft_import', note:'Fleet has its own upload: only registration no. + company are required; re-upload fills blanks.'},
   {k:'fastag', g:'7 · Fleet', n:'FASTag list', link:'#fl/fl_fastag', perm:'ft_import', note:'Bank / issuer tag list mapped to trucks by vehicle number.'},
+  {k:'drivers', g:'7 · Fleet', n:'Old drivers (one-time)', rpcRows:'dr_import', perm:'dr_manage', cols:[['Old driver ID','old_code','upper',0,'e.g. D0001 — kept as reference; new code is DR0001…'],['Name','name','text',1],['Mobile','mobile','text',1],['Licence no.','licence_no','upper',1],
+    ['Licence type','licence_type','upper',0,'LMV, LMV-TR, MGV, HMV, HGMV, HPMV, TRAILER — blank = to fill later'],['Licence expiry','licence_expiry','date'],['Registered on','registered_on','date'],['Date of birth','dob','date'],['Calling name','alias_name','text'],
+    ['PAN','pan','upper'],['Aadhaar no.','aadhaar_no','text'],['Bank name','bank_name','text'],['Bank account no.','bank_account','text'],['IFSC','bank_ifsc','upper'],['Branch','bank_branch','text'],['Language','language','text'],['Actual birthday','birthday','date'],['Reference person','reference_person','text'],
+    ['Address','address','text'],['Emergency contact name','emergency_name','text'],['Emergency contact mobile','emergency_mobile','text'],['Joining date','joining_date','date'],
+    ['Current truck no.','truck_no','upper',0,'own truck he drives now'],['On truck since','on_truck_since','date',0,'blank = joining date']],
+    note:'Existing drivers. New codes DR0001…; the old ID is kept. Licence type, photos and truck can be completed later; they show in Data gaps. Uploading again only fills blanks.'},
+  {k:'truck_salary', g:'7 · Fleet', n:'Driver salary per truck', t:'dr_truck_salaries', perm:'dr_manage', cols:[['Truck no.','truck_id','ref:truck',1],['Salary per month','monthly_salary','num',1],['Effective from','effective_from','date',1]]},
   {k:'opening', g:'8 · Opening balances', n:'Warehouse opening stock', rpc:'opening', perm:'wh_operate', cols:[['Warehouse','location_id','ref:warehouse',1],['Material type','material_id','ref:mat',1],['Physical MT','physical_mt','num',1],['Customer SAP MT','sap_mt','num',1],['Reason if different','reason','text']], note:'Only for warehouses not yet live. A difference needs a reason and approval, as on the Opening stock screen.'},
 ];
-const upCan = d => can(d.perm) || can('wh_master_admin') && d.perm !== 'vendor_admin' && d.perm !== 'ft_import' || S.me.admin;
+const upCan = d => can(d.perm) || can('wh_master_admin') && !['vendor_admin','ft_import','dr_manage'].includes(d.perm) || S.me.admin;
 
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'up', name:'Data Upload', icon:'upload', desc:'Go-live: load every master from Excel in the right order — companies, customers, materials, places, parties, vendors, labour, fleet, opening stock — and see what is still missing',
@@ -1574,7 +1582,7 @@ VIEWS.up_center = async m => {
       {h:'Needed columns',f:d=>d.cols ? esc(d.cols.filter(c => c[3]).map(c => c[0]).join(', ')) : '—'},
       {h:'In system',n:1,f:d=>{ const c = counts[UP_SETS.indexOf(d)]; return c == null ? '' : String(c); }},
       {h:'',f:d=>!upCan(d) ? '<span class="muted">no permission</span>' : d.link ? linkBtn(d.link, 'Open upload') : `<button class="ghost sm" data-tpl="${d.k}">Template</button> <button class="primary sm" data-up="${d.k}">Upload</button>`}], UP_SETS.filter(d => d.g === g))}</div>`).join('')}
-  <input type="file" id="upFile" accept=".xlsx,.xls,.csv" style="display:none">`;
+  <input type="file" id="upFile" accept=".xlsx,.xls,.csv,.txt" style="display:none">`;
   m.querySelectorAll('[data-tpl]').forEach(b => b.onclick = () => upTemplate(UP_SETS.find(d => d.k === b.dataset.tpl)));
   m.querySelectorAll('[data-up]').forEach(b => b.onclick = () => { const d = UP_SETS.find(x => x.k === b.dataset.up); const f = $('upFile'); f.value = ''; f.onchange = () => f.files[0] && upRun(d, f.files[0]); f.click(); });
 };
@@ -1614,6 +1622,16 @@ async function upRun(d, file){
         recs.push({rn, rec, warns});
       }catch(e){ res.err.push({row:rn, problem:e.message}); }
     });
+    if(d.rpcRows){
+      for(let i = 0; i < recs.length; i += 200){
+        prog(`Saving ${Math.min(i + 200, recs.length)} of ${recs.length}…`);
+        const r = await rpc(d.rpcRows, {p_rows:recs.slice(i, i + 200).map(x => ({...x.rec, _row:x.rn}))});
+        res.ok += (r.created || 0) + (r.updated || 0); res.skip += 0;
+        (r.errors || []).forEach(e => /^driver saved/i.test(e.error) ? res.warn.push({row:e.row, problem:e.error}) : res.err.push({row:e.row, problem:e.error}));
+        recs.slice(i, i + 200).forEach(x => x.warns.length && res.warn.push({row:x.rn, problem:x.warns.join('; ')}));
+      }
+      recs.length = 0;
+    }
     // insert in batches; a failing batch is retried row by row so one bad row does not stop the rest
     const ins = async list => d.rpc === 'opening'
       ? (await Promise.all(list.map(x => sb.rpc('wh_opening_enter', {p_location:x.rec.location_id, p_material:x.rec.material_id, p_physical:x.rec.physical_mt, p_sap:x.rec.sap_mt, p_reason:x.rec.reason || null})))).find(x => x.error) || {}
@@ -1642,6 +1660,7 @@ async function upRun(d, file){
 VIEWS.up_gaps = async m => {
   const [vend, sold, ship, plants, fleet] = await Promise.all([qAll('sys_vendors', b => b.order('vendor_code')), qAll('sys_sold_to', b => b.order('sap_code')), qAll('sys_ship_to', b => b.is('destination_id', null).order('sap_code')),
     q('sys_plants', b => b.order('code')), qAll('ft_fleet_gaps', b => b.eq('source','import').order('id')).catch(() => [])]);
+  const [drv, dtr] = can('dr_view') ? await Promise.all([qAll('dr_driver_list', b => b.order('driver_code').order('id')), qAll('dr_truck_list', b => b.order('registration_no').order('truck_id'))]) : [[], []];
   const cl = id => clientCode(id);
   const G = [
     {n:'Vendors without PAN or mobile', go:'#vn/vn_list', rows:vend.filter(v => v.incomplete).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:[!v.pan && 'PAN', !v.phone && 'mobile'].filter(Boolean).join(', '), note:v.note || ''})), why:'Can be used in entries, but no payment until completed.'},
@@ -1650,6 +1669,9 @@ VIEWS.up_gaps = async m => {
     {n:'Ship-To parties without destination', go:'#md/masters', rows:ship.map(s => ({record:`${cl(s.client_id)} · ${s.sap_code} · ${s.name}`, missing:'destination', note:''})), why:'Challans and reports show no destination for these.'},
     {n:'Sidings without district', go:'#md/masters', rows:plants.filter(p => p.kind === 'siding' && !p.district_id).map(p => ({record:`${p.code} · ${p.name}`, missing:'district', note:''})), why:''},
     {n:'Warehouses / sidings without our company', go:'#md/masters', rows:plants.filter(p => p.kind !== 'plant' && !p.company_id).map(p => ({record:`${p.code} · ${p.name}`, missing:'run by (our company)', note:''})), why:'Inter-company billing needs it.'},
+    ...(can('dr_view') ? [{n:'Drivers without licence type', go:'#dr/dr_list', rows:drv.filter(d => d.is_active && !d.licence_type).map(d => ({record:`${d.driver_code}${d.old_code ? ' (' + d.old_code + ')' : ''} · ${d.name}`, missing:'licence type', note:d.licence_no || ''})), why:'Needed before any truck assignment.'}] : []),
+    ...(can('dr_view') ? [{n:'Drivers without all 4 photos', go:'#dr/dr_list', rows:drv.filter(d => d.is_active && d.photos_missing.length).map(d => ({record:`${d.driver_code} · ${d.name}${d.truck_no ? ' · ' + d.truck_no : ''}`, missing:d.photos_missing.join(', '), note:''})), why:'Take them in Drivers › driver file. Needed before any new truck assignment.'},
+      {n:'Own trucks without driver salary', go:'#dr/dr_trucks', rows:dtr.filter(t => !t.monthly_salary).map(t => ({record:t.registration_no, missing:'salary per month', note:t.driver_name || ''})), why:'Driver salary cannot be approved for these.'}] : []),
     {n:'Existing trucks with gaps', go:'#fl/ft_gaps', rows:fleet.filter(g => g.no_chassis || g.docs_missing || g.loan_state === 'missing' || g.no_emis).map(g => ({record:g.registration_no, missing:[g.no_chassis && 'chassis', g.docs_missing && 'documents', g.loan_state === 'missing' && 'loan yes/no', g.no_emis && 'EMI schedule'].filter(Boolean).join(', '), note:''})), why:'Full list in Fleet › Data gaps.'},
   ];
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Data gaps</h1><button class="ghost sm" id="ugCsv">Download all (CSV)</button></div>
@@ -1781,14 +1803,14 @@ const drLic = d => ({expired:chip('licence expired','bad'), expiring:chip('expir
 VIEWS.dr_list = async m => {
   const rows = await qAll('dr_driver_list', b => b.order('name').order('id'));
   S.drF = S.drF ?? '';
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Drivers</h1><div class="row"><input id="drF" placeholder="Find name, mobile, licence, truck" style="width:240px" value="${esc(S.drF)}">${can('dr_manage') ? '<button class="primary sm" id="drNew">+ New driver</button>' : ''}</div></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Drivers</h1><div class="row"><input id="drF" placeholder="Find name, mobile, licence, truck, old ID" style="width:240px" value="${esc(S.drF)}">${can('dr_manage') ? '<button class="primary sm" id="drNew">+ New driver</button>' : ''}</div></div>
   <div class="kpi"><div><span>Active drivers</span><b>${rows.filter(d => d.is_active).length}</b></div><div><span>On a truck</span><b>${rows.filter(d => d.truck_no).length}</b></div>
     <div><span>Photos missing</span><b ${rows.some(d => d.photos_missing.length) ? 'style="color:var(--alert)"' : ''}>${rows.filter(d => d.is_active && d.photos_missing.length).length}</b></div>
     <div><span>Licence expired</span><b ${rows.some(d => d.licence_state === 'expired') ? 'style="color:var(--alert)"' : ''}>${rows.filter(d => d.licence_state === 'expired').length}</b></div></div>
   <div class="card" id="drT"></div>`;
-  const draw = () => { const f = S.drF.toUpperCase().replace(/\s/g, ''); const list = rows.filter(d => !f || [d.name, d.mobile, d.licence_no, d.truck_no, d.driver_code].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f)));
-    $('drT').innerHTML = table([{h:'Code',k:'driver_code'},{h:'Name',f:d=>`<a href="#" data-d="${d.id}"><b>${esc(d.name)}</b></a>` + (d.is_active ? '' : ' ' + chip('inactive','bad'))},{h:'Mobile',k:'mobile'},
-      {h:'Licence',f:d=>esc(d.licence_no) + ` <span class="muted">${esc(d.licence_type)}</span> ` + drLic(d)},{h:'Truck',f:d=>d.truck_no ? `<b>${esc(d.truck_no)}</b> <span class="muted">since ${d8(d.on_truck_since)}</span>` : '<span class="muted">—</span>'},
+  const draw = () => { const f = S.drF.toUpperCase().replace(/\s/g, ''); const list = rows.filter(d => !f || [d.name, d.mobile, d.licence_no, d.truck_no, d.driver_code, d.old_code, d.alias_name].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f)));
+    $('drT').innerHTML = table([{h:'Code',f:d=>esc(d.driver_code) + (d.old_code ? `<div class="muted" style="font-size:12px">old ${esc(d.old_code)}</div>` : '')},{h:'Name',f:d=>`<a href="#" data-d="${d.id}"><b>${esc(d.name)}</b></a>` + (d.alias_name ? ` <span class="muted">(${esc(d.alias_name)})</span>` : '') + (d.is_active ? '' : ' ' + chip('inactive','bad'))},{h:'Mobile',k:'mobile'},
+      {h:'Licence',f:d=>esc(d.licence_no) + ` <span class="muted">${esc(d.licence_type || '')}</span> ` + (d.licence_type ? '' : chip('licence type missing','bad') + ' ') + drLic(d)},{h:'Truck',f:d=>d.truck_no ? `<b>${esc(d.truck_no)}</b> <span class="muted">since ${d8(d.on_truck_since)}</span>` : '<span class="muted">—</span>'},
       {h:'Photos',f:d=>d.photos_missing.length ? chip(d.photos_missing.length + ' missing','bad') : chip('4 / 4','ok')},{h:'Rating',f:d=>d.avg_rating == null ? '' : drStars(+d.avg_rating)}], list, 'No drivers yet.');
     $('drT').querySelectorAll('[data-d]').forEach(a => a.onclick = e => { e.preventDefault(); drFile(a.dataset.d); }); };
   draw(); $('drF').oninput = () => { S.drF = $('drF').value; draw(); };
@@ -1806,11 +1828,23 @@ function drForm(d){
     <div class="field" style="grid-column:1/-1"><label>Address</label><input id="dfA" value="${esc(d ? d.address || '' : '')}"></div>
     <div class="field"><label>Emergency contact name</label><input id="dfEN" value="${esc(d ? d.emergency_name || '' : '')}"></div>
     <div class="field"><label>Emergency contact mobile</label><input id="dfEM" inputmode="tel" value="${esc(d ? d.emergency_mobile || '' : '')}"></div>
+    <div class="field"><label>Calling name</label><input id="dfAl" value="${esc(d ? d.alias_name || '' : '')}"></div>
+    <div class="field"><label>Date of birth</label><input id="dfDob" type="date" value="${d && d.dob ? d.dob : ''}"></div>
+    <div class="field"><label>Language</label><input id="dfLg" list="dfLgL" value="${esc(d ? d.language || '' : '')}"><datalist id="dfLgL"><option value="Hindi"><option value="Bengali"><option value="Odia"></datalist></div>
+    <div class="field"><label>PAN</label><input id="dfPan" style="text-transform:uppercase" value="${esc(d ? d.pan || '' : '')}"></div>
+    <div class="field"><label>Aadhaar no.</label><input id="dfAad" inputmode="numeric" value="${esc(d ? d.aadhaar_no || '' : '')}"></div>
+    <div class="field"><label>Bank name</label><input id="dfBn" value="${esc(d ? d.bank_name || '' : '')}"></div>
+    <div class="field"><label>Bank account no.</label><input id="dfBa" value="${esc(d ? d.bank_account || '' : '')}"></div>
+    <div class="field"><label>IFSC</label><input id="dfIf" style="text-transform:uppercase" value="${esc(d ? d.bank_ifsc || '' : '')}"></div>
+    <div class="field"><label>Branch</label><input id="dfBr" value="${esc(d ? d.bank_branch || '' : '')}"></div>
+    <div class="field"><label>Actual birthday</label><input id="dfBd" type="date" value="${d && d.birthday ? d.birthday : ''}"></div>
+    <div class="field"><label>Reference person</label><input id="dfRf" value="${esc(d ? d.reference_person || '' : '')}"></div>
     ${d ? `<div class="field"><label>Status</label><select id="dfS"><option value="true" ${d.is_active ? 'selected' : ''}>Active</option><option value="false" ${d.is_active ? '' : 'selected'}>Inactive</option></select></div>` : ''}</div>
   <p class="muted">${d ? '' : 'After saving, take the 4 photos from the driver\'s file: licence, driver, Aadhaar, Parivahan verification.'}</p>
   <div class="row"><button class="primary" id="dfOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
   $('dfOk').onclick = e => act(e.target, () => rpc('dr_driver_save', {p:{id:d ? d.id : null, name:$('dfN').value, mobile:$('dfM').value, licence_no:$('dfL').value, licence_type:$('dfT').value,
-      licence_expiry:$('dfE').value || null, joining_date:$('dfJ').value || null, address:$('dfA').value, emergency_name:$('dfEN').value, emergency_mobile:$('dfEM').value, is_active:d ? $('dfS').value === 'true' : true}}), r => (d ? 'Saved ' : 'Driver ' + r.driver_code + ' created'))
+      licence_expiry:$('dfE').value || null, joining_date:$('dfJ').value || null, address:$('dfA').value, emergency_name:$('dfEN').value, emergency_mobile:$('dfEM').value, is_active:d ? $('dfS').value === 'true' : true,
+      alias_name:$('dfAl').value, dob:$('dfDob').value || null, language:$('dfLg').value, pan:$('dfPan').value, aadhaar_no:$('dfAad').value, bank_name:$('dfBn').value, bank_account:$('dfBa').value, bank_ifsc:$('dfIf').value, bank_branch:$('dfBr').value, birthday:$('dfBd').value || null, reference_person:$('dfRf').value}}), r => (d ? 'Saved ' : 'Driver ' + r.driver_code + ' created'))
     .then(r => drFile(r.id)).catch(() => {});
 }
 async function drFile(id){
@@ -1819,9 +1853,12 @@ async function drFile(id){
   const urls = Object.fromEntries(await Promise.all(ev.map(async r => [r.id, (await sb.storage.from('wh-evidence').createSignedUrl(r.storage_path, 600)).data?.signedUrl])));
   const ed = can('dr_manage');
   modal(`<div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(d.driver_code)} · ${esc(d.name)} ${d.is_active ? '' : chip('inactive','bad')}</h2><button class="ghost sm" onclick="closeModal();go()">Close</button></div>
-    <div class="kpi" style="margin-top:10px"><div><span>Mobile</span><b style="font-size:16px">${esc(d.mobile)}</b></div><div><span>Licence</span><b style="font-size:14px;word-break:break-all">${esc(d.licence_no)}</b><span>${esc(d.licence_type)} ${d.licence_expiry ? '· till ' + d8(d.licence_expiry) : ''}</span></div>
+    <div class="kpi" style="margin-top:10px"><div><span>Mobile</span><b style="font-size:16px">${esc(d.mobile)}</b></div><div><span>Licence</span><b style="font-size:14px;word-break:break-all">${esc(d.licence_no)}</b><span>${esc(d.licence_type || 'type ?')} ${d.licence_expiry ? '· till ' + d8(d.licence_expiry) : ''}</span></div>
       <div><span>Truck now</span><b style="font-size:16px">${d.truck_no ? esc(d.truck_no) : '—'}</b>${d.truck_no ? `<span>since ${d8(d.on_truck_since)}</span>` : ''}</div><div><span>Rating</span><b style="font-size:16px">${d.avg_rating == null ? '—' : drStars(+d.avg_rating)}</b></div></div>
     ${drLic(d)} ${d.joining_date ? `<span class="muted">Joined ${d8(d.joining_date)}</span>` : ''} ${d.address ? `<div class="muted">${esc(d.address)}</div>` : ''} ${d.emergency_name || d.emergency_mobile ? `<div class="muted">Emergency: ${esc([d.emergency_name, d.emergency_mobile].filter(Boolean).join(' · '))}</div>` : ''}
+    <div class="muted" style="margin-top:6px">${esc([d.old_code && 'Old ID ' + d.old_code, d.alias_name && 'Calling name ' + d.alias_name, d.dob && 'DOB ' + d8(d.dob), d.language, d.pan && 'PAN ' + d.pan,
+      d.aadhaar_no && 'Aadhaar XXXX XXXX ' + d.aadhaar_no.slice(-4), d.bank_account && `Bank ${d.bank_name || ''} ${d.bank_account} ${d.bank_ifsc || ''} ${d.bank_branch || ''}`, d.reference_person && 'Ref. ' + d.reference_person, d.registered_on && 'Registered ' + d8(d.registered_on)].filter(Boolean).join(' · '))}</div>
+    ${d.licence_type ? '' : chip('licence type missing — fill it before assigning a truck','bad')}
     ${ed ? '<div class="row" style="margin:10px 0"><button class="ghost sm" id="dxEdit">Edit details</button></div>' : ''}
     <h2>Photos</h2><div class="grid">${DR_PHOTOS.map(([t, l]) => { const p = ev.find(x => x.entity_type === t);
       return `<div class="card" style="margin:0;padding:10px"><b>${l}</b> ${p ? chip('taken ' + d8(p.taken_at),'ok') : chip('missing','bad')}
