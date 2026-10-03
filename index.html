@@ -1659,6 +1659,109 @@ VIEWS.up_gaps = async m => {
   $('ugCsv').onclick = () => csv(G.flatMap(x => x.rows.map(r => ({list:x.n, ...r}))), 'data-gaps');
 };
 
+/* ============ PLANT TRIP ENTRY ============ */
+// Every customer plant has its own Trip Entry; users see only the plants given to them (HO with all locations sees all).
+// Step 1 (approved 3 Oct 2026): Orders. Order = Sold-To, Ship-To (destination from its master), material, MT.
+// One truck carries one or more orders (an order is never split). Putting orders on a truck makes it WFL (Waiting for Load).
+// Orders can be moved to another truck, taken off, or cancelled (with reason) while the truck is waiting for load.
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'te', name:'Plant Trip Entry', icon:'truck', desc:'Customer plants: orders, trucks waiting for load (more steps to follow)',
+    usesLocation:true, locKinds:['plant'], visible: () => can('te_view'),
+    screens: () => { const L = S.loc; if(!L) return [['#','Plant'],['te_orders','Orders']];
+      return [['#', L.code + ' · plant'],['te_orders','Orders'],['te_trucks','Trucks (WFL)'],['te_cancelled','Cancelled orders']]; } });
+ICONS.truck = ICONS.truck || '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5h13v11H1z"/><path d="M14 9h4l3 3v4h-7"/><circle cx="5.5" cy="18.5" r="1.8"/><circle cx="17.5" cy="18.5" r="1.8"/></svg>';
+MOD_SHORT.te = 'Plant orders, trucks waiting for load';
+const teNoPlant = m => { m.innerHTML = '<div class="card"><div class="empty">No plant is assigned to you. Ask the administrator to give you a plant in Users & roles.</div></div>'; };
+const teOrderCols = (sel) => [
+  ...(sel ? [{h:'',f:o=>`<input type="checkbox" data-sel="${o.id}" style="width:auto">`}] : []),
+  {h:'Order',k:'order_no'},{h:'Date',f:o=>d8(o.order_date)},
+  {h:'Sold-To',f:o=>esc(o.sold_to_name) + `<div class="muted" style="font-size:12px">${esc(o.sold_to_code)}</div>`},
+  {h:'Ship-To',f:o=>esc(o.ship_to_name) + `<div class="muted" style="font-size:12px">${esc(o.ship_to_code)}</div>`},
+  {h:'Destination',f:o=>esc(o.destination) + (o.district ? `<div class="muted" style="font-size:12px">${esc(o.district)}</div>` : '')},
+  {h:'Material',k:'material'},{h:'MT',n:1,f:o=>n3(o.qty_mt)}];
+
+/* ---- orders: create, open list, put on a truck ---- */
+VIEWS.te_orders = async m => {
+  const L = S.loc; if(!L) return teNoPlant(m);
+  const open = await qAll('te_order_list', b => b.eq('plant_id', L.id).eq('status', 'open').order('created_at'));
+  const ed = can('te_order');
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Orders · ${esc(L.code)}</h1>${ed ? '<button class="primary sm" id="toNew">+ New order</button>' : ''}</div>
+  <div class="kpi"><div><span>Open orders</span><b>${open.length}</b></div><div><span>Open MT</span><b>${n3(open.reduce((s, o) => s + (+o.qty_mt||0), 0))}</b></div></div>
+  <div class="card"><h2>Open orders</h2>
+    ${ed && open.length ? `<p class="muted">Tick the orders going on one truck, enter the truck number, and save. The truck becomes WFL (Waiting for Load).</p>
+    <div class="row" style="margin-bottom:10px"><input id="toTruck" placeholder="Truck no." style="width:200px;text-transform:uppercase" autocomplete="off" list="toTruckL"><datalist id="toTruckL">${S.trucks.map(t => `<option value="${esc(t.registration_no)}">`).join('')}</datalist>
+      <button class="primary sm" id="toAssign">Put ticked orders on truck</button><span class="muted" id="toSel"></span></div>` : ''}
+    ${table([...teOrderCols(ed), ...(ed ? [{h:'',f:o=>`<button class="ghost sm" data-x="${o.id}">Cancel</button>`}] : [])], open, 'No open orders.')}</div>`;
+  if(!ed) return;
+  $('toNew').onclick = () => teOrderForm(L);
+  const picked = () => [...m.querySelectorAll('[data-sel]:checked')].map(c => c.dataset.sel);
+  m.querySelectorAll('[data-sel]').forEach(c => c.onchange = () => { const ids = picked(); $('toSel').textContent = ids.length ? `${ids.length} ticked · ${n3(open.filter(o => ids.includes(o.id)).reduce((s, o) => s + (+o.qty_mt||0), 0))} MT` : ''; });
+  if($('toAssign')) $('toAssign').onclick = e => { const ids = picked(); if(!ids.length) return toast('Tick the orders first', 'err');
+    act(e.target, () => rpc('te_order_assign', {p_orders:ids, p_truck_no:$('toTruck').value}), r => `${r.orders} order(s) on ${r.truck_no} · Waiting for Load`).then(() => go()).catch(() => {}); };
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => teCancel(open.find(o => o.id === b.dataset.x)));
+};
+function teOrderForm(L){
+  const sold = S.soldTos.filter(s => s.client_id === L.client_id && s.is_active !== false);
+  const mats = S.materials.filter(x => x.is_active && x.client_id === L.client_id);
+  modal(`<h2>New order · ${esc(L.code)}</h2><div class="grid">
+    <div class="field" style="grid-column:1/-1"><label>Sold-To party *</label><input id="ofSo" list="ofSoL" autocomplete="off" placeholder="code or name"><datalist id="ofSoL">${sold.map(s => `<option value="${esc(s.sap_code + ' · ' + s.name)}">`).join('')}</datalist></div>
+    <div class="field" style="grid-column:1/-1"><label>Ship-To party *</label><select id="ofSh"><option value="">Choose the Sold-To first</option></select></div>
+    <div class="field"><label>Destination</label><input id="ofDest" disabled></div>
+    <div class="field"><label>Material *</label><select id="ofMat">${opt(mats, 'id', 'code', mats.length === 1 ? mats[0].id : '', 'Select')}</select></div>
+    <div class="field"><label>Quantity (MT) *</label><input id="ofQty" type="number" step="0.001" min="0" inputmode="decimal"></div></div>
+  <div class="row" style="margin-top:12px"><button class="primary" id="ofSave">Create order</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  let so = null;
+  const ships = () => so ? S.parties.filter(p => p.client_id === L.client_id && p.sold_to_code === so.sap_code && !p.location_id && p.is_active !== false) : [];
+  $('ofSo').onchange = () => { const c = $('ofSo').value.split(' · ')[0].trim().toUpperCase();
+    so = sold.find(s => s.sap_code.toUpperCase() === c) || sold.find(s => s.name.toUpperCase() === $('ofSo').value.trim().toUpperCase()) || null;
+    const list = ships();
+    $('ofSh').innerHTML = !so ? '<option value="">Choose the Sold-To first</option>' : !list.length ? '<option value="">No Ship-To for this Sold-To in the master</option>'
+      : '<option value="">Select Ship-To</option>' + list.map(p => `<option value="${p.id}" ${p.destination ? '' : 'disabled'}>${esc(p.sap_code + ' · ' + p.party_name)}${p.destination ? '' : ' (no destination: fix in Master Data)'}</option>`).join('');
+    if(list.filter(p => p.destination).length === 1){ $('ofSh').value = list.find(p => p.destination).id; } $('ofSh').onchange(); };
+  $('ofSh').onchange = () => { const p = ships().find(x => x.id === $('ofSh').value); $('ofDest').value = p ? [p.destination, p.district].filter(Boolean).join(', ') : ''; };
+  $('ofSave').onclick = e => { if(!so) return toast('Choose the Sold-To from the list', 'err');
+    act(e.target, () => rpc('te_order_create', {p:{plant_id:L.id, sold_to_id:so.id, ship_to_id:$('ofSh').value || null, material_id:$('ofMat').value || null, qty_mt:$('ofQty').value}}), r => 'Order ' + r.order_no + ' created')
+      .then(() => { closeModal(); go(); }).catch(() => {}); };
+}
+function teCancel(o){
+  modal(`<h2>Cancel order ${esc(o.order_no)}</h2><p>${esc(o.ship_to_name)} · ${esc(o.material)} · ${n3(o.qty_mt)} MT${o.truck_no ? ' · on truck <b>' + esc(o.truck_no) + '</b>' : ''}</p>
+    <div class="field"><label>Reason *</label><input id="ocR"></div><div class="row"><button class="primary" id="ocOk">Cancel order</button><button class="ghost" onclick="closeModal()">Keep</button></div>`);
+  $('ocOk').onclick = e => act(e.target, () => rpc('te_order_cancel', {p_order:o.id, p_reason:$('ocR').value}), 'Order cancelled').then(() => { closeModal(); go(); }).catch(() => {});
+}
+
+/* ---- trucks waiting for load, with their orders ---- */
+VIEWS.te_trucks = async m => {
+  const L = S.loc; if(!L) return teNoPlant(m);
+  const [visits, orders] = await Promise.all([q('te_visit_list', b => b.eq('plant_id', L.id).eq('is_open', true).order('created_at')),
+    qAll('te_order_list', b => b.eq('plant_id', L.id).eq('status', 'assigned').order('order_no'))]);
+  const ed = can('te_order');
+  m.innerHTML = `<h1>Trucks · ${esc(L.code)}</h1>
+  <div class="kpi"><div><span>Waiting for load</span><b>${visits.filter(v => v.status === 'WFL').length}</b></div><div><span>MT on these trucks</span><b>${n3(visits.reduce((s, v) => s + (+v.total_mt||0), 0))}</b></div></div>
+  ${visits.map(v => { const os = orders.filter(o => o.visit_id === v.id);
+    return `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(v.truck_no)} ${chip(v.status + ' · ' + v.status_name, 'warn')}</h2><span class="muted">since ${dt(v.created_at)} · ${os.length} order(s) · <b>${n3(v.total_mt)} MT</b></span></div>
+      ${table([...teOrderCols(false), ...(ed && v.status === 'WFL' ? [{h:'',f:o=>`<button class="ghost sm" data-mv="${o.id}">Move</button> <button class="ghost sm" data-off="${o.id}">Take off</button> <button class="ghost sm" data-x="${o.id}">Cancel</button>`}] : [])], os)}</div>`; }).join('')
+    || '<div class="card"><div class="empty">No truck is waiting for load. Put open orders on a truck from Orders.</div></div>'}`;
+  if(!ed) return;
+  const find = id => orders.find(o => o.id === id);
+  m.querySelectorAll('[data-off]').forEach(b => b.onclick = () => act(b, () => rpc('te_order_unassign', {p_orders:[b.dataset.off]}), 'Back in open orders').then(() => go()).catch(() => {}));
+  m.querySelectorAll('[data-x]').forEach(b => b.onclick = () => teCancel(find(b.dataset.x)));
+  m.querySelectorAll('[data-mv]').forEach(b => b.onclick = () => { const o = find(b.dataset.mv);
+    modal(`<h2>Move ${esc(o.order_no)}</h2><p>Now on <b>${esc(o.truck_no)}</b>. ${esc(o.ship_to_name)} · ${n3(o.qty_mt)} MT</p>
+      <div class="field"><label>New truck no. *</label><input id="omT" style="text-transform:uppercase" list="omTL" autocomplete="off"><datalist id="omTL">${[...new Set(visits.map(v => v.truck_no).filter(t => t !== o.truck_no))].map(t => `<option value="${esc(t)}">`).join('')}</datalist></div>
+      <div class="row"><button class="primary" id="omOk">Move</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+    $('omOk').onclick = e => act(e.target, () => rpc('te_order_assign', {p_orders:[o.id], p_truck_no:$('omT').value}), r => 'Moved to ' + r.truck_no).then(() => { closeModal(); go(); }).catch(() => {}); });
+};
+
+/* ---- cancelled orders (month) ---- */
+VIEWS.te_cancelled = async m => {
+  const L = S.loc; if(!L) return teNoPlant(m);
+  S.teM = S.teM || localMonth();
+  const rows = await qAll('te_order_list', b => b.eq('plant_id', L.id).eq('status', 'cancelled').gte('order_date', S.teM).lt('order_date', addMonths(S.teM, 1)).order('cancelled_at', {ascending:false}));
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Cancelled orders · ${esc(L.code)}</h1><select id="tcM" style="width:auto">${monthsBack(12).map(p => `<option value="${p}" ${p===S.teM?'selected':''}>${monthLbl(p)}</option>`).join('')}</select></div>
+  <div class="card">${table([...teOrderCols(false), {h:'Cancelled',f:o=>dt(o.cancelled_at)}, {h:'Reason',k:'cancel_reason'}], rows, 'No cancelled orders this month.')}</div>`;
+  $('tcM').onchange = () => { S.teM = $('tcM').value; go(); };
+};
+
 /* ============ VENDOR MASTER ============ */
 // A vendor has one or more types; every vendor dropdown shows only its type. HO / Admin (vendor_admin) create and edit.
 // Mandatory: name, type, mobile, PAN. One PAN = one vendor. GSTIN must contain the PAN. Bank details before a bank payment.
