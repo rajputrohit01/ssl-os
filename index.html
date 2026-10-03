@@ -1771,8 +1771,8 @@ const DR_PHOTOS = [['dr_licence','Licence'],['dr_photo','Driver photo'],['dr_aad
 const DR_REASONS = ['Left job','Transferred to another truck','Misconduct','Accident','Absent / not reporting','Health','Other'];
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'dr', name:'Drivers', icon:'driver', desc:'Drivers of our own trucks: details, phone photos (licence, Aadhaar, Parivahan), assignment to trucks with effective date, removal with reason and rating',
-    visible: () => can('dr_view'),
-    screens: () => [['#','Drivers'],['dr_list','Drivers'],['dr_trucks','Trucks & drivers'],['dr_expiry','Licence expiry']] });
+    visible: () => can('dr_view') || can('dr_salary_view'),
+    screens: () => { const t = [['#','Drivers'],['dr_list','Drivers'],['dr_trucks','Trucks & drivers'],['dr_expiry','Licence expiry']]; if(can('dr_salary_view')) t.push(['#','Salary'],['dr_salary','Salary sheet']); return t; } });
 ICONS.driver = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="4"/><path d="M4 21v-1a7 7 0 0 1 16 0v1"/><circle cx="12" cy="17" r="2"/></svg>';
 MOD_SHORT.dr = 'Driver master, photos, truck assignment';
 const drStars = n => n == null ? '' : '★'.repeat(Math.round(n)) + '☆'.repeat(5 - Math.round(n)) + ` ${n}`;
@@ -1837,17 +1837,20 @@ async function drFile(id){
 VIEWS.dr_trucks = async m => {
   const [trucks, drivers] = await Promise.all([qAll('dr_truck_list', b => b.order('registration_no').order('truck_id')), qAll('dr_driver_list', b => b.eq('is_active', true).order('name').order('id'))]);
   S.dtF = S.dtF ?? '';
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Trucks & drivers</h1><div class="row"><select id="dtS" style="width:auto"><option value="">All trucks</option><option value="no">Without driver</option><option value="yes">With driver</option></select><input id="dtF" placeholder="Find truck or driver" style="width:200px" value="${esc(S.dtF)}"></div></div>
-  <div class="kpi"><div><span>Own trucks</span><b>${trucks.length}</b></div><div><span>With driver</span><b>${trucks.filter(t => t.driver_id).length}</b></div><div><span>Without driver</span><b ${trucks.some(t => !t.driver_id) ? 'style="color:var(--alert)"' : ''}>${trucks.filter(t => !t.driver_id).length}</b></div></div>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Trucks & drivers</h1><div class="row"><select id="dtS" style="width:auto"><option value="">All trucks</option><option value="no">Without driver</option><option value="yes">With driver</option><option value="nosal">Salary not set</option></select><input id="dtF" placeholder="Find truck or driver" style="width:200px" value="${esc(S.dtF)}"></div></div>
+  <div class="kpi"><div><span>Own trucks</span><b>${trucks.length}</b></div><div><span>With driver</span><b>${trucks.filter(t => t.driver_id).length}</b></div><div><span>Without driver</span><b ${trucks.some(t => !t.driver_id) ? 'style="color:var(--alert)"' : ''}>${trucks.filter(t => !t.driver_id).length}</b></div>
+    <div><span>Salary not set</span><b ${trucks.some(t => !t.monthly_salary) ? 'style="color:var(--alert)"' : ''}>${trucks.filter(t => !t.monthly_salary).length}</b></div></div>
   <div class="card" id="dtT"></div>`;
   const ed = can('dr_manage');
   const draw = () => { const f = S.dtF.toUpperCase().replace(/\s/g, ''), s = $('dtS').value;
-    const list = trucks.filter(t => (!s || (s === 'yes') === !!t.driver_id) && (!f || [t.registration_no, t.driver_name, t.driver_mobile].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f))));
+    const list = trucks.filter(t => (!s || (s === 'nosal' ? !t.monthly_salary : (s === 'yes') === !!t.driver_id)) && (!f || [t.registration_no, t.driver_name, t.driver_mobile].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f))));
     $('dtT').innerHTML = table([{h:'Truck',f:t=>`<b>${esc(t.registration_no)}</b> <span class="muted">${esc(t.company_code || '')}</span>`},{h:'Driver',f:t=>t.driver_id ? esc(t.driver_name) + ` <span class="muted">${esc(t.driver_code)}</span>` + (t.licence_expired ? ' ' + chip('licence expired','bad') : '') : '<span class="muted">—</span>'},
       {h:'Mobile',k:'driver_mobile'},{h:'Since',f:t=>d8(t.from_date)},
+      {h:'Salary / month',n:1,f:t=>(t.monthly_salary ? inr(t.monthly_salary) + ` <div class="muted" style="font-size:12px">from ${d8(t.salary_from)}</div>` : chip('not set','bad')) + (ed ? ` <button class="ghost sm" data-sal="${t.truck_id}">${t.monthly_salary ? 'Change' : 'Set'}</button>` : '')},
       {h:'',f:t=>!ed ? '' : t.driver_id ? `<button class="ghost sm" data-ch="${t.truck_id}">Change driver</button> <button class="ghost sm" data-rm="${t.truck_id}">Remove</button>` : `<button class="primary sm" data-as="${t.truck_id}">Assign driver</button>`}], list.slice(0, 500), 'No trucks.');
     $('dtT').querySelectorAll('[data-as],[data-ch]').forEach(b => b.onclick = () => drAssignForm(trucks.find(t => t.truck_id === (b.dataset.as || b.dataset.ch)), drivers));
-    $('dtT').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => drRemoveForm(trucks.find(t => t.truck_id === b.dataset.rm))); };
+    $('dtT').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => drRemoveForm(trucks.find(t => t.truck_id === b.dataset.rm)));
+    $('dtT').querySelectorAll('[data-sal]').forEach(b => b.onclick = () => drSalaryForm(trucks.find(t => t.truck_id === b.dataset.sal))); };
   draw(); $('dtF').oninput = () => { S.dtF = $('dtF').value; draw(); }; $('dtS').onchange = draw;
 };
 const drOutFields = (pfx) => `<div class="field"><label>Reason for removal *</label><select id="${pfx}R"><option value="">Select</option>${DR_REASONS.map(r => `<option>${esc(r)}</option>`).join('')}</select></div>
@@ -1870,6 +1873,36 @@ function drRemoveForm(t){
   $('drOk').onclick = e => act(e.target, () => rpc('dr_unassign', {p_assignment:t.assignment_id, p_to:$('drTo').value || null, p_reason:$('drR').value, p_rating:$('drS').value ? +$('drS').value : null, p_comment:$('drC').value}), 'Driver removed')
     .then(() => { closeModal(); go(); }).catch(() => {});
 }
+
+async function drSalaryForm(t){
+  const hist = await q('dr_truck_salaries', b => b.eq('truck_id', t.truck_id).order('effective_from', {ascending:false}));
+  modal(`<h2>Driver salary · ${esc(t.registration_no)}</h2><p class="muted">The driver on this truck earns this salary × days on the truck ÷ days in the month. A change from a date is a new line; earlier months keep their rate.</p>
+    <div class="grid"><div class="field"><label>Salary per month ₹ *</label><input id="tsA" type="number" min="0" step="100"></div><div class="field"><label>Effective from *</label><input id="tsF" type="date" value="${localMonth()}"></div></div>
+    <div class="row"><button class="primary" id="tsOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>
+    <h2>History</h2>${table([{h:'From',f:r=>d8(r.effective_from)},{h:'Salary / month',n:1,f:r=>inr(r.monthly_salary)}], hist, 'No salary set yet.')}`);
+  $('tsOk').onclick = e => act(e.target, async () => { const v = +$('tsA').value; if(!(v > 0)) throw new Error('Enter the salary per month'); if(!$('tsF').value) throw new Error('Enter the effective date');
+    const {error} = await sb.from('dr_truck_salaries').insert({truck_id:t.truck_id, monthly_salary:v, effective_from:$('tsF').value}); if(error) throw error; }, 'Salary saved').then(() => { closeModal(); go(); }).catch(() => {});
+}
+
+/* ---- monthly salary sheet ---- */
+VIEWS.dr_salary = async m => {
+  S.dsM = S.dsM || addMonths(localMonth(), -1);
+  const [[mon], lines] = await Promise.all([q('dr_salary_months', b => b.eq('period', S.dsM)), qAll('dr_salary_sheet', b => b.eq('period', S.dsM).order('driver_name').order('seg_from'))]);
+  const by = {}; lines.forEach(l => { const k = l.driver_id; by[k] = by[k] || {driver_name:l.driver_name, driver_code:l.driver_code, mobile:l.driver_mobile, days:0, amount:0, trucks:new Set(), missing:false};
+    by[k].days += l.days; by[k].amount += +l.amount || 0; by[k].trucks.add(l.truck_no); if(l.monthly_rate == null) by[k].missing = true; });
+  const tot = Object.values(by); const miss = lines.filter(l => l.monthly_rate == null).length; const ap = can('dr_salary_approve'); const locked = mon && mon.status === 'approved';
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Driver salary · ${monthLbl(S.dsM)}</h1><div class="row"><select id="dsM" style="width:auto">${monthsBack(13).map(p => `<option value="${p}" ${p===S.dsM?'selected':''}>${monthLbl(p)}</option>`).join('')}</select>
+    ${ap && !locked ? `<button class="ghost sm" id="dsRe">${mon ? 'Recalculate' : 'Calculate now'}</button>` : ''}${ap && mon && !locked ? '<button class="primary sm" id="dsAp">Approve & lock</button>' : ''}<button class="ghost sm" id="dsCsv">Download CSV</button></div></div>
+  <p class="muted">${!mon ? 'Not calculated yet. It is calculated automatically on the 1st of the next month at 00:30.' : locked ? `Approved ${dt(mon.approved_at)} — locked.` : `Calculated ${dt(mon.calculated_at)}. Recalculate after correcting an assignment or a truck salary; approve to lock.`}
+    Salary = truck salary per month × days on the truck ÷ days in the month; the changeover day goes to the incoming driver.</p>
+  <div class="kpi"><div><span>Drivers</span><b>${tot.length}</b></div><div><span>Total salary</span><b>${inr(tot.reduce((s, x) => s + x.amount, 0))}</b></div>${miss ? `<div><span>Lines without truck salary</span><b style="color:var(--alert)">${miss}</b></div>` : ''}<div><span>Status</span><b style="font-size:16px">${mon ? (locked ? 'Approved' : 'Calculated') : '—'}</b></div></div>
+  <div class="card"><h2>By driver</h2>${table([{h:'Driver',f:x=>esc(x.driver_name) + ` <span class="muted">${esc(x.driver_code)}</span>`},{h:'Mobile',k:'mobile'},{h:'Truck(s)',f:x=>esc([...x.trucks].join(', '))},{h:'Days',n:1,k:'days'},{h:'Salary',n:1,f:x=>'<b>' + inr(x.amount) + '</b>' + (x.missing ? ' ' + chip('truck salary missing','bad') : '')}], tot, mon ? 'No driver was on a truck this month.' : 'Not calculated yet.')}</div>
+  <details class="card"><summary>Detail by truck and rate (${lines.length})</summary>${table([{h:'Driver',k:'driver_name'},{h:'Truck',k:'truck_no'},{h:'From',f:l=>d8(l.seg_from)},{h:'To',f:l=>d8(l.seg_to)},{h:'Days',n:1,f:l=>l.days + ' / ' + l.month_days},{h:'Salary / month',n:1,f:l=>l.monthly_rate == null ? chip('not set','bad') : inr(l.monthly_rate)},{h:'Amount',n:1,f:l=>inr(l.amount)}], lines)}</details>`;
+  $('dsM').onchange = () => { S.dsM = $('dsM').value; go(); };
+  if($('dsRe')) $('dsRe').onclick = e => act(e.target, () => rpc('dr_salary_recalc', {p_period:S.dsM}), n => `Calculated: ${n} line(s)`).then(() => go()).catch(() => {});
+  if($('dsAp')) $('dsAp').onclick = e => { if(!confirm('Approve and lock the driver salary for ' + monthLbl(S.dsM) + '?')) return; act(e.target, () => rpc('dr_salary_approve', {p_period:S.dsM}), 'Approved and locked').then(() => go()).catch(() => {}); };
+  $('dsCsv').onclick = () => csv(lines.map(l => ({month:S.dsM.slice(0, 7), driver_code:l.driver_code, driver:l.driver_name, mobile:l.driver_mobile, truck:l.truck_no, from:l.seg_from, to:l.seg_to, days:l.days, month_days:l.month_days, salary_per_month:l.monthly_rate, amount:l.amount})), 'driver-salary-' + S.dsM.slice(0, 7));
+};
 
 /* ---- licence expiry ---- */
 VIEWS.dr_expiry = async m => {
