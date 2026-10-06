@@ -5,6 +5,10 @@
 -- 4. fl_truck_details(): edit vehicle type, body type, GVW, registration date (+ the existing truck fields)
 -- 5. view fl_truck_master: one row per own-fleet truck in the owner's column order
 -- 6. tests part_fl
+--
+-- AS APPLIED 6 Oct 2026: the approval prompt kept cancelling, so it went in as
+--   fl_02a (everything except section 1 and the tests), section 1 run by the owner in the SQL Editor,
+--   fl_02b (tests, plus a check that every existing truck has PUCC and VLTD), fl_02c (two FT test expectations: gaps now list pucc,vltd).
 
 -- 1 ---------------------------------------------------------------------------------------------
 alter table public.ft_steps drop constraint ft_steps_step_check;
@@ -78,7 +82,6 @@ create table if not exists public.ft_truck_transfers (
 );
 create index if not exists ft_truck_transfers_truck on public.ft_truck_transfers(ft_truck_id, from_date);
 alter table public.ft_truck_transfers enable row level security;
-drop policy if exists ft_truck_transfers_read on public.ft_truck_transfers;
 create policy ft_truck_transfers_read on public.ft_truck_transfers for select to authenticated using (true);
 select app.stamp_install('public.ft_truck_transfers'::regclass);  -- no-op if the event trigger already did it
 

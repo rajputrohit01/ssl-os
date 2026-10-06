@@ -896,7 +896,9 @@ const FT_STEPS = [
   ['fitness',   'Fitness',                'Fitness certificate no.', true],
   ['road_tax',  'Road tax',               'Tax receipt no.', true],
   ['gps',       'GPS',                    'GPS device ID', false],
-  ['fastag',    'FASTag',                 'FASTag ID', false]];
+  ['fastag',    'FASTag',                 'FASTag ID', false],
+  ['pucc',      'PUCC (Pollution)',       'PUCC certificate no.', true],
+  ['vltd',      'VLTD',                   'VLTD device / certificate no.', true]];
 const FT_STEP = Object.fromEntries(FT_STEPS.map(s => [s[0], {n:s[1], doc:s[2], exp:s[3]}]));
 const FT_EXTRA = {gps:[['provider','GPS provider']], fastag:[['installed_by','Installed by (bank / agent)']], body:[['body_type','Body type (e.g. 24 ft high-side)']]};
 const FT_ORDER_ST = {pending_approval:['waiting for MP approval','warn'], approved:['approved','info'], rejected:['rejected','bad'], placed:['approved · awaiting truck invoices','ok'], cancelled:['cancelled','']};
@@ -928,12 +930,9 @@ MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
     screens: () => { const t = [['#','New trucks'],['ft_dash','Dashboard'],['ft_orders','Purchase orders'],['ft_trucks','Trucks & onboarding'],['ft_emis','Loans & EMIs (new trucks)'],['ft_vouchers','Vendor payments'],['ft_reports','Reports']];
       if(can('ft_entry') || can('ft_accounts')) t.push(['#','Setup'],['ft_setup','Models & financiers'],['ft_vendors','Purchase vendors']);
       return t; } },
-  { key:'fl', name:'Fleet', icon:'fleet', desc:'EXISTING trucks: truck master, truck documents and expiries, existing loans and EMIs, data gaps, Excel import',
+  { key:'fl', name:'Fleet', icon:'fleet', desc:'OWN FLEET: truck master, number changes (transfers), truck documents and expiries, existing loans and EMIs, data gaps',
     visible: () => can('ft_view'),
-    screens: () => { const t = [['#','Existing fleet'],['fl_list','Trucks'],['fl_docs','Truck documents'],['ft_emis','Existing EMIs'],['ft_gaps','Data gaps'],['ft_reports','Reports']];
-      if(can('ft_import')) t.push(['#','Setup'],['ft_import','Import existing fleet'],['fl_fastag','FASTag mapping']);
-      t.push(['fl_vendors','Fleet vendors']);
-      return t; } });
+    screens: () => [['#','Own fleet'],['fl_list','Trucks'],['fl_transfers','Truck transfers'],['fl_docs','Truck documents'],['ft_emis','Existing EMIs'],['ft_gaps','Data gaps'],['ft_reports','Reports']] });
 ICONS.fleet = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 7h9v8H2z"/><path d="M11 10h3l3 3v2h-6z"/><circle cx="5" cy="17" r="1.5"/><circle cx="14" cy="17" r="1.5"/><path d="M15 5h7M18 2v6"/></svg>';
 // which trucks a shared screen shows: Truck Purchase = trucks bought through the system, Fleet = existing (imported) trucks
 const ftSrc = () => S.module==='fl' ? 'import' : 'purchase';
@@ -1301,7 +1300,16 @@ VIEWS.ft_reports = async m => {
 
 /* ============ FLEET: EXISTING TRUCKS ============ */
 // Existing (imported) trucks only. New trucks are bought and onboarded in Truck Purchase.
-const FL_DOCS = ['insurance','permit','nat_permit','fitness','road_tax','gps','fastag'];
+const FL_DOCS = ['permit','nat_permit','fitness','insurance','road_tax','pucc','vltd'];
+const FL_DOC_H = {permit:'5 Year Permit', nat_permit:'All India Permit', fitness:'CF Document', insurance:'Insurance', road_tax:'Tax Token', pucc:'PUCC (Pollution)', vltd:'VLTD'};
+const FL_VTYPES = ['04WH-LCV','06WH-HCV','10WH','12WH','14WH','16WH-HCV','TRACTOR TRAILER'];
+// Own Fleet Trucks: columns in the order the business uses
+const FL_COLS = [{h:'Current Registration No',f:t=>`<b>${esc(t.registration_no)}</b>`},{h:'Vehicle Type',f:t=>esc(t.vehicle_type||'—')},{h:'Body Type',f:t=>esc(t.body_type||'—')},
+  {h:'GVW (Ton)',n:1,f:t=>t.gvw_ton!=null ? esc(String(+t.gvw_ton)) : '—'},{h:'Manufacturer',f:t=>esc(t.manufacturer||'—')},{h:'Owner',f:t=>`<span title="${esc(t.owner||'')}">${esc(t.owner_code)}</span>`},
+  {h:'Chassis No.',f:t=>esc(t.chassis_no||'—')},{h:'Model No.',f:t=>esc(t.model_no||'—')},{h:'Engine No.',f:t=>esc(t.engine_no||'—')},
+  {h:'Registration Date',f:t=>t.registration_date ? d8(t.registration_date) : '—'},{h:'Original Registration No',f:t=>esc(t.original_registration_no) + (+t.transfers ? ' ' + chip(t.transfers + ' change' + (+t.transfers > 1 ? 's' : ''),'info') : '')}];
+const flCsvRow = t => ({current_registration_no:t.registration_no, vehicle_type:t.vehicle_type||'', body_type:t.body_type||'', gvw_ton:t.gvw_ton??'', manufacturer:t.manufacturer||'', owner:t.owner_code,
+  chassis_no:t.chassis_no||'', model_no:t.model_no||'', engine_no:t.engine_no||'', registration_date:t.registration_date||'', original_registration_no:t.original_registration_no});
 const docState = s => { if(!s || s.status==='open') return ['missing','warn']; if(s.status==='not_needed') return ['not needed','']; if(!s.expiry_on) return ['recorded','ok'];
   const d = Math.floor((new Date(s.expiry_on + 'T00:00:00') - new Date(today() + 'T00:00:00')) / 86400000);
   return d < 0 ? [`expired ${-d} day(s) ago`,'bad'] : d <= 30 ? [`expires in ${d} day(s)`,'warn'] : ['valid','ok']; };
@@ -1309,31 +1317,28 @@ const docState = s => { if(!s || s.status==='open') return ['missing','warn']; i
 VIEWS.fl_list = async m => {
   await ftMasters();
   if(S.flTruck) return flTruckFile(m, S.flTruck);
-  const [rows, emis, docs] = await Promise.all([qAll('ft_truck_list', b => b.eq('source','import').order('registration_no').order('id')),
+  const [rows, emis, docs] = await Promise.all([qAll('fl_truck_master', b => b.eq('source','import').order('registration_no').order('id')),
     qAll('ft_emi_list', b => b.eq('source','import').in('state', ['due','bounced']).order('id')), qAll('ft_steps', b => b.in('step', FL_DOCS).eq('status','done').not('expiry_on','is',null).order('id'))]);
   const ids = new Set(rows.map(t => t.id));
   const week = new Date(Date.now() + 7*86400000).toISOString().slice(0,10), in30 = new Date(Date.now() + 30*86400000).toISOString().slice(0,10);
   const exp = docs.filter(d => ids.has(d.ft_truck_id) && d.expiry_on <= in30);
   const qs = (S.flQ||'').toUpperCase();
-  const list = rows.filter(t => !qs || [t.registration_no, t.chassis_no, t.model, t.financier].some(x => (x||'').toUpperCase().includes(qs)));
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Fleet · existing trucks</h1>${can('ft_import') ? linkBtn('#fl/ft_import', 'Import / update from Excel') : ''}</div>
+  const list = rows.filter(t => !qs || [t.registration_no, t.original_registration_no, t.chassis_no, t.engine_no, t.model_no, t.manufacturer, t.owner_code, t.vehicle_type, t.body_type].some(x => (x||'').toUpperCase().includes(qs)));
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Own fleet · trucks</h1><div class="row">${can('ft_entry') ? linkBtn('#fl/fl_transfers', 'Truck transfers') : ''}<button class="ghost sm" id="flCsv">Download CSV</button></div></div>
   <div class="kpi"><div><span>Trucks</span><b>${rows.length}</b></div>
     <div><span>EMIs in next 7 days</span><b>${inr(emis.filter(e => e.state==='due' && e.due_date <= week).reduce((a,e) => a + +e.amount, 0))}</b></div>
     <div><span>EMI bounces open</span><b style="color:var(--alert)">${emis.filter(e => e.state==='bounced').length}</b></div>
     <div><span>Documents expired / due in 30 days</span><b>${exp.length}</b></div></div>
-  <div class="row"><input id="flQ" placeholder="Search registration / chassis / model / financier" value="${esc(S.flQ||'')}" style="max-width:340px"></div>
-  <div class="card">${table([{h:'Truck',f:t=>`<b>${esc(t.registration_no)}</b><div class="muted">${esc(t.chassis_no || 'chassis not recorded')}</div>`},{h:'Model',f:t=>esc(t.model ? (t.make||'') + ' ' + t.model : '—')},{h:'Company',k:'company_code'},
-    {h:'Loan',f:t=>t.loan_id ? `${esc(t.financier||'')}<div class="muted">${esc(t.agreement_no||'agreement no. missing')}</div>` : t.no_loan ? 'no loan' : chip('unknown','warn')},
-    {h:'EMI outstanding',n:1,f:t=>t.loan_id ? inr(t.emi_outstanding) + (+t.emis_bounced ? ' ' + chip(t.emis_bounced + ' bounced','bad') : '') + (t.next_emi ? `<div class="muted">next ${d8(t.next_emi)}</div>` : '') : ''},
-    {h:'Documents',f:t=>{ const miss = (t.steps_open||'').split(',').filter(k => FL_DOCS.includes(k)).length; const ex = exp.filter(d => d.ft_truck_id===t.id).length;
-      return (miss ? chip(miss + ' missing','warn') + ' ' : '') + (ex ? chip(ex + ' expiring','bad') : '') || chip('ok','ok'); }},
-    {h:'',f:t=>`<button class="ghost sm" data-tk="${t.id}">Open</button>`}], list, 'No existing trucks yet. Import them from Excel.')}</div>`;
+  <div class="row"><input id="flQ" placeholder="Search number / chassis / engine / model / owner / type" value="${esc(S.flQ||'')}" style="max-width:360px"></div>
+  <div class="card">${table([...FL_COLS, {h:'',f:t=>`<button class="ghost sm" data-tk="${t.id}">Open</button>`}], list, 'No trucks in the own fleet.', {noStamp:true})}</div>`;
   $('flQ').onchange = () => { S.flQ = $('flQ').value; go(); };
+  $('flCsv').onclick = () => csv(list.map(flCsvRow), 'own-fleet-trucks');
   m.querySelectorAll('[data-tk]').forEach(b => b.onclick = () => { S.flTruck = b.dataset.tk; S.flTab = 'details'; go(); window.scrollTo(0,0); });
 };
 
 async function flTruckFile(m, id){
-  const [[t], steps, loans] = await Promise.all([q('ft_truck_list', b => b.eq('id', id)), q('ft_steps', b => b.eq('ft_truck_id', id)), q('ft_loans', b => b.eq('ft_truck_id', id))]);
+  const [[t], steps, loans, [fm], trf] = await Promise.all([q('ft_truck_list', b => b.eq('id', id)), q('ft_steps', b => b.eq('ft_truck_id', id)), q('ft_loans', b => b.eq('ft_truck_id', id)),
+    q('fl_truck_master', b => b.eq('id', id)), q('ft_truck_transfers', b => b.eq('ft_truck_id', id).order('from_date'))]);
   if(!t){ S.flTruck = null; return go(); }
   const loan = loans[0]; const emis = loan ? await q('ft_emi_list', b => b.eq('loan_id', loan.id).order('inst_no')) : [];
   const ev = await evidenceCount('ft_step', steps.map(s => s.id));
@@ -1342,17 +1347,21 @@ async function flTruckFile(m, id){
   const docMissing = FL_DOCS.filter(k => byStep[k] && byStep[k].status==='open').length;
   const tabs = [['details','Truck details'],['docs',`Documents${docMissing ? ` (${docMissing} missing)` : ''}`],['loan','Loan & EMIs']];
   let body = '';
+  const F = fm || {};
   if(tab==='details') body = `<div class="card"><div class="grid">
-      <div><label>Registration</label><div><b>${esc(t.registration_no)}</b></div></div><div><label>Company</label><div>${esc(t.company_code)}</div></div>
-      <div><label>Model</label><div>${esc(t.model ? (t.make||'') + ' ' + t.model : '— not recorded')}</div></div>
+      <div><label>Current registration no.</label><div><b>${esc(t.registration_no)}</b></div></div><div><label>Original registration no.</label><div>${esc(F.original_registration_no || t.registration_no)}</div></div>
+      <div><label>Vehicle type</label><div>${esc(F.vehicle_type || '— not recorded')}</div></div><div><label>Body type</label><div>${esc(F.body_type || '— not recorded')}</div></div>
+      <div><label>GVW (ton)</label><div>${F.gvw_ton!=null ? esc(String(+F.gvw_ton)) : '— not recorded'}</div></div><div><label>Owner</label><div>${esc(F.owner || t.company_code)}</div></div>
+      <div><label>Manufacturer / model no.</label><div>${esc(F.manufacturer || '—')} / ${esc(F.model_no || '— not recorded')}</div></div>
       <div><label>Chassis / engine</label><div>${esc(t.chassis_no || '— not recorded')} / ${esc(t.engine_no || '—')}</div></div>
-      <div><label>Purchase date / cost</label><div>${t.invoice_date ? d8(t.invoice_date) : '—'} / ${t.invoice_amount ? inr(t.invoice_amount) : '—'}</div></div>
-      <div><label>In the fleet master since</label><div>${d8(t.ready_at || t.created_at)}</div></div></div>
-    ${ent ? '<button class="ghost sm" id="flEdit" style="margin-top:8px">Complete / correct truck details</button>' : ''}</div>`;
-  if(tab==='docs') body = `<div class="card">${table([{h:'Document',f:s=>`<b>${esc(FT_STEP[s.step].n)}</b>`},{h:'Number',f:s=>esc(s.doc_no||'—')},{h:'Issued',f:s=>s.issued_on ? d8(s.issued_on) : '—'},
+      <div><label>Registration date</label><div>${F.registration_date ? d8(F.registration_date) : '— not recorded'}</div></div>
+      <div><label>Purchase date / cost</label><div>${t.invoice_date ? d8(t.invoice_date) : '—'} / ${t.invoice_amount ? inr(t.invoice_amount) : '—'}</div></div></div>
+    ${ent ? '<div class="row" style="margin-top:8px"><button class="ghost sm" id="flEdit">Complete / correct truck details</button><button class="ghost sm" id="flTrf">Truck transferred: new number</button></div>' : ''}</div>
+    ${trf.length ? `<div class="card"><h2 style="margin-top:0">Number changes</h2>${table([{h:'Original Truck No',k:'old_registration_no'},{h:'New Truck No',f:x=>`<b>${esc(x.new_registration_no)}</b>`},{h:'Date from',f:x=>d8(x.from_date)},{h:'Remarks',f:x=>esc(x.remarks||'')}], trf)}</div>` : ''}`;
+  if(tab==='docs') body = `<div class="card">${table([{h:'Document',f:s=>`<b>${esc(FL_DOC_H[s.step] || FT_STEP[s.step].n)}</b>`},{h:'Number',f:s=>esc(s.doc_no||'—')},{h:'Issued',f:s=>s.issued_on ? d8(s.issued_on) : '—'},
       {h:'Valid till',f:s=>s.expiry_on ? d8(s.expiry_on) : (FT_STEP[s.step].exp ? '—' : 'n/a')},{h:'Status',f:s=>chip(...docState(s)) + (s.not_needed_reason ? `<div class="muted">${esc(s.not_needed_reason)}</div>` : '') + ((s.details||{}).issuer ? `<div class="muted">${esc(s.details.issuer)}</div>` : '')},
       {h:'',f:s=>(ev[s.id] ? `<button class="ghost sm" data-ev="${s.id}">Copy (${ev[s.id]})</button> ` : '') + (ent ? `<button class="${s.status==='open' ? 'primary' : 'ghost'} sm" data-st="${s.id}">${s.status==='open' ? 'Enter' : 'Update'}</button>` : '')}],
-      FL_DOCS.map(k => byStep[k]).filter(Boolean))}
+      FL_DOCS.map(k => byStep[k]).filter(Boolean), 'No documents set up for this truck.', {noStamp:true})}
     <p class="muted">Renewals (new policy, new fitness, new permit period) will be handled in the Fleet Documents renewal flow; for now update the record here.</p></div>`;
   if(tab==='loan') body = `<div class="card"><div class="row" style="justify-content:space-between"><h2 style="margin:0">Loan & EMIs</h2>${acc ? `<div class="row">${!t.no_loan ? `<button class="primary sm" id="ftLoan">${loan ? 'Edit loan / schedule' : 'Enter loan'}</button>` : ''}${!loan ? `<button class="ghost sm" id="ftNoLoan">${t.no_loan ? 'No loan ✓' : 'No loan on this truck'}</button>` : ''}</div>` : ''}</div>
     ${loan ? `<p>${esc(((S.ftFin||[]).find(f => f.id===loan.financier_id)||{}).name)} · agreement <b>${esc(loan.agreement_no || 'not recorded')}</b>${loan.loan_amount ? ' · loan ' + inr(loan.loan_amount) : ''} · EMI debited from ${esc(coCode(loan.debit_company_id))} bank</p>
@@ -1369,104 +1378,89 @@ async function flTruckFile(m, id){
     modal(`<h2>Truck details · ${esc(t.registration_no)}</h2><div class="grid">
       <div class="field"><label>Chassis number</label><input id="feCh" value="${esc(t.chassis_no||'')}"></div><div class="field"><label>Engine number</label><input id="feEn" value="${esc(t.engine_no||'')}"></div>
       <div class="field"><label>Model</label><select id="feM" data-mt="ftmodel"><option value=""></option>${typeOpts('ftmodel')}</select></div>
+      <div class="field"><label>Vehicle type</label><select id="feVT"><option value=""></option>${FL_VTYPES.map(v => `<option ${v===F.vehicle_type?'selected':''}>${v}</option>`).join('')}</select></div>
+      <div class="field"><label>Body type</label><input id="feBT" value="${esc(F.body_type||'')}" placeholder="e.g. 24 ft high-side"></div>
+      <div class="field"><label>GVW (ton) <span class="muted">— applies to the model</span></label><input type="number" step="0.01" id="feG" value="${F.gvw_ton ?? ''}"></div>
+      <div class="field"><label>Registration date</label><input type="date" id="feRD" max="${today()}" value="${F.registration_date||''}"></div>
       <div class="field"><label>Purchase date</label><input type="date" id="feD" value="${t.invoice_date||''}"></div><div class="field"><label>Purchase cost ₹</label><input type="number" step="0.01" id="feA" value="${t.invoice_amount||''}"></div></div>
       <div class="row" style="margin-top:12px"><button class="primary" id="feGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
     $('feM').value = t.model_id || ''; wireAdd($('modalBox'));
-    $('feGo').onclick = e => act(e.target, async () => { await rpc('ft_truck_edit', {p_truck:id, p:{chassis_no:$('feCh').value, engine_no:$('feEn').value, invoice_date:$('feD').value || null, invoice_amount:$('feA').value, model_id:$('feM').value || null}}); closeModal(); go(); }, 'Saved'); };
+    $('feGo').onclick = e => act(e.target, async () => { await rpc('fl_truck_details', {p_truck:id, p:{chassis_no:$('feCh').value, engine_no:$('feEn').value, invoice_date:$('feD').value || null, invoice_amount:$('feA').value, model_id:$('feM').value || null,
+        vehicle_type:$('feVT').value, body_type:$('feBT').value, gvw_ton:$('feG').value, registration_date:$('feRD').value}}); closeModal(); go(); }, 'Saved'); };
+  if($('flTrf')) $('flTrf').onclick = () => flTransferForm(t.id);
   if($('ftLoan')) $('ftLoan').onclick = () => ftLoanForm(t, loan, emis);
   if($('ftNoLoan')) $('ftNoLoan').onclick = e => { if(t.no_loan) return; if(!confirm(`Record that ${t.registration_no} has no loan?`)) return;
     act(e.target, async () => { await rpc('ft_loan_save', {p_truck:id, p:{no_loan:true, reason:'No loan (existing truck)'}}); go(); }, 'Recorded'); };
 }
 
-/* ---- truck documents: every document of every existing truck ---- */
+/* ---- truck transfers: a truck re-registered under a new number ---- */
+function flTransferForm(truckId){
+  const opts = (S._flTrucks || []).map(t => `<option value="${t.id}" ${t.id===truckId?'selected':''}>${esc(t.registration_no)}</option>`).join('');
+  modal(`<h2>Truck transferred · new number</h2>
+    <p class="muted" style="margin-top:0">The truck keeps its history. From the date below it runs under the new number; trips and documents already recorded stay under the old number.</p>
+    <div class="grid"><div class="field"><label>Original Truck No (present number)</label><select id="ftrT"><option value=""></option>${opts}</select></div>
+      <div class="field"><label>New Truck No</label><input id="ftrN" placeholder="e.g. JH05AB1234"></div>
+      <div class="field"><label>Date from</label><input type="date" id="ftrD" max="${today()}" value="${today()}"></div>
+      <div class="field"><label>Remarks</label><input id="ftrR" placeholder="e.g. re-registered in Jharkhand"></div></div>
+    <div class="row" style="margin-top:12px"><button class="primary" id="ftrGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('ftrGo').onclick = e => act(e.target, async () => {
+    if(!$('ftrT').value) throw new Error('Choose the truck');
+    await rpc('fl_truck_transfer', {p_truck:$('ftrT').value, p_new_no:$('ftrN').value, p_from:$('ftrD').value || null, p_remarks:$('ftrR').value});
+    closeModal(); await loadMasters(); go(); }, 'Number changed');
+}
+VIEWS.fl_transfers = async m => {
+  const [rows, trucks] = await Promise.all([qAll('fl_transfer_list', b => b.order('from_date', {ascending:false}).order('id')),
+    qAll('ft_trucks', b => b.eq('source','import').eq('status','ready').select('id,registration_no').order('registration_no').order('id'))]);
+  S._flTrucks = trucks;
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Truck transfers</h1><div class="row">${can('ft_entry') ? '<button class="primary sm" id="ftrAdd">+ Add truck transferred</button>' : ''}<button class="ghost sm" id="ftrCsv">Download CSV</button></div></div>
+  <p class="muted">An own truck re-registered under a new number (for example a transfer to another state). The truck stays one truck; its present number changes from the date given.</p>
+  <div class="card">${table([{h:'Original Truck No',f:x=>esc(x.old_registration_no)},{h:'New Truck No',f:x=>`<b>${esc(x.new_registration_no)}</b>`},{h:'Date from',f:x=>d8(x.from_date)},
+    {h:'Owner',k:'owner_code'},{h:'Remarks',f:x=>esc(x.remarks||'')},{h:'',f:x=>`<button class="ghost sm" data-tk="${x.ft_truck_id}">Open truck</button>`}], rows, 'No truck transfers recorded yet.')}</div>`;
+  if($('ftrAdd')) $('ftrAdd').onclick = () => flTransferForm(null);
+  $('ftrCsv').onclick = () => csv(rows.map(x => ({original_truck_no:x.old_registration_no, new_truck_no:x.new_registration_no, date_from:x.from_date, owner:x.owner_code, remarks:x.remarks||''})), 'truck-transfers');
+  m.querySelectorAll('[data-tk]').forEach(b => b.onclick = () => { S.flTruck = b.dataset.tk; S.flTab = 'details'; location.hash = 'fl/fl_list'; });
+};
+
+/* ---- truck documents: one row per truck, one column per document ---- */
 VIEWS.fl_docs = async m => {
-  S.flD = S.flD || {doc:'', st:'attention', co:''}; const F = S.flD;
-  const [trucks, steps] = await Promise.all([qAll('ft_trucks', b => b.eq('source','import').order('id')), qAll('ft_steps', b => b.in('step', FL_DOCS).order('id'))]);
-  const tmap = Object.fromEntries(trucks.map(t => [t.id, t]));
-  const all = steps.filter(s => tmap[s.ft_truck_id]).map(s => ({...s, _t:tmap[s.ft_truck_id], _st:docState(s)}));
-  const rows = all.filter(s => (!F.doc || s.step===F.doc) && (!F.co || coCode(s._t.company_id)===F.co)
-      && (F.st==='all' || (F.st==='attention' && ['warn','bad'].includes(s._st[1])) || (F.st==='missing' && s._st[0]==='missing') || (F.st==='expired' && s._st[1]==='bad') || (F.st==='expiring' && s._st[0].startsWith('expires'))))
-    .sort((a,b) => (a.expiry_on||'0').localeCompare(b.expiry_on||'0') || (a._t.registration_no||'').localeCompare(b._t.registration_no||''));
-  const n = f => all.filter(f).length;
+  S.flD = S.flD || {st:'attention', co:''}; const F = S.flD;
+  const [trucks, steps] = await Promise.all([qAll('ft_trucks', b => b.eq('source','import').order('registration_no').order('id')), qAll('ft_steps', b => b.in('step', FL_DOCS).order('id'))]);
+  const by = {}; steps.forEach(s => { (by[s.ft_truck_id] = by[s.ft_truck_id] || {})[s.step] = s; });
+  const all = trucks.map(t => { const d = by[t.id] || {}; const st = Object.fromEntries(FL_DOCS.map(k => [k, docState(d[k])])); return {...t, _d:d, _st:st}; });
+  const has = (t, f) => FL_DOCS.some(k => f(t._st[k]));
+  const isBad = x => x[1]==='bad', isSoon = x => x[0].startsWith('expires'), isMiss = x => x[0]==='missing';
+  const rows = all.filter(t => (!F.co || coCode(t.company_id)===F.co)
+    && (F.st==='all' || (F.st==='attention' && has(t, x => ['warn','bad'].includes(x[1]))) || (F.st==='expired' && has(t, isBad)) || (F.st==='expiring' && has(t, isSoon)) || (F.st==='missing' && has(t, isMiss))));
+  const n = f => all.reduce((a, t) => a + FL_DOCS.filter(k => f(t._st[k])).length, 0);
+  const cell = (t, k) => { const s = t._d[k], x = t._st[k];
+    if(!s) return '<span class="muted">—</span>';
+    return `<div style="white-space:nowrap">${s.expiry_on ? d8(s.expiry_on) : (s.status==='done' ? 'recorded' : '')}</div>${chip(x[0] === 'valid' ? 'valid' : x[0], x[1])}`; };
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Truck documents</h1><button class="ghost sm" id="fdCsv">Download CSV</button></div>
-  <div class="kpi"><div><span>Expired</span><b style="color:var(--alert)">${n(s => s._st[1]==='bad')}</b></div><div><span>Expiring in 30 days</span><b>${n(s => s._st[0].startsWith('expires'))}</b></div><div><span>Missing</span><b>${n(s => s._st[0]==='missing')}</b></div><div><span>Valid / recorded</span><b>${n(s => s._st[1]==='ok')}</b></div></div>
-  <div class="row"><select id="fdS" style="width:auto">${[['attention','Needs attention'],['expired','Expired'],['expiring','Expiring in 30 days'],['missing','Missing'],['all','All']].map(([k,l]) => `<option value="${k}" ${k===F.st?'selected':''}>${l}</option>`).join('')}</select>
-    <select id="fdD" style="width:auto"><option value="">All documents</option>${FL_DOCS.map(k => `<option value="${k}" ${k===F.doc?'selected':''}>${esc(FT_STEP[k].n)}</option>`).join('')}</select>
-    <select id="fdC" style="width:auto"><option value="">All companies</option>${S.companies.map(c => `<option ${c.code===F.co?'selected':''}>${esc(c.code)}</option>`).join('')}</select></div>
-  <div class="card">${table([{h:'Truck',f:s=>`<b>${esc(s._t.registration_no)}</b>`},{h:'Company',f:s=>esc(coCode(s._t.company_id))},{h:'Document',f:s=>esc(FT_STEP[s.step].n)},{h:'Number',f:s=>esc(s.doc_no||'—')},
-    {h:'Valid till',f:s=>s.expiry_on ? d8(s.expiry_on) : '—'},{h:'Status',f:s=>chip(...s._st)},{h:'',f:s=>`<button class="ghost sm" data-tk="${s.ft_truck_id}">Open truck</button>`}], rows, 'Nothing here.')}</div>`;
-  $('fdS').onchange = () => { F.st = $('fdS').value; go(); }; $('fdD').onchange = () => { F.doc = $('fdD').value; go(); }; $('fdC').onchange = () => { F.co = $('fdC').value; go(); };
+  <div class="kpi"><div><span>Expired</span><b style="color:var(--alert)">${n(isBad)}</b></div><div><span>Expiring in 30 days</span><b>${n(isSoon)}</b></div><div><span>Missing</span><b>${n(isMiss)}</b></div><div><span>Valid / recorded</span><b>${n(x => x[1]==='ok')}</b></div></div>
+  <div class="row"><select id="fdS" style="width:auto">${[['attention','Trucks needing attention'],['expired','With an expired document'],['expiring','With a document expiring in 30 days'],['missing','With a missing document'],['all','All trucks']].map(([k,l]) => `<option value="${k}" ${k===F.st?'selected':''}>${l}</option>`).join('')}</select>
+    <select id="fdC" style="width:auto"><option value="">All owners</option>${S.companies.map(c => `<option ${c.code===F.co?'selected':''}>${esc(c.code)}</option>`).join('')}</select></div>
+  <p class="muted">Each cell shows the valid-till date. Open a truck to enter or update a document.</p>
+  <div class="card">${table([{h:'Registration No',f:t=>`<b>${esc(t.registration_no)}</b>`}, ...FL_DOCS.map(k => ({h:FL_DOC_H[k], f:t=>cell(t, k)})),
+    {h:'',f:t=>`<button class="ghost sm" data-tk="${t.id}">Open</button>`}], rows, 'Nothing here.', {noStamp:true})}</div>`;
+  $('fdS').onchange = () => { F.st = $('fdS').value; go(); }; $('fdC').onchange = () => { F.co = $('fdC').value; go(); };
   m.querySelectorAll('[data-tk]').forEach(b => b.onclick = () => { S.flTruck = b.dataset.tk; S.flTab = 'docs'; location.hash = 'fl/fl_list'; });
-  $('fdCsv').onclick = () => csv(rows.map(s => ({truck:s._t.registration_no, company:coCode(s._t.company_id), document:FT_STEP[s.step].n, number:s.doc_no||'', issued_on:s.issued_on||'', valid_till:s.expiry_on||'', status:s._st[0]})), 'truck-documents');
-};
-
-/* ---- FASTag upload: map the issuer's tag list to existing trucks ---- */
-VIEWS.fl_fastag = async m => {
-  m.innerHTML = `<h1>FASTag mapping</h1>
-  <div class="card"><p style="margin-top:0">Upload the FASTag list from the bank / issuer portal. Each tag is mapped to the existing truck with the same vehicle number. One tag = one truck; a new tag on a truck replaces the old one (the old tag is kept in history).</p>
-  <p class="muted">Columns read: vehicle number (vehicle_no / registration_no / VRN), tag ID (tag_id / FASTag ID / Tag Serial No / TID), and optionally issuer / bank, customer ID, status, issue date. Header names are matched flexibly.</p>
-  <div class="row"><button class="ghost sm" id="faT">Download template</button><input type="file" id="faF" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="faGo">Upload & map</button></div><div id="faOut"></div></div>`;
-  $('faT').onclick = () => { const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{registration_no:'WB23A1234', tag_id:'34161FA82032D6A00001234', issuer:'ICICI BANK', customer_id:'', tag_status:'Active', issued_on:'01-04-2024'}]), 'FASTag'); XLSX.writeFile(wb, 'fastag_mapping_template.xlsx'); };
-  const pick = (o, res) => { const k = Object.keys(o).find(k => res.some(r => r.test(k))); return k ? o[k] : null; };
-  $('faGo').onclick = e => act(e.target, async () => {
-    const f = $('faF').files[0]; if(!f) throw new Error('Choose the FASTag Excel / CSV');
-    const wb = XLSX.read(await f.arrayBuffer(), {cellDates:true}); const raw = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:false});
-    const rows = raw.map(r => { const o = {}; Object.entries(r).forEach(([k,v]) => o[String(k).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'')] = v == null ? null : String(v).trim());
-      return {registration_no:pick(o, [/^(vehicle|veh|registration|reg|vrn|truck)(_?no|_?number)?$/, /vehicle.*(no|num)/, /^vrn/]), tag_id:pick(o, [/^tag_?id$/, /fastag.*(id|no)/, /tag.*serial/, /^tid$/, /^tag_?(no|number)$/]),
-        issuer:pick(o, [/issuer/, /^bank/]), customer_id:pick(o, [/customer/, /wallet/]), tag_status:pick(o, [/status/]), issued_on:isoD(pick(o, [/issu.*date/, /^issued_on$/, /activation/]))}; })
-      .filter(r => r.registration_no || r.tag_id);
-    if(!rows.length) throw new Error('No rows found: the sheet needs a vehicle number column and a tag ID column.');
-    const res = await rpc('fl_fastag_map', {p_rows:rows});
-    $('faOut').innerHTML = `<p><b>${res.mapped}</b> mapped · <b>${res.changed}</b> tag(s) replaced · <b>${res.unchanged}</b> already correct · of ${rows.length} row(s).</p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) not mapped</div>` + table([{h:'Row',k:'row'},{h:'Vehicle',k:'registration_no'},{h:'Tag',k:'tag_id'},{h:'Problem',k:'error'}], res.errors) : '');
-    return res; }, r => `${r.mapped + r.changed} FASTag(s) mapped`);
-};
-
-/* ---- setup + import ---- */
-VIEWS.ft_setup = m => VIEWS.masters(m, 'ft');
-const FT_IMPORT_COLS = ['registration_no','company','chassis_no','engine_no','make','model','purchase_date','purchase_cost','loan','financier','agreement_no','loan_amount','emi_amount','next_emi_date','remaining_emis',
-  'insurance_no','insurance_expiry','permit_no','permit_expiry','national_permit','np_no','np_expiry','fitness_no','fitness_expiry','road_tax_no','road_tax_expiry','gps_device','fastag_id'];
-const ftImportRows = raw => raw.map(r => { const o = {}; Object.entries(r).forEach(([k,v]) => { const key = String(k).trim().toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); if(v===null || v==='') return;
-  o[key] = /(_date|_expiry)$/.test(key) ? isoD(v) : /(_cost|_amount|remaining_emis)$/.test(key) ? +String(v).replace(/[₹,\s]/g,'') : String(v).trim(); }); return o; }).filter(o => o.registration_no);
-VIEWS.ft_import = async m => {
-  m.innerHTML = `<h1>Import existing fleet</h1>
-  <div class="card"><p style="margin-top:0"><b>Only registration_no and company are required.</b> Fill what you have and leave the rest blank — blank means "not known yet", and the truck shows in <a href="#fl/ft_gaps">Fleet data gaps</a>. Upload the same sheet again later with more columns filled: blanks on trucks already imported are filled in; anything already recorded is never overwritten.</p>
-  <ul class="muted" style="margin:0;padding-left:18px">
-    <li>loan: <b>no</b> = bought without a loan; blank = not known yet. For a running loan give financier (agreement no., EMI amount, next EMI date and EMIs left when you have them — the remaining monthly schedule is built from these).</li>
-    <li>permit_no / permit_expiry = State permit; np_no / np_expiry = National Permit; national_permit: <b>no</b> = state-only truck.</li>
-    <li>A document counts as recorded when its expiry date is given (GPS and FASTag: their ID). Dates as DD-MM-YYYY.</li></ul>
-  <div class="row" style="margin-top:10px"><button class="ghost sm" id="fiT">Download blank template</button><a class="ghost sm" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px" href="#fl/ft_gaps">Download gap sheet (trucks already in)</a></div>
-  <div class="row" style="margin-top:10px"><input type="file" id="fiFile" accept=".xlsx,.xls,.csv" style="max-width:320px"><button class="primary sm" id="fiGo">Import</button></div><div id="fiOut"></div></div>`;
-  $('fiT').onclick = () => { const wb = XLSX.utils.book_new(); const ex = {registration_no:'WB23A1234', company:'SSL', chassis_no:'MAT123456789', engine_no:'', make:'TATA', model:'SIGNA 4825.TK', purchase_date:'', purchase_cost:'',
-      loan:'yes', financier:'HDFC BANK', agreement_no:'', loan_amount:'', emi_amount:72500, next_emi_date:'05-11-2026', remaining_emis:18, insurance_no:'', insurance_expiry:'14-04-2027', permit_no:'', permit_expiry:'30-06-2028', national_permit:'', np_no:'', np_expiry:'30-06-2027', fitness_no:'', fitness_expiry:'14-04-2027', road_tax_no:'', road_tax_expiry:'', gps_device:'', fastag_id:''};
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([ex], {header:FT_IMPORT_COLS}), 'Fleet'); XLSX.writeFile(wb, 'fleet_import_template.xlsx'); };
-  $('fiGo').onclick = e => act(e.target, async () => {
-    const f = $('fiFile').files[0]; if(!f) throw new Error('Choose the filled Excel file');
-    const wb = XLSX.read(await f.arrayBuffer(), {cellDates:true}); const rows = ftImportRows(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:null, raw:true}));
-    if(!rows.length) throw new Error('No truck rows found (registration_no column is needed).');
-    const res = {imported:0, updated:0, errors:[]};
-    for(let i = 0; i < rows.length; i += 100){
-      $('fiOut').innerHTML = `<p class="muted">Importing ${Math.min(i + 100, rows.length)} of ${rows.length}…</p>`;
-      const r = await rpc('ft_import', {p_rows:rows.slice(i, i + 100)});
-      res.imported += r.imported; res.updated += r.updated; res.errors.push(...r.errors.map(e => ({...e, row:e.row + i})));
-    }
-    await loadMasters();
-    $('fiOut').innerHTML = `<p><b>${res.imported}</b> new truck(s) · <b>${res.updated}</b> existing truck(s) updated · of ${rows.length} row(s). <a href="#fl/ft_gaps">See what is still missing</a></p>` + (res.errors.length ? `<div class="issues">${res.errors.length} row(s) skipped</div>` + table([{h:'Row',k:'row'},{h:'Registration',k:'registration_no'},{h:'Problem',k:'error'}], res.errors) : '');
-    return res; }, r => `${r.imported} new, ${r.updated} updated`);
+  $('fdCsv').onclick = () => csv(rows.map(t => Object.assign({registration_no:t.registration_no, owner:coCode(t.company_id)},
+    ...FL_DOCS.map(k => ({[FL_DOC_H[k] + ' valid till']:(t._d[k]||{}).expiry_on || '', [FL_DOC_H[k] + ' status']:t._st[k][0]})))), 'truck-documents');
 };
 
 /* ---- fleet data gaps: what is still missing per truck ---- */
-const GAP_DOC = {insurance:'Insurance', permit:'State permit', nat_permit:'National Permit', fitness:'Fitness', road_tax:'Road tax', gps:'GPS', fastag:'FASTag'};
+const GAP_DOC = FL_DOC_H;
 VIEWS.ft_gaps = async m => {
   S.ftGF = S.ftGF || {only:true, co:''};
   const all = await qAll('ft_fleet_gaps', b => b.eq('source','import').order('registration_no').order('id'));
-  const gapsOf = g => [g.no_chassis ? 'Chassis' : '', g.no_model ? 'Model' : '', ...(g.docs_missing||'').split(',').filter(Boolean).map(k => GAP_DOC[k] || k),
+  const gapsOf = g => [g.no_chassis ? 'Chassis' : '', g.no_model ? 'Model' : '', ...(g.docs_missing||'').split(',').filter(k => FL_DOCS.includes(k)).map(k => GAP_DOC[k]),
     g.loan_state==='missing' ? 'Loan (yes/no)' : '', g.no_agreement ? 'Loan agreement no.' : '', g.no_emis ? 'EMI schedule' : ''].filter(Boolean);
   all.forEach(g => g._gaps = gapsOf(g));
   const rows = all.filter(g => (!S.ftGF.only || g._gaps.length) && (!S.ftGF.co || g.company_code===S.ftGF.co));
   const cnt = k => all.filter(g => g._gaps.includes(k)).length;
   const cos = [...new Set(all.map(g => g.company_code))];
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Fleet data gaps</h1><div class="row"><button class="primary sm" id="fgX">Download gap sheet (Excel)</button><button class="ghost sm" id="fgCsv">CSV</button></div></div>
-  <p class="muted">Every truck in the fleet and what is still not recorded. Download the gap sheet, have the team fill the blanks, then upload it in Import existing fleet — only blanks are filled. Or open a truck and complete it there.</p>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Fleet data gaps</h1><button class="ghost sm" id="fgCsv">Download CSV</button></div>
+  <p class="muted">Every truck in the own fleet and what is still not recorded. Open a truck to complete it.</p>
   <div class="kpi"><div><span>Trucks in fleet</span><b>${all.length}</b></div><div><span>Complete</span><b>${all.filter(g => !g._gaps.length).length}</b></div>
     <div><span>Loan status unknown</span><b>${cnt('Loan (yes/no)')}</b></div><div><span>EMI schedule missing</span><b>${cnt('EMI schedule')}</b></div><div><span>Insurance missing</span><b>${cnt('Insurance')}</b></div></div>
   <div class="row"><select id="fgO" style="width:auto"><option value="1" ${S.ftGF.only?'selected':''}>Only trucks with gaps</option><option value="" ${S.ftGF.only?'':'selected'}>All trucks</option></select>
@@ -1478,10 +1472,6 @@ VIEWS.ft_gaps = async m => {
   $('fgO').onchange = () => { S.ftGF.only = !!$('fgO').value; go(); }; $('fgC').onchange = () => { S.ftGF.co = $('fgC').value; go(); };
   m.querySelectorAll('[data-tk]').forEach(b => b.onclick = () => { S.flTruck = b.dataset.tk; S.flTab = 'docs'; location.hash = 'fl/fl_list'; if(S.tab==='fl_list') go(); });
   $('fgCsv').onclick = () => csv(rows.map(g => ({registration_no:g.registration_no, company:g.company_code, chassis_no:g.chassis_no||'', model:g.model||'', loan:g.loan_state, missing:g._gaps.join('; ')})), 'fleet-gaps');
-  $('fgX').onclick = () => { const wb = XLSX.utils.book_new();
-    const out = rows.map(g => { const o = Object.fromEntries(FT_IMPORT_COLS.map(c => [c, ''])); Object.assign(o, {registration_no:g.registration_no, company:g.company_code, chassis_no:g.chassis_no||'', engine_no:g.engine_no||'', make:g.make||'', model:g.model||'',
-      loan:g.loan_state==='no_loan' ? 'no' : g.loan_state==='loan' ? 'yes' : '', financier:g.financier||'', agreement_no:g.agreement_no||''}); o.missing_now = g._gaps.join('; '); return o; });
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out, {header:[...FT_IMPORT_COLS, 'missing_now']}), 'Fleet'); XLSX.writeFile(wb, `fleet_gap_sheet_${today()}.xlsx`); };
 };
 
 
@@ -1573,8 +1563,6 @@ const UP_SETS = [
   {k:'sardars', g:'6 · Vendors & labour', n:'Labour Sardars', t:'rk_sardars', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Vendor (code or name)','vendor_id','ref:vendor',1,'must be type Labour Sardar']]},
   {k:'labour_rates', g:'6 · Vendors & labour', n:'Warehouse labour rates', t:'wh_labor_rates', perm:'wh_master_admin', cols:[['Location','location_id','ref:anyloc',1],['Activity','activity','sel:unloading/loading/paltai',1],['Customer','client_id','ref:client',0,'helps find the material'],['Material type','material_id','ref:mat',1],['Rate per MT','rate_per_mt','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.client_id; return r; }},
   {k:'sardar_rates', g:'6 · Vendors & labour', n:'Sardar rates', t:'rk_labor_rates', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Sardar (vendor code or name)','sardar_id','ref:sardar',1],['Activity','activity','sel:wagon_platform/platform_truck/wagon_truck',1],['Rate per MT','rate_per_mt','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.siding_id; return r; }},
-  {k:'fleet', g:'7 · Fleet', n:'Existing trucks, loans, EMIs, documents', link:'#fl/ft_import', perm:'ft_import', note:'Fleet has its own upload: only registration no. + company are required; re-upload fills blanks.'},
-  {k:'fastag', g:'7 · Fleet', n:'FASTag list', link:'#fl/fl_fastag', perm:'ft_import', note:'Bank / issuer tag list mapped to trucks by vehicle number.'},
   {k:'drivers', g:'7 · Fleet', n:'Old drivers (one-time)', rpcRows:'dr_import', perm:'dr_manage', cols:[['Old driver ID','old_code','upper',0,'e.g. D0001 — kept as reference; new code is DR0001…'],['Name','name','text',1],['Mobile','mobile','text',1],['Licence no.','licence_no','upper',1],
     ['Licence type','licence_type','upper',0,'LMV, LMV-TR, MGV, HMV, HGMV, HPMV, TRAILER — blank = to fill later'],['Licence expiry','licence_expiry','date'],['Registered on','registered_on','date'],['Date of birth','dob','date'],['Calling name','alias_name','text'],
     ['PAN','pan','upper'],['Aadhaar no.','aadhaar_no','text'],['Bank name','bank_name','text'],['Bank account no.','bank_account','text'],['IFSC','bank_ifsc','upper'],['Branch','bank_branch','text'],['Language','language','text'],['Actual birthday','birthday','date'],['Reference person','reference_person','text'],
@@ -1588,7 +1576,7 @@ const upCan = d => can(d.perm) || can('wh_master_admin') && !['vendor_admin','ft
 
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'up', name:'Data Upload', icon:'upload', desc:'Go-live: load every master from Excel in the right order — companies, customers, materials, places, parties, vendors, labour, fleet, opening stock — and see what is still missing',
-    visible: () => S.me.admin || can('wh_master_admin') || can('rk_master_admin') || can('vendor_admin') || can('ft_import'),
+    visible: () => S.me.admin || can('wh_master_admin') || can('rk_master_admin') || can('vendor_admin'),
     screens: () => { const t = [['#','Go-live data'],['up_center','Upload center'],['up_gaps','Data gaps']]; if(can('vendor_admin')) t.push(['vn_import','Vendor master import']); return t; } });
 ICONS.upload = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/></svg>';
 
@@ -2105,7 +2093,6 @@ VIEWS.pp_vendors = vnListView(['diesel'], 'Pump vendors');
 VIEWS.vt_vendors = vnListView(['transporter'], 'Truck vendors');
 VIEWS.lb_vendors = vnListView(['labour_contractor','sardar'], 'Labour vendors');
 VIEWS.ft_vendors = vnListView(['dealer','body','insurance','rto','gps','fastag'], 'Purchase vendors');
-VIEWS.fl_vendors = vnListView(['workshop','insurance','gps','fastag'], 'Fleet vendors');
 VIEWS.wh_vendors = vnListView(['landlord'], 'Landlords');
 
 const VN_COLS = ['vendor_code','vendor_name','busy_name','types','business_type','aadhaar_no','contact_person','phone','email','pan','gstin','address','state','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','vendor_since','note'];
