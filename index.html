@@ -1959,7 +1959,7 @@ const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/, GST_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'vn', name:'Vendors', icon:'vendor', desc:'Vendor master: labour contractors, Sardars, transporters, dealers, body builders, insurance, RTO, GPS, FASTag and more — each vendor tagged by type, with PAN, GST and bank',
     visible: () => can('vendor_admin') || can('wh_master_admin') || can('rk_master_admin') || can('ft_view') || can('vn_trucks'),
-    screens: () => { const t = [['#','Vendors'],['vn_list','Vendor list'],['vn_trucks','Market trucks'],['vn_pumps','Petrol pumps']]; if(can('vendor_admin')) t.push(['vn_import','Import from Excel'],['vn_types','Vendor types']); return t; } });
+    screens: () => { const t = [['#','Vendors'],['vn_list','Vendor list'],['vn_trucks','Market trucks']]; if(can('vendor_admin')) t.push(['vn_import','Import from Excel'],['vn_types','Vendor types']); return t; } });
 ICONS.vendor = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9h18v2a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z"/><path d="M5 13v8h14v-8"/><path d="M10 21v-5h4v5"/></svg>';
 
 // vendor form in its own layer, so it can open on top of another form (e.g. "+ Add new vendor…" inside a truck slip)
@@ -2084,16 +2084,22 @@ VIEWS.vn_types = async m => {
 };
 
 /* ---- petrol pumps tagged to plants: Trip Entry at a plant offers only its pumps ---- */
+MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
+  { key:'pp', name:'Petrol Pumps', icon:'pump', desc:'Petrol pumps (diesel vendors) and the plants each pump serves; Trip Entry at a plant offers only its pumps',
+    visible: () => can('vendor_admin') || can('te_view') || can('vn_trucks'), screens: () => [['#','Petrol pumps'],['vn_pumps','Pumps & plants']] });
+ICONS.pump = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v16"/><path d="M3 21h12M6 9h6"/><path d="M14 8h2a2 2 0 0 1 2 2v6a1.5 1.5 0 0 0 3 0V9l-3-3"/></svg>';
+MOD_SHORT.pp = 'Pumps and the plants they serve';
 VIEWS.vn_pumps = async m => {
   const tags = await q('vn_plant_pumps', b => b.order('plant_code'));
   const pumps = S.vendors.filter(v => (v.kinds||[]).includes('diesel')).sort((a, b) => a.vendor_name.localeCompare(b.vendor_name));
   const plants = S.plants.filter(p => p.kind === 'plant' && p.is_active !== false); const ed = can('vendor_admin');
-  m.innerHTML = `<h1>Petrol pumps</h1><p class="muted">Tag each pump to the plants it serves. At Trip Entry a plant sees only its tagged pumps. Pumps are vendors of type Diesel${ed ? ' — add new ones in Vendor list' : ''}.</p>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Petrol pumps</h1>${ed ? '<button class="primary sm" id="ppNew">+ New pump</button>' : ''}</div><p class="muted">Tag each pump to the plants it serves. At Trip Entry a plant sees only its tagged pumps. A pump is a vendor of type Diesel (PAN, GST and bank kept in the vendor master).</p>
   <div class="kpi"><div><span>Pumps</span><b>${pumps.length}</b></div><div><span>Not tagged to any plant</span><b ${pumps.some(p => !tags.some(t => t.vendor_id === p.id)) ? 'style="color:var(--alert)"' : ''}>${pumps.filter(p => !tags.some(t => t.vendor_id === p.id)).length}</b></div>
     <div><span>Plants without a pump</span><b>${plants.filter(p => !tags.some(t => t.plant_id === p.id)).length}</b></div></div>
   <div class="card">${table([{h:'Pump',f:p=>`<b>${esc(p.vendor_name)}</b> <span class="muted">${esc(p.vendor_code)}</span>` + (p.is_active ? '' : ' ' + chip('inactive','bad'))},
     {h:'Plants',f:p=>tags.filter(t => t.vendor_id === p.id).map(t => chip(t.plant_code) + (ed ? ` <a href="#" data-un="${p.id}|${t.plant_id}" title="Remove from ${esc(t.plant_code)}">×</a>` : '')).join(' ') || '<span class="muted">not tagged</span>'},
     {h:'',f:p=>ed ? `<select data-tag="${p.id}" style="width:auto"><option value="">+ Tag to plant</option>${plants.filter(pl => !tags.some(t => t.vendor_id === p.id && t.plant_id === pl.id)).map(pl => `<option value="${pl.id}">${esc(pl.code)} · ${esc(pl.name)}</option>`).join('')}</select>` : ''}], pumps, 'No petrol pump vendors yet. Add a vendor with type Diesel in Vendor list.')}</div>`;
+  if($('ppNew')) $('ppNew').onclick = () => vnForm(null, {kinds:['diesel']}, async () => { await loadMasters(); go(); });
   m.querySelectorAll('[data-tag]').forEach(s => s.onchange = () => { if(!s.value) return; act(null, () => rpc('vn_pump_tag', {p_vendor:s.dataset.tag, p_plant:s.value, p_on:true}), 'Tagged').then(() => go()).catch(() => go()); });
   m.querySelectorAll('[data-un]').forEach(a => a.onclick = e => { e.preventDefault(); const [v, p] = a.dataset.un.split('|'); if(!confirm('Remove this pump from the plant? Past trips are not affected.')) return;
     act(null, () => rpc('vn_pump_tag', {p_vendor:v, p_plant:p, p_on:false}), 'Removed').then(() => go()).catch(() => {}); });
