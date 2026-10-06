@@ -2064,11 +2064,13 @@ const vnListView = (fixed, title) => async m => {
     <select id="vnS" style="width:auto">${[['active','Active'],['inactive','Inactive'],['all','All']].map(([k,l]) => `<option value="${k}" ${k===F.status?'selected':''}>${l}</option>`).join('')}</select>
     <select id="vnG" style="width:auto">${[['','Any details'],['bt','Business type missing'],['aad','Aadhaar copy missing'],['incomplete','PAN / mobile missing'],['gstin','GSTIN missing'],['bank','Bank missing'],['cheque','Cheque copy missing']].map(([k,l]) => `<option value="${k}" ${k===F.gap?'selected':''}>${l}</option>`).join('')}</select>
     <input id="vnQ" placeholder="Search name / PAN / mobile / code" value="${esc(F.q)}" style="max-width:280px"></div>
-  <div class="card">${table([{h:'Vendor',f:v=>`<b>${esc(v.vendor_name)}</b><div class="muted">${esc(v.vendor_code)}${v.busy_name && v.busy_name!==v.vendor_name ? ' · BUSY: ' + esc(v.busy_name) : ''}</div>`},
-    {h:'Types',f:v=>`<div style="display:flex;flex-wrap:wrap;gap:4px">${(v.kinds||[]).map(k => chip(vtName(k), 'info')).join('')}</div>` + `<div class="muted" style="font-size:12px">${v.business_type ? esc(vnBtName(v.business_type)) : (v.kinds||[]).includes('transporter') ? '<span style="color:var(--alert)">business type missing</span>' : ''}${v.trucks ? ' · ' + v.trucks + ' truck(s)' : ''}</div>`},{h:'Contact',f:v=>`${v.phone ? esc(v.phone) : chip('mobile missing','bad')}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
-    {h:'PAN / GSTIN',f:v=>`${v.pan ? esc(v.pan) : chip('PAN missing','bad')}<div class="muted">${v.gstin ? esc(v.gstin) : 'no GSTIN'}</div>`},
-    {h:'Bank',f:v=>v.bank_account ? `${esc(v.bank_name||'')} …${esc(v.bank_account.slice(-4))} · ${esc(v.bank_ifsc)}${v.cheque_docs ? '' : ' ' + chip('no cheque copy','warn')}` : chip('missing','warn')},
-    {h:'Used in',n:1,f:v=>v.used_count ? v.used_count + ' doc(s)' : '—'},{h:'Status',f:v=>v.is_active ? chip('active','ok') : chip('inactive')},
+  <div class="card">${table([{h:'Vendor Code',f:v=>`<b>${esc(v.vendor_code)}</b>`},
+    {h:'Vendor Name',f:v=>esc(v.vendor_name) + (v.is_active ? '' : ' ' + chip('inactive'))},
+    {h:'Type',f:v=>v.business_type ? esc(vnBtName(v.business_type)) : (v.kinds||[]).includes('transporter') ? chip('missing','bad') : '<span class="muted">—</span>'},
+    {h:'Contact',f:v=>`${v.phone ? esc(v.phone) : chip('missing','bad')}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
+    {h:'PAN No',f:v=>v.pan ? esc(v.pan) : chip('missing','bad')},
+    {h:'Bank Name',f:v=>v.bank_account ? esc(v.bank_name || '—') : chip('missing','warn')},
+    {h:'Busy Name',f:v=>v.busy_name ? esc(v.busy_name) : '<span class="muted">—</span>'},
     {h:'',f:v=>(v.cheque_docs || v.aadhaar_docs || v.reg_docs ? `<button class="ghost sm" data-ev="${v.id}">Documents</button> ` : '') + (can('vendor_admin') ? `<button class="ghost sm" data-ed="${v.id}">Edit</button>` : '')}], rows, 'No vendors match.')}</div>`;
   $('vnT').onchange = () => { F.type = $('vnT').value; go(); }; $('vnS').onchange = () => { F.status = $('vnS').value; go(); };
   $('vnG').onchange = () => { F.gap = $('vnG').value; go(); }; $('vnQ').onchange = () => { F.q = $('vnQ').value; go(); };
@@ -2076,7 +2078,7 @@ const vnListView = (fixed, title) => async m => {
     vnForm(null, {kinds: F.type ? [F.type] : fixed ? [fixed[0]] : [], hideTypes:!!fixed}, () => go()); };
   m.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => vnForm(all.find(v => v.id===b.dataset.ed), null, () => go(), {hideTypes:!!fixed}));
   m.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.ev));
-  $('vnCsv').onclick = () => csv(rows.map(v => ({code:v.vendor_code, name:v.vendor_name, busy_name:v.busy_name, types:(v.kinds||[]).map(vtName).join(', '), contact_person:v.contact_person||'', phone:v.phone, email:v.email||'',
+  $('vnCsv').onclick = () => csv(rows.map(v => ({code:v.vendor_code, name:v.vendor_name, busy_name:v.busy_name, types:(v.kinds||[]).map(vtName).join(', '), type_of_business:vnBtName(v.business_type), contact_person:v.contact_person||'', phone:v.phone, email:v.email||'',
     pan:v.pan, gstin:v.gstin||'', state:v.state_name||'', address:v.address||'', bank_name:v.bank_name||'', branch:v.bank_branch||'', bank_account:v.bank_account||'', ifsc:v.bank_ifsc||'', holder:v.bank_holder||'', active:v.is_active, used_in_docs:v.used_count})), title.toLowerCase().replace(/\W+/g, '-'));
 };
 VIEWS.vn_list = vnListView(null, 'All vendors');
@@ -2156,7 +2158,57 @@ VIEWS.vn_pumps = async m => {
 /* ---- market trucks: which vendor a truck belongs to, from which date; moves keep remarks and history ---- */
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'vt', name:'Vendor Trucks', icon:'vtruck', desc:'Market trucks and the vendor each belongs to, from an assignment date; move to another vendor with remarks; full history',
-    visible: () => can('vn_trucks') || can('vendor_admin') || can('te_view'), screens: () => [['#','Vendor trucks'],['vn_trucks','Trucks & vendors'],['vt_vendors','Truck vendors']] });
+    visible: () => can('vn_trucks') || can('vendor_admin') || can('te_view'), screens: () => [['#','Vendor trucks'],['vn_trucks','Trucks & vendors'],['vt_vendors','Truck vendors'],['vt_tds','TDS declaration']] });
+
+/* ---- TDS declaration: once per financial year, before the vendor's first placement, the vendor declares 10 or more trucks yes / no ---- */
+const fyOf = d => { const x = new Date((d || today()) + 'T00:00:00'); const y = x.getMonth() >= 3 ? x.getFullYear() : x.getFullYear() - 1; return `${y}-${String((y + 1) % 100).padStart(2,'0')}`; };
+const fyPrev = fy => { const y = +fy.slice(0,4) - 1; return `${y}-${String((y + 1) % 100).padStart(2,'0')}`; };
+const tdsRate = (v, d) => !d ? null : !d.trucks_10_or_more ? 0 : ['proprietorship','individual','huf'].includes(v.business_type) ? 1 : 2;
+const tdsChip = r => r === null ? chip('pending','warn') : r === 0 ? chip('No TDS','ok') : chip(`TDS ${r}%`,'info');
+function tdsForm(v, fy, d, done){
+  const ov = modal(`<h2>TDS declaration · ${esc(v.vendor_name)}</h2><p class="muted">${esc(v.vendor_code)} · PAN ${esc(v.pan || 'missing')} · ${esc(vnBtName(v.business_type) || 'type of business missing')}</p>
+    <div class="row"><div class="field" style="flex:1"><label>Financial year</label><select id="tdF">${[fyOf(), fyPrev(fyOf())].map(f => `<option ${f===fy?'selected':''}>${f}</option>`).join('')}</select></div>
+      <div class="field" style="flex:1"><label>Declaration date</label><input type="date" id="tdD" value="${d ? d.declared_on : today()}"></div></div>
+    <div class="field"><label>Does the vendor own 10 or more trucks?</label><select id="tdY"><option value="">— choose —</option><option value="yes" ${d && d.trucks_10_or_more ? 'selected' : ''}>Yes — 10 or more trucks (TDS deducted)</option><option value="no" ${d && !d.trucks_10_or_more ? 'selected' : ''}>No — less than 10 trucks (no TDS)</option></select></div>
+    <div class="field"><label>Signed declaration copy (photo / PDF)</label><input type="file" id="tdC" accept="image/*,application/pdf"></div>
+    <div class="field"><label>Remarks${d ? ' (reason for change)' : ''}</label><input id="tdR"></div>
+    <div class="row"><button class="primary" id="tdGo">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('tdGo').onclick = e => act(e.target, async () => {
+    const y = $('tdY'); if(!y.value) throw new Error('Answer: 10 or more trucks — Yes or No');
+    if(d && !$('tdR').value.trim()) throw new Error('Give the reason for changing the declaration');
+    const id = await rpc('vn_tds_declare', {p_vendor:v.id, p_fy:$('tdF').value, p_10_or_more:y.value === 'yes', p_on:$('tdD').value || null, p_remarks:$('tdR').value});
+    const f = $('tdC').files[0]; if(f) await uploadPhotoFile('vendor_tds', id, f, `TDS declaration ${$('tdF').value} · ${v.vendor_name}`);
+    closeModal(); done && done(); }, 'Declaration saved');
+}
+VIEWS.vt_tds = async m => {
+  S.tdsF = S.tdsF || {fy:fyOf(), st:'', q:''}; const F = S.tdsF;
+  const [decl, docs] = await Promise.all([qAll('vn_tds_declarations', b => b.eq('fy', F.fy).order('id')), q('wh_evidence', b => b.eq('entity_type','vendor_tds').select('entity_id'))]);
+  const hasDoc = new Set(docs.map(x => x.entity_id)); const D = Object.fromEntries(decl.map(d => [d.vendor_id, d]));
+  const vend = S.vendors.filter(v => (v.kinds||[]).includes('transporter') && (v.is_active || D[v.id])).sort((a, b) => a.vendor_name.localeCompare(b.vendor_name));
+  const qs = F.q.trim().toUpperCase(); const ed = can('vn_tds');
+  const rows = vend.filter(v => (!F.st || (F.st === 'pending' && !D[v.id]) || (F.st === 'no' && D[v.id] && !D[v.id].trucks_10_or_more) || (F.st === 'yes' && D[v.id] && D[v.id].trucks_10_or_more) || (F.st === 'nocopy' && D[v.id] && !hasDoc.has(D[v.id].id)))
+    && (!qs || [v.vendor_name, v.vendor_code, v.pan].some(x => (x||'').toUpperCase().includes(qs))));
+  const n = f => vend.filter(f).length;
+  m.innerHTML = `<h1>TDS declaration · FY ${esc(F.fy)}</h1>
+  <p class="muted">Each truck vendor declares once every financial year, at its first placement that year: does it own 10 or more trucks? <b>No</b> = no TDS on its bills. <b>Yes</b> = TDS by type of business (1% proprietor / individual / HUF, 2% firm / company / others). Pending = not yet declared this year — Trip Entry will ask for it before the vendor's first truck of the year.</p>
+  <div class="kpi"><div><span>Truck vendors</span><b>${vend.length}</b></div><div><span>Pending</span><b ${n(v => !D[v.id]) ? 'style="color:var(--alert)"' : ''}>${n(v => !D[v.id])}</b></div>
+    <div><span>Less than 10 · no TDS</span><b>${n(v => D[v.id] && !D[v.id].trucks_10_or_more)}</b></div><div><span>10 or more · TDS</span><b>${n(v => D[v.id] && D[v.id].trucks_10_or_more)}</b></div></div>
+  <div class="row"><select id="tdFy" style="width:auto">${[fyOf(), fyPrev(fyOf())].map(f => `<option ${f===F.fy?'selected':''}>${f}</option>`).join('')}</select>
+    <select id="tdSt" style="width:auto">${[['','All'],['pending','Pending'],['no','Less than 10 (no TDS)'],['yes','10 or more (TDS)'],['nocopy','Declared, no signed copy']].map(([k,l]) => `<option value="${k}" ${k===F.st?'selected':''}>${l}</option>`).join('')}</select>
+    <input id="tdQ" placeholder="Search name / code / PAN" value="${esc(F.q)}" style="max-width:260px"><button class="ghost sm" id="tdCsv">Download CSV</button></div>
+  <div class="card">${table([{h:'Vendor Code',f:v=>`<b>${esc(v.vendor_code)}</b>`},{h:'Vendor Name',f:v=>esc(v.vendor_name)},
+    {h:'Type',f:v=>v.business_type ? esc(vnBtName(v.business_type)) : chip('missing','bad')},{h:'PAN No',f:v=>v.pan ? esc(v.pan) : chip('missing','bad')},
+    {h:'10+ trucks',f:v=>D[v.id] ? (D[v.id].trucks_10_or_more ? 'Yes' : 'No') : '—'},{h:'Declared on',f:v=>D[v.id] ? d8(D[v.id].declared_on) : '—'},
+    {h:'TDS',f:v=>tdsChip(tdsRate(v, D[v.id]))},
+    {h:'Copy',f:v=>D[v.id] ? (hasDoc.has(D[v.id].id) ? `<button class="ghost sm" data-dc="${D[v.id].id}">View</button>` : chip('no copy','warn')) : ''},
+    {h:'Remarks',f:v=>D[v.id] && D[v.id].remarks ? `<span class="muted">${esc(D[v.id].remarks)}</span>` : ''},
+    {h:'',f:v=>ed ? `<button class="${D[v.id] ? 'ghost' : 'primary'} sm" data-td="${v.id}">${D[v.id] ? 'Change' : 'Declare'}</button>` : ''}], rows, 'No truck vendors match.')}</div>`;
+  $('tdFy').onchange = () => { F.fy = $('tdFy').value; go(); }; $('tdSt').onchange = () => { F.st = $('tdSt').value; go(); }; $('tdQ').onchange = () => { F.q = $('tdQ').value; go(); };
+  m.querySelectorAll('[data-td]').forEach(b => b.onclick = () => { const v = vend.find(x => x.id === b.dataset.td); tdsForm(v, F.fy, D[v.id], () => go()); });
+  m.querySelectorAll('[data-dc]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.dc));
+  $('tdCsv').onclick = () => csv(rows.map(v => ({fy:F.fy, vendor_code:v.vendor_code, vendor_name:v.vendor_name, type:vnBtName(v.business_type) || '', pan:v.pan || '',
+    trucks_10_or_more:D[v.id] ? (D[v.id].trucks_10_or_more ? 'Yes' : 'No') : 'pending', declared_on:D[v.id] ? D[v.id].declared_on : '', tds_percent:tdsRate(v, D[v.id]) ?? 'pending', remarks:D[v.id] ? D[v.id].remarks || '' : ''})), 'tds-declarations-' + F.fy);
+};
 ICONS.vtruck = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 6h12v10H1z"/><path d="M13 10h4l3 3v3h-7"/><circle cx="5" cy="18" r="1.8"/><circle cx="16" cy="18" r="1.8"/><path d="M19 3l2 2-2 2M21 5h-5"/></svg>';
 MOD_SHORT.vt = 'Market trucks and their vendors';
 const vnTruckVendors = () => S.vendors.filter(v => v.is_active && (v.kinds||[]).includes('transporter'));
