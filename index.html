@@ -895,6 +895,13 @@ const ftVendor = id => (S.vendors.find(v => v.id===id)||{}).vendor_name || '';
 const ftVT = k => ({body:'body', insurance:'insurance', gps:'gps', fastag:'fastag', dealer:'dealer'})[k] || 'rto';
 const vendOpts = (sel, kind) => vOpts(ftVT(kind), sel);
 const linkBtn = (href, label, cls='ghost') => `<a class="${cls} sm" style="display:inline-flex;align-items:center;text-decoration:none;border-radius:8px" href="${href}">${label}</a>`;
+const upDT = (v, lbl) => { const p2 = x => String(x).padStart(2,'0');
+  if(v instanceof Date && !isNaN(v)) return `${v.getFullYear()}-${p2(v.getMonth()+1)}-${p2(v.getDate())}T${p2(v.getHours())}:${p2(v.getMinutes())}:${p2(v.getSeconds())}`;
+  const t = String(v).trim(); let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if(m) return `${m[1]}-${p2(m[2])}-${p2(m[3])}T${p2(m[4]||0)}:${m[5]||'00'}:${m[6]||'00'}`;
+  m = t.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if(m) return `${m[3]}-${p2(m[2])}-${p2(m[1])}T${p2(m[4]||0)}:${m[5]||'00'}:${m[6]||'00'}`;
+  throw new Error(`${lbl || 'Timestamp'} "${t}" is not a date and time (use YYYY-MM-DD HH:MM:SS or DD-MM-YYYY HH:MM)`); };
 const isoD = v => { if(v==null || v==='') return null; if(v instanceof Date) return `${v.getFullYear()}-${String(v.getMonth()+1).padStart(2,'0')}-${String(v.getDate()).padStart(2,'0')}`;
   v = String(v).trim(); let m;
   if((m = v.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/))) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
@@ -1550,7 +1557,7 @@ const UP_SETS = [
   {k:'terms', g:'5 · Rake sidings', n:'Customer DC/WC bearer', t:'rk_siding_client_terms', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Customer','client_id','ref:client',1],['DC/WC borne by','dcwc_bearer','sel:ssl/customer',1],['Effective from','effective_from','date',0,'blank = 01-04-2026'],['Note','note','text']], fix:r => ({...r, effective_from:r.effective_from || '2026-04-01'})},
   {k:'aliases', g:'5 · Rake sidings', n:'Wagon sheet material names', t:'rk_material_aliases', perm:'rk_master_admin', cols:[['Customer','client_id','ref:client',1],['Name in wagon sheet','sheet_name','upper',1],['Our material type','material_id','ref:mat',1]]},
   {k:'vendors', g:'6 · Vendors & labour', n:'Vendors', link:'#up/vn_import', perm:'vendor_admin', note:'Vendor master has its own upload (codes, types, PAN, bank). Missing PAN / mobile / bank load as "incomplete".'},
-  {k:'market_trucks', g:'6 · Vendors & labour', n:'Market trucks of vendors', rpcRows:'vn_truck_import', perm:'vn_trucks', cols:[['Truck no.','truck_no','upper',1],['Vendor code','vendor_code','upper',1,'e.g. VD0387'],['Assignment date','from_date','date',0,'blank = today'],['Remarks','remarks','text']], note:'Which vendor each market truck belongs to. A truck already with another vendor is reported: move it in Vendor Trucks with remarks.'},
+  {k:'market_trucks', g:'6 · Vendors & labour', n:'Market trucks of vendors', rpcRows:'vn_truck_import', perm:'vn_trucks', cols:[['Timestamp','assigned_at','datetime',0,'when the truck was assigned, e.g. 2020-06-05 12:32:14 — blank = now'],['Truck no.','truck_no','upper',1],['Vendor code','vendor_code','upper',1,'e.g. VD0387'],['Assignment date','from_date','date',0,'blank = date of the timestamp'],['Remarks','remarks','text']], note:'One row per assignment (your old log works as is: Timestamp, Truck No., Vendor Code). Rows are applied oldest first; a later row for a truck already with another vendor moves it to the new vendor (remark: Moved by upload). An earlier or same-day row for another vendor is reported.'},
   {k:'contractors', g:'6 · Vendors & labour', n:'Warehouse labour contractors', t:'wh_contractors', perm:'wh_master_admin', cols:[['Warehouse','location_id','ref:warehouse',1],['Vendor (code or name)','vendor_id','ref:vendor',1,'must be type Labour contractor'],['Billing cycle (days)','billing_cycle_days','num',0,'blank = 7']], fix:r => ({...r, billing_cycle_days:r.billing_cycle_days || 7})},
   {k:'sardars', g:'6 · Vendors & labour', n:'Labour Sardars', t:'rk_sardars', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Vendor (code or name)','vendor_id','ref:vendor',1,'must be type Labour Sardar']]},
   {k:'labour_rates', g:'6 · Vendors & labour', n:'Warehouse labour rates', t:'wh_labor_rates', perm:'wh_master_admin', cols:[['Location','location_id','ref:anyloc',1],['Activity','activity','sel:unloading/loading/paltai',1],['Customer','client_id','ref:client',0,'helps find the material'],['Material type','material_id','ref:mat',1],['Rate per MT','rate_per_mt','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.client_id; return r; }},
@@ -1594,7 +1601,7 @@ function upTemplate(d){
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([d.cols.map(c => c[0] + (c[3] ? ' *' : ''))]), d.n.slice(0, 30));
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Column','Needed','What to enter'], ...d.cols.map(c => [c[0], c[3] ? 'yes' : 'no',
-    (c[2].startsWith('ref:') ? `${UP_LBL[c[2].slice(4)]} — code or name as in the system` : c[2].startsWith('sel:') ? 'one of: ' + c[2].slice(4).split('/').join(', ') : c[2] === 'date' ? 'date DD-MM-YYYY' : c[2] === 'num' ? 'number' : 'text') + (c[4] ? ' · ' + c[4] : '')])]), 'How to fill');
+    (c[2].startsWith('ref:') ? `${UP_LBL[c[2].slice(4)]} — code or name as in the system` : c[2].startsWith('sel:') ? 'one of: ' + c[2].slice(4).split('/').join(', ') : c[2] === 'date' ? 'date DD-MM-YYYY' : c[2] === 'datetime' ? 'date and time' : c[2] === 'num' ? 'number' : 'text') + (c[4] ? ' · ' + c[4] : '')])]), 'How to fill');
   XLSX.writeFile(wb, `upload_${d.k}.xlsx`);
 }
 async function upRun(d, file){
@@ -1615,6 +1622,7 @@ async function upRun(d, file){
           if(v == null){ if(req) throw new Error(`${c[0]} is missing`); continue; }
           if(kind === 'num'){ const x = +String(v).replace(/[₹,\s]/g, ''); if(isNaN(x)) throw new Error(`${c[0]} "${v}" is not a number`); r[f] = x; }
           else if(kind === 'date') r[f] = isoD(v);
+          else if(kind === 'datetime') r[f] = upDT(v, c[0]);
           else if(kind === 'upper') r[f] = String(v).trim().toUpperCase();
           else if(kind.startsWith('sel:')){ const o = kind.slice(4).split('/').find(x => UPN(x) === UPN(v)); if(!o) throw new Error(`${c[0]} must be one of ${kind.slice(4).split('/').join(', ')}`); r[f] = o; }
           else if(kind.startsWith('ref:')){ const t = kind.slice(4); const hit = UP_REF[t](v, r);
@@ -2218,14 +2226,19 @@ VIEWS.vn_trucks = async m => {
   const rows = await qAll('vn_market_truck_list', b => b.order('truck_no').order('from_date', {ascending:false}).order('id'));
   const cur = rows.filter(r => !r.to_date); const ed = can('vn_trucks');
   S.mtF = S.mtF ?? '';
-  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Market trucks</h1><div class="row"><input id="mtF" placeholder="Find truck or vendor" style="width:220px" value="${esc(S.mtF)}">${ed ? '<button class="primary sm" id="mtNew">+ Add truck to vendor</button>' : ''}</div></div>
-  <p class="muted">Each market truck belongs to one vendor from its assignment date. Moving it to another vendor closes the old link on that date and keeps the history with remarks. Our own trucks (Fleet) cannot be added here.</p>
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Market trucks</h1><div class="row"><input id="mtF" placeholder="Find truck or vendor" style="width:220px" value="${esc(S.mtF)}"><button class="ghost sm" id="mtCsv">Download CSV</button>${ed ? '<button class="primary sm" id="mtNew">+ Add truck to vendor</button>' : ''}</div></div>
+  <p class="muted">One row per assignment, latest first. Each market truck is with one vendor at a time; moving it closes the old row (shown faded with its end date) and keeps the history. Click a truck for its full history. Our own trucks (Fleet) cannot be added here.</p>
   <div class="kpi"><div><span>Market trucks</span><b>${cur.length}</b></div><div><span>Vendors with trucks</span><b>${new Set(cur.map(r => r.vendor_id)).size}</b></div><div><span>Moves recorded</span><b>${rows.filter(r => r.moved_from).length}</b></div></div>
   <div class="card" id="mtT"></div>`;
-  const draw = () => { const f = S.mtF.toUpperCase().replace(/\s/g, ''); const list = cur.filter(r => !f || [r.truck_no, r.vendor_code, r.vendor_name].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f)));
-    $('mtT').innerHTML = table([{h:'Truck',f:r=>`<a href="#" data-h="${esc(r.truck_no)}"><b>${esc(r.truck_no)}</b></a>`},{h:'Vendor',f:r=>esc(r.vendor_code) + ' · ' + esc(r.vendor_name)},{h:'Since',f:r=>d8(r.from_date)},
-      {h:'Came from',f:r=>r.moved_from ? esc(r.moved_from) + (r.remarks ? `<div class="muted" style="font-size:12px">${esc(r.remarks)}</div>` : '') : '<span class="muted">—</span>'},
-      {h:'',f:r=>ed ? `<button class="ghost sm" data-mv="${r.id}">Move to vendor</button> <button class="ghost sm" data-rm="${r.id}">Remove</button>` : ''}], list.slice(0, 1000), 'No market trucks yet.');
+  const ts = v => { if(!v) return ''; const d = new Date(v); const p2 = x => String(x).padStart(2,'0'); return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; };
+  const draw = () => { const f = S.mtF.toUpperCase().replace(/\s/g, ''); const list = rows.filter(r => !f || [r.truck_no, r.vendor_code, r.vendor_name].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f)))
+      .sort((a, b) => String(b.assigned_at || b.created_at).localeCompare(String(a.assigned_at || a.created_at)));
+    $('mtT').innerHTML = table([{h:'Timestamp',f:r=>`<span style="white-space:nowrap${r.to_date ? ';opacity:.6' : ''}">${ts(r.assigned_at || r.created_at)}</span>`},
+      {h:'Truck No.',f:r=>`<a href="#" data-h="${esc(r.truck_no)}"><b>${esc(r.truck_no)}</b></a>`},
+      {h:'Vendor Code',f:r=>`<span${r.to_date ? ' style="opacity:.6"' : ''}>${esc(r.vendor_code)}</span>`},
+      {h:'Vendor Name',f:r=>`<span${r.to_date ? ' style="opacity:.6"' : ''}>${esc(r.vendor_name)}</span>` + (r.to_date ? `<div class="muted" style="font-size:12px">till ${d8(r.to_date)}${r.remarks ? ' · ' + esc(r.remarks) : ''}</div>` : r.remarks ? `<div class="muted" style="font-size:12px">${esc(r.remarks)}</div>` : '')},
+      {h:'',f:r=>ed && !r.to_date ? `<button class="ghost sm" data-mv="${r.id}">Move to vendor</button> <button class="ghost sm" data-rm="${r.id}">Remove</button>` : ''}], list.slice(0, 1000), 'No market trucks yet.')
+      + (list.length > 1000 ? `<p class="muted">Showing latest 1,000 of ${list.length}. Search to narrow, or download CSV.</p>` : '');
     $('mtT').querySelectorAll('[data-h]').forEach(a => a.onclick = e => { e.preventDefault(); const h = rows.filter(r => r.truck_no === a.dataset.h);
       modal(`<h2>${esc(a.dataset.h)} · vendor history</h2>${table([{h:'Vendor',f:r=>esc(r.vendor_code + ' · ' + r.vendor_name)},{h:'From',f:r=>d8(r.from_date)},{h:'To',f:r=>r.to_date ? d8(r.to_date) : chip('now','ok')},{h:'Remarks',k:'remarks'}], h)}<button class="ghost" onclick="closeModal()">Close</button>`); });
     $('mtT').querySelectorAll('[data-mv]').forEach(b => b.onclick = () => vnTruckForm(cur.find(r => r.id === b.dataset.mv)));
@@ -2234,6 +2247,7 @@ VIEWS.vn_trucks = async m => {
         <div class="row"><button class="primary" id="mrOk">Remove</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
       $('mrOk').onclick = e => act(e.target, () => rpc('vn_truck_unlink', {p_link:r.id, p_to:$('mrD').value || null, p_remarks:$('mrR').value}), 'Removed').then(() => { closeModal(); go(); }).catch(() => {}); }); };
   draw(); $('mtF').oninput = () => { S.mtF = $('mtF').value; draw(); };
+  $('mtCsv').onclick = () => csv(rows.slice().sort((a, b) => String(b.assigned_at).localeCompare(String(a.assigned_at))).map(r => ({timestamp:ts(r.assigned_at || r.created_at), truck_no:r.truck_no, vendor_code:r.vendor_code, vendor_name:r.vendor_name, from_date:r.from_date, to_date:r.to_date || '', remarks:r.remarks || ''})), 'vendor-trucks');
   if($('mtNew')) $('mtNew').onclick = () => vnTruckForm(null);
 };
 function vnTruckForm(r){
