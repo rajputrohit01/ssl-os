@@ -1966,14 +1966,16 @@ MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
 ICONS.vendor = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9h18v2a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z"/><path d="M5 13v8h14v-8"/><path d="M10 21v-5h4v5"/></svg>';
 
 // vendor form in its own layer, so it can open on top of another form (e.g. "+ Add new vendor…" inside a truck slip)
-function vnForm(v, preset, done){
+function vnForm(v, preset, done, opts = {}){
+  // inside a module the vendor type comes from the module: no type ticks (opts.hideTypes); All vendors (Master Data) still shows them
+  const hideTypes = !!(opts.hideTypes || (preset && preset.hideTypes));
   if(!can('vendor_admin')) return toast('Only HO / Admin can add or edit vendors', 'warn');
-  const V = v || {kinds:[], ...(preset||{})}; S.qaN = (S.qaN||0) + 1; const P = 'vn' + S.qaN + '_';
+  const V = v || {kinds:[], ...(preset||{})}; delete V.hideTypes; S.qaN = (S.qaN||0) + 1; const P = 'vn' + S.qaN + '_';
   const ov = document.createElement('div'); ov.className = 'modal'; ov.style.zIndex = 70 + S.qaN;
   const f = (k, l, attrs='') => `<div class="field"><label>${l}</label><input id="${P}${k}" value="${esc(V[k]||'')}" ${attrs}></div>`;
-  ov.innerHTML = `<div class="box"><h2>${v ? 'Edit ' + esc(v.vendor_name) + ` <span class="muted">${esc(v.vendor_code)}</span>` : 'New vendor'}</h2>
-    <label>Vendor type (tick all that apply)</label>
-    <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin:6px 0 12px">${S.vtypes.filter(t => t.is_active || (V.kinds||[]).includes(t.code)).map(t => `<label style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:14px;font-weight:500;margin:0"><input type="checkbox" data-k="${t.code}" ${(V.kinds||[]).includes(t.code)?'checked':''} style="width:18px;height:18px"> ${esc(t.name)}</label>`).join('')}</div>
+  ov.innerHTML = `<div class="box"><h2>${v ? 'Edit ' + esc(v.vendor_name) + ` <span class="muted">${esc(v.vendor_code)}</span>` : hideTypes ? 'New ' + esc((V.kinds||[]).map(vtName).join(', ').toLowerCase()) : 'New vendor'}</h2>
+    ${hideTypes ? `<p class="muted" style="margin:4px 0 10px">Type: <b>${esc((V.kinds||[]).map(vtName).join(', '))}</b></p>` : `<label>Vendor type (tick all that apply)</label>
+    <div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin:6px 0 12px">`}${hideTypes ? '' : S.vtypes.filter(t => t.is_active || (V.kinds||[]).includes(t.code)).map(t => `<label style="display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0;font-size:14px;font-weight:500;margin:0"><input type="checkbox" data-k="${t.code}" ${(V.kinds||[]).includes(t.code)?'checked':''} style="width:18px;height:18px"> ${esc(t.name)}</label>`).join('')}${hideTypes ? '' : '</div>'}
     <div class="grid">
       ${f('vendor_name','Vendor name *')}${f('busy_name','Name in BUSY (blank = same)')}
       ${f('contact_person','Contact person')}${f('phone','Mobile *','inputmode="numeric" maxlength="14"')}${f('email','Email','type="email"')}
@@ -1984,14 +1986,14 @@ function vnForm(v, preset, done){
       <div class="field"><label>Cancelled cheque / passbook${v && v.cheque_docs ? ` (${v.cheque_docs} uploaded)` : ''}</label><input type="file" id="${P}chq" accept="image/*,application/pdf"></div>
       ${f('note','Note')}
       ${v ? `<div class="field"><label>Status</label><select id="${P}is_active"><option value="true">Active</option><option value="false" ${v.is_active ? '' : 'selected'}>Inactive (hidden from all dropdowns)</option></select></div>` : ''}
-    </div><p class="muted">* required. One PAN = one vendor: if this vendor already exists for another type, edit it and tick the extra type. Bank details are needed before any bank payment.</p>
+    </div><p class="muted">* required. ${hideTypes ? 'One PAN = one vendor: if this PAN already exists (for another type), the system offers to add this type to that vendor.' : 'One PAN = one vendor: if this vendor already exists for another type, edit it and tick the extra type.'} Bank details are needed before any bank payment.</p>
     <div class="row" style="margin-top:12px"><button class="primary" data-vs>Save vendor</button><button class="ghost" data-vc>Cancel</button></div></div>`;
   document.body.appendChild(ov);
   const g = k => ov.querySelector('#' + P + k);
   ov.querySelector('[data-vc]').onclick = () => ov.remove();
   ov.querySelector('[data-vs]').onclick = e => act(e.target, async () => {
     const r = {}; ['vendor_name','busy_name','contact_person','phone','email','pan','gstin','address','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','note'].forEach(k => r[k] = g(k).value.trim() || null);
-    r.state_id = g('state_id').value || null; r.kinds = [...ov.querySelectorAll('[data-k]:checked')].map(i => i.dataset.k);
+    r.state_id = g('state_id').value || null; r.kinds = hideTypes ? (V.kinds || []) : [...ov.querySelectorAll('[data-k]:checked')].map(i => i.dataset.k);
     if(v) r.is_active = g('is_active').value === 'true';
     ['pan','gstin','bank_ifsc'].forEach(k => r[k] = r[k] && r[k].toUpperCase().replace(/\s/g,''));
     if(!r.vendor_name) throw new Error('Enter the vendor name');
@@ -2003,7 +2005,13 @@ function vnForm(v, preset, done){
     if(r.gstin && r.gstin.slice(2,12) !== r.pan) throw new Error('GSTIN does not contain this PAN — check both');
     if(r.bank_ifsc && !IFSC_RE.test(r.bank_ifsc)) throw new Error('IFSC is not valid (format SBIN0001234)');
     if(!!r.bank_account !== !!r.bank_ifsc) throw new Error('Enter both the bank account number and the IFSC');
-    if(!v){ const dup = S.vendors.find(x => x.pan === r.pan); if(dup) throw new Error(`PAN ${r.pan} already belongs to ${dup.vendor_name} (${dup.vendor_code}). Edit that vendor and tick the extra type.`); }
+    if(!v){ const dup = S.vendors.find(x => x.pan === r.pan);
+      if(dup && hideTypes){ const add = r.kinds.filter(k => !(dup.kinds||[]).includes(k));
+        if(!add.length) throw new Error(`${dup.vendor_name} (${dup.vendor_code}) is already in this list`);
+        if(!confirm(`PAN ${r.pan} already belongs to ${dup.vendor_name} (${dup.vendor_code}). Add "${add.map(vtName).join(', ')}" to that vendor?`)) throw new Error('Not saved');
+        const u = await sb.from('sys_vendors').update({kinds:[...(dup.kinds||[]), ...add]}).eq('id', dup.id).select(); if(u.error) throw new Error(u.error.message);
+        await loadMasters(); ov.remove(); done && done(u.data[0]); return u.data[0]; }
+      if(dup) throw new Error(`PAN ${r.pan} already belongs to ${dup.vendor_name} (${dup.vendor_code}). Edit that vendor and tick the extra type.`); }
     const res = v ? await sb.from('sys_vendors').update(r).eq('id', v.id).select() : await sb.from('sys_vendors').insert(r).select();
     if(res.error) throw new Error(res.error.message);
     const row = (res.data||[])[0];
@@ -2014,6 +2022,10 @@ function vnForm(v, preset, done){
 }
 
 // one vendor list, shown inside each module for its own vendor types (Pumps, Truck vendors, Labour, Purchase, Fleet, Landlords); All vendors in Master Data
+function vnPickType(kinds, then){
+  modal(`<h2>Which kind of vendor?</h2><div class="row">${kinds.map(k => `<button class="ghost" data-pk="${k}">${esc(vtName(k))}</button>`).join('')}</div><div class="row" style="margin-top:10px"><button class="ghost sm" onclick="closeModal()">Cancel</button></div>`);
+  $('modalBox').querySelectorAll('[data-pk]').forEach(b => b.onclick = () => { closeModal(); then(b.dataset.pk); });
+}
 const vnListView = (fixed, title) => async m => {
   const fk = 'vnF_' + (fixed ? fixed.join('_') : 'all'); S[fk] = S[fk] || {type:'', status:'active', gap:'', q:''}; const F = S[fk];
   const types = fixed ? S.vtypes.filter(t => fixed.includes(t.code)) : S.vtypes;
@@ -2037,8 +2049,9 @@ const vnListView = (fixed, title) => async m => {
     {h:'',f:v=>(v.cheque_docs ? `<button class="ghost sm" data-ev="${v.id}">Cheque</button> ` : '') + (can('vendor_admin') ? `<button class="ghost sm" data-ed="${v.id}">Edit</button>` : '')}], rows, 'No vendors match.')}</div>`;
   $('vnT').onchange = () => { F.type = $('vnT').value; go(); }; $('vnS').onchange = () => { F.status = $('vnS').value; go(); };
   $('vnG').onchange = () => { F.gap = $('vnG').value; go(); }; $('vnQ').onchange = () => { F.q = $('vnQ').value; go(); };
-  if($('vnAdd')) $('vnAdd').onclick = () => vnForm(null, {kinds: F.type ? [F.type] : fixed ? [fixed[0]] : []}, async () => { await loadMasters(); go(); });
-  m.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => vnForm(all.find(v => v.id===b.dataset.ed), null, () => go()));
+  if($('vnAdd')) $('vnAdd').onclick = () => { if(fixed && fixed.length > 1 && !F.type) return vnPickType(fixed, k => vnForm(null, {kinds:[k], hideTypes:true}, () => go()));
+    vnForm(null, {kinds: F.type ? [F.type] : fixed ? [fixed[0]] : [], hideTypes:!!fixed}, () => go()); };
+  m.querySelectorAll('[data-ed]').forEach(b => b.onclick = () => vnForm(all.find(v => v.id===b.dataset.ed), null, () => go(), {hideTypes:!!fixed}));
   m.querySelectorAll('[data-ev]').forEach(b => b.onclick = () => showEvidenceAll(b.dataset.ev));
   $('vnCsv').onclick = () => csv(rows.map(v => ({code:v.vendor_code, name:v.vendor_name, busy_name:v.busy_name, types:(v.kinds||[]).map(vtName).join(', '), contact_person:v.contact_person||'', phone:v.phone, email:v.email||'',
     pan:v.pan, gstin:v.gstin||'', state:v.state_name||'', address:v.address||'', bank_name:v.bank_name||'', branch:v.bank_branch||'', bank_account:v.bank_account||'', ifsc:v.bank_ifsc||'', holder:v.bank_holder||'', active:v.is_active, used_in_docs:v.used_count})), title.toLowerCase().replace(/\W+/g, '-'));
@@ -2111,7 +2124,7 @@ VIEWS.vn_pumps = async m => {
   <div class="card">${table([{h:'Pump',f:p=>`<b>${esc(p.vendor_name)}</b> <span class="muted">${esc(p.vendor_code)}</span>` + (p.is_active ? '' : ' ' + chip('inactive','bad'))},
     {h:'Plants',f:p=>tags.filter(t => t.vendor_id === p.id).map(t => chip(t.plant_code) + (ed ? ` <a href="#" data-un="${p.id}|${t.plant_id}" title="Remove from ${esc(t.plant_code)}">×</a>` : '')).join(' ') || '<span class="muted">not tagged</span>'},
     {h:'',f:p=>ed ? `<select data-tag="${p.id}" style="width:auto"><option value="">+ Tag to plant</option>${plants.filter(pl => !tags.some(t => t.vendor_id === p.id && t.plant_id === pl.id)).map(pl => `<option value="${pl.id}">${esc(pl.code)} · ${esc(pl.name)}</option>`).join('')}</select>` : ''}], pumps, 'No petrol pump vendors yet. Add a vendor with type Diesel in Vendor list.')}</div>`;
-  if($('ppNew')) $('ppNew').onclick = () => vnForm(null, {kinds:['diesel']}, async () => { await loadMasters(); go(); });
+  if($('ppNew')) $('ppNew').onclick = () => vnForm(null, {kinds:['diesel'], hideTypes:true}, () => go());
   m.querySelectorAll('[data-tag]').forEach(s => s.onchange = () => { if(!s.value) return; act(null, () => rpc('vn_pump_tag', {p_vendor:s.dataset.tag, p_plant:s.value, p_on:true}), 'Tagged').then(() => go()).catch(() => go()); });
   m.querySelectorAll('[data-un]').forEach(a => a.onclick = e => { e.preventDefault(); const [v, p] = a.dataset.un.split('|'); if(!confirm('Remove this pump from the plant? Past trips are not affected.')) return;
     act(null, () => rpc('vn_pump_tag', {p_vendor:v, p_plant:p, p_on:false}), 'Removed').then(() => go()).catch(() => {}); });
@@ -3341,7 +3354,7 @@ function wireAdd(root){
         s.value = row ? row[s.dataset.mv || 'id'] : ''; s.dataset.prev = s.value;
         s.dispatchEvent(new Event('change'));
       };
-      if(s.dataset.mt === 'vendor') vnForm(null, {kinds: s.dataset.vt ? [s.dataset.vt] : []}, after);
+      if(s.dataset.mt === 'vendor') vnForm(null, {kinds: s.dataset.vt ? [s.dataset.vt] : [], hideTypes:!!s.dataset.vt}, after);
       else quickAdd(s.dataset.mt, after, s._preset ? s._preset() : null);
     });
   });
