@@ -335,8 +335,17 @@ const destOpts = (clientId, opts = {}) => '<option value="">Select destination</
 const partyOpts = (clientId, sel) => opt(S.parties.filter(p=>p.client_id===clientId), 'sap_code', p => `${p.party_name} · ${p.destination} · Sold-To ${p.sold_to_code}${p.location_id?' (our warehouse)':''}`, sel, 'Select Ship-To');
 const soldToLine = (clientId, code) => { const w = S.plants.find(x => x.kind==='warehouse' && x.client_id===clientId && x.code===code); if(w) return `Our warehouse <b>${esc(w.name)}</b> — received there against GRN`; const p = S.parties.find(x=>x.client_id===clientId && x.sap_code===code); return p ? `Sold-To: <b>${esc(p.sold_to_name)}</b> (${esc(p.sold_to_code)}) · ${esc(p.sold_to_phone||'no phone')} · ${esc(p.destination)}, ${esc(p.district)}, ${esc(p.state)}` : ''; };
 const chip = (txt, kind='') => `<span class="chip ${kind}">${esc(txt)}</span>`;
-function table(cols, rows, empty='Nothing here yet.'){
+// who / when stamp for every entry: name + date-time; blank user on an edit = system job
+const userName = id => id ? ((S.users || {})[id] || 'user') : '';
+const stampTxt = (by, at, sys) => at || by ? `<div style="white-space:nowrap">${esc(userName(by) || (sys ? 'System' : '—'))}</div><div class="muted" style="font-size:12px;white-space:nowrap">${at ? dtS(at) : ''}</div>` : '<span class="muted">—</span>';
+const dtS = v => { const d = new Date(v); if(isNaN(d)) return ''; const p2 = x => String(x).padStart(2,'0'); return `${p2(d.getDate())}-${p2(d.getMonth()+1)}-${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
+const STAMP_COLS = [{h:'Created by',stamp:1,f:r=>stampTxt(r.created_by, r.created_at)},{h:'Edited by',stamp:1,f:r=>stampTxt(r.updated_by, r.updated_at, true)}];
+function table(cols, rows, empty='Nothing here yet.', opts={}){
   if(!rows.length) return `<div class="empty">${esc(empty)}</div>`;
+  if(S.usersOk && !opts.noStamp && !cols.some(c => c.stamp || c.h === 'Created by') && rows.some(r => r && ('created_by' in r || 'updated_by' in r))){
+    const at = cols.length && cols[cols.length - 1].h === '' ? cols.length - 1 : cols.length;
+    cols = [...cols.slice(0, at), ...STAMP_COLS, ...cols.slice(at)];
+  }
   return `<div class="tbl"><table><thead><tr>${cols.map(c=>`<th class="${c.n?'n':''}">${esc(c.h)}</th>`).join('')}</tr></thead><tbody>${
     rows.map(r=>`<tr>${cols.map(c=>`<td class="${c.n?'n':''}" data-label="${esc(c.h)}">${c.f ? c.f(r) : esc(r[c.k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
@@ -407,6 +416,7 @@ sb.auth.onAuthStateChange((event) => { if(event === 'SIGNED_IN' && $('app').clas
 $('logout').onclick = async () => { await sb.auth.signOut(); location.reload(); };
 
 async function loadMasters(){
+  const usersP = rpc('sys_user_labels').then(u => { S.users = u || {}; S.usersOk = true; }).catch(() => { S.users = S.users || {}; });
   [S.clients, S.materials, S.contractors, S.parties, S.vendors] = await Promise.all([
     q('sys_clients', b => b.eq('is_active', true).order('name')),
     q('wh_materials', b => b.order('code')),
@@ -423,6 +433,7 @@ async function loadMasters(){
   S.vtypes = await q('sys_vendor_types', b => b.order('sort').order('name'));
   if(can('ft_view')) await ftMasters();
   if(can('dr_view')) S.drTypes = await q('dr_licence_types', b => b.eq('is_active', true).order('sort'));
+  await usersP;
 }
 async function start(){
   const {data:{user}} = await sb.auth.getUser(); if(!user) return;
@@ -2227,27 +2238,29 @@ VIEWS.vn_trucks = async m => {
   const cur = rows.filter(r => !r.to_date); const ed = can('vn_trucks');
   S.mtF = S.mtF ?? '';
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Market trucks</h1><div class="row"><input id="mtF" placeholder="Find truck or vendor" style="width:220px" value="${esc(S.mtF)}"><button class="ghost sm" id="mtCsv">Download CSV</button>${ed ? '<button class="primary sm" id="mtNew">+ Add truck to vendor</button>' : ''}</div></div>
-  <p class="muted">One row per assignment, latest first. Each market truck is with one vendor at a time; moving it closes the old row (shown faded with its end date) and keeps the history. Click a truck for its full history. Our own trucks (Fleet) cannot be added here.</p>
+  <p class="muted">Each market truck with its present vendor, latest first. Click a truck number for its full vendor history. Our own trucks (Fleet) cannot be added here.</p>
   <div class="kpi"><div><span>Market trucks</span><b>${cur.length}</b></div><div><span>Vendors with trucks</span><b>${new Set(cur.map(r => r.vendor_id)).size}</b></div><div><span>Moves recorded</span><b>${rows.filter(r => r.moved_from).length}</b></div></div>
   <div class="card" id="mtT"></div>`;
   const ts = v => { if(!v) return ''; const d = new Date(v); const p2 = x => String(x).padStart(2,'0'); return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}:${p2(d.getSeconds())}`; };
-  const draw = () => { const f = S.mtF.toUpperCase().replace(/\s/g, ''); const list = rows.filter(r => !f || [r.truck_no, r.vendor_code, r.vendor_name].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f)))
-      .sort((a, b) => String(b.assigned_at || b.created_at).localeCompare(String(a.assigned_at || a.created_at)));
-    $('mtT').innerHTML = table([{h:'Timestamp',f:r=>`<span style="white-space:nowrap${r.to_date ? ';opacity:.6' : ''}">${ts(r.assigned_at || r.created_at)}</span>`},
-      {h:'Truck No.',f:r=>`<a href="#" data-h="${esc(r.truck_no)}"><b>${esc(r.truck_no)}</b></a>`},
-      {h:'Vendor Code',f:r=>`<span${r.to_date ? ' style="opacity:.6"' : ''}>${esc(r.vendor_code)}</span>`},
-      {h:'Vendor Name',f:r=>`<span${r.to_date ? ' style="opacity:.6"' : ''}>${esc(r.vendor_name)}</span>` + (r.to_date ? `<div class="muted" style="font-size:12px">till ${d8(r.to_date)}${r.remarks ? ' · ' + esc(r.remarks) : ''}</div>` : r.remarks ? `<div class="muted" style="font-size:12px">${esc(r.remarks)}</div>` : '')},
-      {h:'',f:r=>ed && !r.to_date ? `<button class="ghost sm" data-mv="${r.id}">Move to vendor</button> <button class="ghost sm" data-rm="${r.id}">Remove</button>` : ''}], list.slice(0, 1000), 'No market trucks yet.')
+  const byTime = (a, b) => String(b.assigned_at || b.created_at).localeCompare(String(a.assigned_at || a.created_at));
+  const fade = (r, html) => r.to_date ? `<span style="opacity:.6">${html}</span>` : html;
+  const cols = (link, act) => [{h:'Timestamp',f:r=>fade(r, `<span style="white-space:nowrap">${ts(r.assigned_at || r.created_at)}</span>`)},
+      {h:'Truck No.',f:r=>link ? `<a href="#" data-h="${esc(r.truck_no)}"><b>${esc(r.truck_no)}</b></a>` : fade(r, `<b>${esc(r.truck_no)}</b>`)},
+      {h:'Vendor Code',f:r=>fade(r, esc(r.vendor_code))},
+      {h:'Vendor Name',f:r=>fade(r, esc(r.vendor_name)) + (r.to_date ? `<div class="muted" style="font-size:12px">till ${d8(r.to_date)}${r.remarks ? ' · ' + esc(r.remarks) : ''}</div>` : r.remarks ? `<div class="muted" style="font-size:12px">${esc(r.remarks)}</div>` : '')},
+      ...(act ? [{h:'',f:r=>ed && !r.to_date ? `<button class="ghost sm" data-mv="${r.id}">Move to vendor</button> <button class="ghost sm" data-rm="${r.id}">Remove</button>` : ''}] : [])];
+  const draw = () => { const f = S.mtF.toUpperCase().replace(/\s/g, ''); const list = cur.filter(r => !f || [r.truck_no, r.vendor_code, r.vendor_name].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f))).sort(byTime);
+    $('mtT').innerHTML = table(cols(true, true), list.slice(0, 1000), 'No market trucks yet.')
       + (list.length > 1000 ? `<p class="muted">Showing latest 1,000 of ${list.length}. Search to narrow, or download CSV.</p>` : '');
-    $('mtT').querySelectorAll('[data-h]').forEach(a => a.onclick = e => { e.preventDefault(); const h = rows.filter(r => r.truck_no === a.dataset.h);
-      modal(`<h2>${esc(a.dataset.h)} · vendor history</h2>${table([{h:'Vendor',f:r=>esc(r.vendor_code + ' · ' + r.vendor_name)},{h:'From',f:r=>d8(r.from_date)},{h:'To',f:r=>r.to_date ? d8(r.to_date) : chip('now','ok')},{h:'Remarks',k:'remarks'}], h)}<button class="ghost" onclick="closeModal()">Close</button>`); });
+    $('mtT').querySelectorAll('[data-h]').forEach(a => a.onclick = e => { e.preventDefault(); const h = rows.filter(r => r.truck_no === a.dataset.h).sort(byTime);
+      modal(`<h2>${esc(a.dataset.h)} · vendor history</h2><p class="muted">${h.length} assignment(s), latest first. Faded rows are past vendors.</p>${table(cols(false, false), h)}<button class="ghost" onclick="closeModal()">Close</button>`); });
     $('mtT').querySelectorAll('[data-mv]').forEach(b => b.onclick = () => vnTruckForm(cur.find(r => r.id === b.dataset.mv)));
     $('mtT').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { const r = cur.find(x => x.id === b.dataset.rm);
       modal(`<h2>Remove ${esc(r.truck_no)} from ${esc(r.vendor_name)}</h2><p class="muted">The truck no longer works for us through this vendor. History is kept.</p><div class="grid"><div class="field"><label>From date *</label><input id="mrD" type="date" value="${today()}"></div><div class="field" style="grid-column:1/-1"><label>Remarks</label><input id="mrR"></div></div>
         <div class="row"><button class="primary" id="mrOk">Remove</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
       $('mrOk').onclick = e => act(e.target, () => rpc('vn_truck_unlink', {p_link:r.id, p_to:$('mrD').value || null, p_remarks:$('mrR').value}), 'Removed').then(() => { closeModal(); go(); }).catch(() => {}); }); };
   draw(); $('mtF').oninput = () => { S.mtF = $('mtF').value; draw(); };
-  $('mtCsv').onclick = () => csv(rows.slice().sort((a, b) => String(b.assigned_at).localeCompare(String(a.assigned_at))).map(r => ({timestamp:ts(r.assigned_at || r.created_at), truck_no:r.truck_no, vendor_code:r.vendor_code, vendor_name:r.vendor_name, from_date:r.from_date, to_date:r.to_date || '', remarks:r.remarks || ''})), 'vendor-trucks');
+  $('mtCsv').onclick = () => csv(rows.slice().sort(byTime).map(r => ({timestamp:ts(r.assigned_at || r.created_at), truck_no:r.truck_no, vendor_code:r.vendor_code, vendor_name:r.vendor_name, current:r.to_date ? 'no' : 'yes', from_date:r.from_date, to_date:r.to_date || '', remarks:r.remarks || '', created_by:userName(r.created_by), created_at:r.created_at ? dtS(r.created_at) : '', edited_by:userName(r.updated_by), edited_at:r.updated_at ? dtS(r.updated_at) : ''})), 'vendor-trucks-history');
   if($('mtNew')) $('mtNew').onclick = () => vnTruckForm(null);
 };
 function vnTruckForm(r){
