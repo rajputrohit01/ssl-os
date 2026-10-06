@@ -32,6 +32,7 @@ create or replace view public.vn_market_truck_list as
     m.assigned_at
    FROM public.vn_market_trucks m
      JOIN public.sys_vendors v ON v.id = m.vendor_id;
+alter view public.vn_market_truck_list set (security_invoker = true);  -- keep RLS of the viewer
 
 -- Upload. Timestamp arrives as local India time without offset (app parser upDT): 'YYYY-MM-DDTHH:MM:SS'.
 -- Returns created (new trucks), updated (trucks moved), skipped (same vendor), errors.
@@ -81,9 +82,12 @@ begin
         case when v_moved then 'Moved by upload' || coalesce(' — ' || nullif(trim(x->>'remarks'),''), '')
              else nullif(trim(x->>'remarks'),'') end);
 
+      -- part of creating the link, not an edit: app.stamp() (sys_01) skips while app.no_stamp is on
+      perform set_config('app.no_stamp', 'on', true);
       update public.vn_market_trucks
          set assigned_at = coalesce(v_ts, now())
        where truck_no = v_tno and vendor_id = v and to_date is null;
+      perform set_config('app.no_stamp', 'off', true);
 
       if v_moved then u := u + 1; else n := n + 1; end if;
     exception when others then

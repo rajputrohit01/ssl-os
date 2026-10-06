@@ -26,6 +26,7 @@ begin
     new.created_at := coalesce(old.created_at, new.created_at);
     -- stamp an edit only when a signed-in user actually changed something
     if auth.uid() is not null
+       and coalesce(current_setting('app.no_stamp', true), 'off') <> 'on'
        and (to_jsonb(new) - 'updated_at' - 'updated_by') is distinct from (to_jsonb(old) - 'updated_at' - 'updated_by') then
       new.updated_by := auth.uid();
       new.updated_at := now();
@@ -210,6 +211,10 @@ create or replace view public.vn_vendor_list as
    FROM public.sys_vendors v
      LEFT JOIN public.sys_states s ON s.id = v.state_id;
 
+-- create or replace view drops view options: keep both views checking the viewer's own permissions (RLS)
+alter view public.vn_market_truck_list set (security_invoker = true);
+alter view public.vn_vendor_list set (security_invoker = true);
+
 -- 6. test -------------------------------------------------------------------------------------------------------
 create or replace function wh_test.part_stamp(ids jsonb)
  returns jsonb language plpgsql set search_path to 'public', 'wh_test', 'app', 'pg_temp' as $f$
@@ -222,7 +227,7 @@ begin
         and not exists (select 1 from pg_trigger t where t.tgrelid = c.oid and t.tgname = 'zz_stamp')), '0');
   perform wh_test.as_user(admin);
   insert into public.sys_vendors(vendor_code, vendor_name, kinds, phone, pan)
-       values ('TV61','STAMP VENDOR','{transporter}','9830066001','STMPV6001A') returning id into vid;
+       values ('TZ91','STAMP VENDOR','{transporter}','9830099101','ZSTMP9101Z') returning id into vid;
   select created_by, created_at, updated_by into r from public.sys_vendors where id = vid;
   log := log || wh_test.eq('STAMP: new entry records who created it, no editor yet',
     (r.created_by = admin and r.created_at is not null and r.updated_by is null)::text, 'true');
