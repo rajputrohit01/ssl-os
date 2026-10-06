@@ -1668,6 +1668,7 @@ VIEWS.up_gaps = async m => {
   const cl = id => clientCode(id);
   const G = [
     {n:'Vendors without PAN or mobile', go:'#md/vn_list', rows:vend.filter(v => v.incomplete).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:[!v.pan && 'PAN', !v.phone && 'mobile'].filter(Boolean).join(', '), note:v.note || ''})), why:'Can be used in entries, but no payment until completed.'},
+    {n:'Truck vendors without type of business', go:'#vt/vt_vendors', rows:vend.filter(v => v.is_active && (v.kinds||[]).includes('transporter') && !v.business_type).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:'type of business' + (v.pan ? ' (PAN suggests ' + (vnBtName(VN_BT_FROM_PAN[v.pan[3]]) || '?') + ')' : ''), note:''})), why:'Needed for TDS; Proprietorship also needs Aadhaar + copy.'},
     {n:'Vendors without bank details', go:'#md/vn_list', rows:vend.filter(v => !v.bank_account && v.is_active).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:'bank account + IFSC', note:''})), why:'No bank payment until filled.'},
     {n:'Sold-To parties without contact number', go:'#md/masters', rows:sold.filter(s => !String(s.contact_phone||'').trim()).map(s => ({record:`${cl(s.client_id)} · ${s.sap_code} · ${s.name}`, missing:'contact number', note:''})), why:'Needed for delivery messages to the buyer.'},
     {n:'Ship-To parties without destination', go:'#md/masters', rows:ship.map(s => ({record:`${cl(s.client_id)} · ${s.sap_code} · ${s.name}`, missing:'destination', note:''})), why:'Challans and reports show no destination for these.'},
@@ -1958,6 +1959,9 @@ VIEWS.dr_expiry = async m => {
 // A vendor has one or more types; every vendor dropdown shows only its type. HO / Admin (vendor_admin) create and edit.
 // Mandatory: name, type, mobile, PAN. One PAN = one vendor. GSTIN must contain the PAN. Bank details before a bank payment.
 const vtName = c => (S.vtypes.find(t => t.code===c)||{}).name || c;
+const VN_BT = [['proprietorship','Proprietorship'],['individual','Individual (no firm)'],['partnership','Partnership firm'],['llp','LLP'],['pvt_ltd','Private Limited'],['public_ltd','Public Limited'],['huf','HUF'],['trust','Trust / Society / AOP']];
+const vnBtName = c => (VN_BT.find(x => x[0] === c) || [, ''])[1];
+const VN_BT_FROM_PAN = {P:'proprietorship', F:'partnership', C:'pvt_ltd', H:'huf', T:'trust', A:'trust', B:'trust'};
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/, GST_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'vn', name:'Vendors', icon:'vendor', hidden:true, desc:'Vendor master: labour contractors, Sardars, transporters, dealers, body builders, insurance, RTO, GPS, FASTag and more — each vendor tagged by type, with PAN, GST and bank',
@@ -1980,6 +1984,10 @@ function vnForm(v, preset, done, opts = {}){
       ${f('vendor_name','Vendor name *')}${f('busy_name','Name in BUSY (blank = same)')}
       ${f('contact_person','Contact person')}${f('phone','Mobile *','inputmode="numeric" maxlength="14"')}${f('email','Email','type="email"')}
       ${f('pan','PAN *','maxlength="10" style="text-transform:uppercase"')}${f('gstin','GSTIN (if registered)','maxlength="15" style="text-transform:uppercase"')}
+      <div class="field"><label>Type of business${(V.kinds||[]).includes('transporter') ? ' *' : ''}</label><select id="${P}business_type">${opt(VN_BT.map(([k, l]) => ({k, l})), 'k', 'l', V.business_type || '', 'Select')}</select></div>
+      <div class="field" data-prop><label>Proprietor's Aadhaar no. *</label><input id="${P}aadhaar_no" inputmode="numeric" maxlength="14" value="${esc(V.aadhaar_no || '')}"></div>
+      <div class="field" data-prop><label>Aadhaar copy${v && v.aadhaar_docs ? ` (${v.aadhaar_docs} attached)` : ' *'}</label><input type="file" id="${P}aad" accept="image/*,application/pdf"></div>
+      <div class="field" data-firm><label>Registration document (deed / certificate)${v && v.reg_docs ? ` (${v.reg_docs} attached)` : ''}</label><input type="file" id="${P}reg" accept="image/*,application/pdf"></div>
       <div class="field"><label>State</label><select id="${P}state_id">${opt(S.states,'id','name',V.state_id,'—')}</select></div>
       <div class="field" style="grid-column:1/-1"><label>Address</label><input id="${P}address" value="${esc(V.address||'')}"></div>
       ${f('bank_name','Bank name')}${f('bank_branch','Branch')}${f('bank_account','Bank account no.','inputmode="numeric"')}${f('bank_ifsc','IFSC','maxlength="11" style="text-transform:uppercase"')}${f('bank_holder','Account holder name')}
@@ -1990,6 +1998,10 @@ function vnForm(v, preset, done, opts = {}){
     <div class="row" style="margin-top:12px"><button class="primary" data-vs>Save vendor</button><button class="ghost" data-vc>Cancel</button></div></div>`;
   document.body.appendChild(ov);
   const g = k => ov.querySelector('#' + P + k);
+  const btShow = () => { const b = g('business_type').value; ov.querySelectorAll('[data-prop]').forEach(x => x.style.display = ['proprietorship','individual'].includes(b) ? '' : 'none');
+    ov.querySelectorAll('[data-firm]').forEach(x => x.style.display = b && !['proprietorship','individual'].includes(b) ? '' : 'none'); };
+  g('business_type').onchange = btShow; btShow();
+  g('pan').addEventListener('input', () => { const c = g('pan').value.trim().toUpperCase()[3]; if(!g('business_type').value && VN_BT_FROM_PAN[c]){ g('business_type').value = VN_BT_FROM_PAN[c]; btShow(); } });
   ov.querySelector('[data-vc]').onclick = () => ov.remove();
   ov.querySelector('[data-vs]').onclick = e => act(e.target, async () => {
     const r = {}; ['vendor_name','busy_name','contact_person','phone','email','pan','gstin','address','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','note'].forEach(k => r[k] = g(k).value.trim() || null);
@@ -1998,6 +2010,11 @@ function vnForm(v, preset, done, opts = {}){
     ['pan','gstin','bank_ifsc'].forEach(k => r[k] = r[k] && r[k].toUpperCase().replace(/\s/g,''));
     if(!r.vendor_name) throw new Error('Enter the vendor name');
     if(!r.kinds.length) throw new Error('Tick at least one vendor type');
+    r.business_type = g('business_type').value || null; const prop = ['proprietorship','individual'].includes(r.business_type);
+    r.aadhaar_no = prop ? (g('aadhaar_no').value.replace(/\D/g, '') || null) : null;
+    if(r.kinds.includes('transporter') && !r.business_type) throw new Error('Choose the type of business (Proprietorship, Partnership firm, Private Ltd …)');
+    if(prop && !/^[2-9]\d{11}$/.test(r.aadhaar_no || '')) throw new Error("Enter the proprietor's 12-digit Aadhaar number");
+    if(prop && !(v && v.aadhaar_docs) && !g('aad').files[0]) throw new Error('Attach the Aadhaar copy');
     let ph = (r.phone||'').replace(/[^0-9]/g, ''); if(/^0\d{10}$/.test(ph) || /^91\d{10}$/.test(ph)) ph = ph.slice(-10);
     if(!/^[6-9][0-9]{9}$/.test(ph)) throw new Error('Enter a valid 10-digit mobile number'); r.phone = ph;
     if(!r.pan || !PAN_RE.test(r.pan)) throw new Error('Enter a valid PAN (format ABCDE1234F)');
@@ -2017,6 +2034,8 @@ function vnForm(v, preset, done, opts = {}){
     const row = (res.data||[])[0];
     if(!row) throw new Error('Not saved: only HO / Admin can add or edit vendors');
     const file = g('chq').files[0]; if(file) await uploadPhotoFile('vendor_cheque', row.id, file, 'Cheque · ' + row.vendor_name);
+    const af = g('aad').files[0]; if(af && ['proprietorship','individual'].includes(row.business_type)) await uploadPhotoFile('vendor_aadhaar', row.id, af, 'Aadhaar · ' + row.vendor_name);
+    const rf = g('reg').files[0]; if(rf && row.business_type && !['proprietorship','individual'].includes(row.business_type)) await uploadPhotoFile('vendor_regdoc', row.id, rf, 'Registration · ' + row.vendor_name);
     await loadMasters(); ov.remove(); done && done(row); return row;
   }, row => `${row.vendor_name} saved (${row.vendor_code})`);
 }
@@ -2032,21 +2051,21 @@ const vnListView = (fixed, title) => async m => {
   const all = await qAll('vn_vendor_list', b => b.order('vendor_name').order('id'));
   const qs = F.q.trim().toUpperCase();
   const rows = all.filter(v => (fixed ? (v.kinds||[]).some(k => fixed.includes(k)) : true) && (!F.type || (v.kinds||[]).includes(F.type)) && (F.status==='all' || (F.status==='active') === v.is_active)
-    && (!F.gap || (F.gap==='incomplete' && v.incomplete) || (F.gap==='gstin' && !v.gstin) || (F.gap==='bank' && !v.bank_account) || (F.gap==='cheque' && !v.cheque_docs))
+    && (!F.gap || (F.gap==='bt' && !v.business_type) || (F.gap==='aad' && ['proprietorship','individual'].includes(v.business_type) && !v.aadhaar_docs) || (F.gap==='incomplete' && v.incomplete) || (F.gap==='gstin' && !v.gstin) || (F.gap==='bank' && !v.bank_account) || (F.gap==='cheque' && !v.cheque_docs))
     && (!qs || [v.vendor_name, v.vendor_code, v.pan, v.phone, v.gstin, v.busy_name].some(x => (x||'').toUpperCase().includes(qs))));
   const cnt = c => all.filter(v => v.is_active && (v.kinds||[]).includes(c)).length;
   m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>${esc(title)}</h1><div class="row">${can('vendor_admin') ? '<button class="primary sm" id="vnAdd">+ New</button>' : ''}<button class="ghost sm" id="vnCsv">Download CSV</button></div></div>
   ${can('vendor_admin') ? '' : '<p class="muted">View only. HO / Admin add and edit vendors.</p>'}
   <div class="row"><select id="vnT" style="width:auto"><option value="">${fixed && fixed.length === 1 ? esc(vtName(fixed[0])) : 'All types'}</option>${(fixed && fixed.length === 1 ? [] : types).map(t => `<option value="${t.code}" ${t.code===F.type?'selected':''}>${esc(t.name)} (${cnt(t.code)})</option>`).join('')}</select>
     <select id="vnS" style="width:auto">${[['active','Active'],['inactive','Inactive'],['all','All']].map(([k,l]) => `<option value="${k}" ${k===F.status?'selected':''}>${l}</option>`).join('')}</select>
-    <select id="vnG" style="width:auto">${[['','Any details'],['incomplete','PAN / mobile missing'],['gstin','GSTIN missing'],['bank','Bank missing'],['cheque','Cheque copy missing']].map(([k,l]) => `<option value="${k}" ${k===F.gap?'selected':''}>${l}</option>`).join('')}</select>
+    <select id="vnG" style="width:auto">${[['','Any details'],['bt','Business type missing'],['aad','Aadhaar copy missing'],['incomplete','PAN / mobile missing'],['gstin','GSTIN missing'],['bank','Bank missing'],['cheque','Cheque copy missing']].map(([k,l]) => `<option value="${k}" ${k===F.gap?'selected':''}>${l}</option>`).join('')}</select>
     <input id="vnQ" placeholder="Search name / PAN / mobile / code" value="${esc(F.q)}" style="max-width:280px"></div>
   <div class="card">${table([{h:'Vendor',f:v=>`<b>${esc(v.vendor_name)}</b><div class="muted">${esc(v.vendor_code)}${v.busy_name && v.busy_name!==v.vendor_name ? ' · BUSY: ' + esc(v.busy_name) : ''}</div>`},
-    {h:'Types',f:v=>`<div style="display:flex;flex-wrap:wrap;gap:4px">${(v.kinds||[]).map(k => chip(vtName(k), 'info')).join('')}</div>`},{h:'Contact',f:v=>`${v.phone ? esc(v.phone) : chip('mobile missing','bad')}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
+    {h:'Types',f:v=>`<div style="display:flex;flex-wrap:wrap;gap:4px">${(v.kinds||[]).map(k => chip(vtName(k), 'info')).join('')}</div>` + `<div class="muted" style="font-size:12px">${v.business_type ? esc(vnBtName(v.business_type)) : (v.kinds||[]).includes('transporter') ? '<span style="color:var(--alert)">business type missing</span>' : ''}${v.trucks ? ' · ' + v.trucks + ' truck(s)' : ''}</div>`},{h:'Contact',f:v=>`${v.phone ? esc(v.phone) : chip('mobile missing','bad')}${v.contact_person ? `<div class="muted">${esc(v.contact_person)}</div>` : ''}`},
     {h:'PAN / GSTIN',f:v=>`${v.pan ? esc(v.pan) : chip('PAN missing','bad')}<div class="muted">${v.gstin ? esc(v.gstin) : 'no GSTIN'}</div>`},
     {h:'Bank',f:v=>v.bank_account ? `${esc(v.bank_name||'')} …${esc(v.bank_account.slice(-4))} · ${esc(v.bank_ifsc)}${v.cheque_docs ? '' : ' ' + chip('no cheque copy','warn')}` : chip('missing','warn')},
     {h:'Used in',n:1,f:v=>v.used_count ? v.used_count + ' doc(s)' : '—'},{h:'Status',f:v=>v.is_active ? chip('active','ok') : chip('inactive')},
-    {h:'',f:v=>(v.cheque_docs ? `<button class="ghost sm" data-ev="${v.id}">Cheque</button> ` : '') + (can('vendor_admin') ? `<button class="ghost sm" data-ed="${v.id}">Edit</button>` : '')}], rows, 'No vendors match.')}</div>`;
+    {h:'',f:v=>(v.cheque_docs || v.aadhaar_docs || v.reg_docs ? `<button class="ghost sm" data-ev="${v.id}">Documents</button> ` : '') + (can('vendor_admin') ? `<button class="ghost sm" data-ed="${v.id}">Edit</button>` : '')}], rows, 'No vendors match.')}</div>`;
   $('vnT').onchange = () => { F.type = $('vnT').value; go(); }; $('vnS').onchange = () => { F.status = $('vnS').value; go(); };
   $('vnG').onchange = () => { F.gap = $('vnG').value; go(); }; $('vnQ').onchange = () => { F.q = $('vnQ').value; go(); };
   if($('vnAdd')) $('vnAdd').onclick = () => { if(fixed && fixed.length > 1 && !F.type) return vnPickType(fixed, k => vnForm(null, {kinds:[k], hideTypes:true}, () => go()));
