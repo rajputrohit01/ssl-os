@@ -1669,6 +1669,7 @@ VIEWS.up_gaps = async m => {
   const G = [
     {n:'Vendors without PAN or mobile', go:'#md/vn_list', rows:vend.filter(v => v.incomplete).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:[!v.pan && 'PAN', !v.phone && 'mobile'].filter(Boolean).join(', '), note:v.note || ''})), why:'Can be used in entries, but no payment until completed.'},
     {n:'Truck vendors without type of business', go:'#vt/vt_vendors', rows:vend.filter(v => v.is_active && (v.kinds||[]).includes('transporter') && !v.business_type).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:'type of business' + (v.pan ? ' (PAN suggests ' + (vnBtName(VN_BT_FROM_PAN[v.pan[3]]) || '?') + ')' : ''), note:''})), why:'Needed for TDS; Proprietorship also needs Aadhaar + copy.'},
+    {n:'Proprietor truck vendors without Aadhaar', go:'#vt/vt_vendors', rows:vend.filter(v => v.is_active && ['proprietorship','individual'].includes(v.business_type) && !v.aadhaar_no).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:'Aadhaar no. + copy', note:v.pan || ''})), why:'Fill on the vendor (Edit) or by Excel: Data Upload › Vendor master import with columns vendor_code + aadhaar_no.'},
     {n:'Vendors without bank details', go:'#md/vn_list', rows:vend.filter(v => !v.bank_account && v.is_active).map(v => ({record:`${v.vendor_code} · ${v.vendor_name}`, missing:'bank account + IFSC', note:''})), why:'No bank payment until filled.'},
     {n:'Sold-To parties without contact number', go:'#md/masters', rows:sold.filter(s => !String(s.contact_phone||'').trim()).map(s => ({record:`${cl(s.client_id)} · ${s.sap_code} · ${s.name}`, missing:'contact number', note:''})), why:'Needed for delivery messages to the buyer.'},
     {n:'Ship-To parties without destination', go:'#md/masters', rows:ship.map(s => ({record:`${cl(s.client_id)} · ${s.sap_code} · ${s.name}`, missing:'destination', note:''})), why:'Challans and reports show no destination for these.'},
@@ -2013,8 +2014,11 @@ function vnForm(v, preset, done, opts = {}){
     r.business_type = g('business_type').value || null; const prop = ['proprietorship','individual'].includes(r.business_type);
     r.aadhaar_no = prop ? (g('aadhaar_no').value.replace(/\D/g, '') || null) : null;
     if(r.kinds.includes('transporter') && !r.business_type) throw new Error('Choose the type of business (Proprietorship, Partnership firm, Private Ltd …)');
-    if(prop && !/^[2-9]\d{11}$/.test(r.aadhaar_no || '')) throw new Error("Enter the proprietor's 12-digit Aadhaar number");
-    if(prop && !(v && v.aadhaar_docs) && !g('aad').files[0]) throw new Error('Attach the Aadhaar copy');
+    const newProp = prop && (!v || v.business_type !== r.business_type);   // existing proprietors filled in bulk can be edited; Aadhaar shows in Data gaps
+    if(r.aadhaar_no && !/^[2-9]\d{11}$/.test(r.aadhaar_no)) throw new Error('Aadhaar must be 12 digits');
+    if(newProp && !r.aadhaar_no) throw new Error("Enter the proprietor's 12-digit Aadhaar number");
+    if(newProp && !(v && v.aadhaar_docs) && !g('aad').files[0]) throw new Error('Attach the Aadhaar copy');
+    if(prop && v && !r.aadhaar_no && v.aadhaar_no) throw new Error('The Aadhaar number cannot be removed');
     let ph = (r.phone||'').replace(/[^0-9]/g, ''); if(/^0\d{10}$/.test(ph) || /^91\d{10}$/.test(ph)) ph = ph.slice(-10);
     if(!/^[6-9][0-9]{9}$/.test(ph)) throw new Error('Enter a valid 10-digit mobile number'); r.phone = ph;
     if(!r.pan || !PAN_RE.test(r.pan)) throw new Error('Enter a valid PAN (format ABCDE1234F)');
@@ -2083,7 +2087,7 @@ VIEWS.ft_vendors = vnListView(['dealer','body','insurance','rto','gps','fastag']
 VIEWS.fl_vendors = vnListView(['workshop','insurance','gps','fastag'], 'Fleet vendors');
 VIEWS.wh_vendors = vnListView(['landlord'], 'Landlords');
 
-const VN_COLS = ['vendor_code','vendor_name','busy_name','types','contact_person','phone','email','pan','gstin','address','state','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','vendor_since','note'];
+const VN_COLS = ['vendor_code','vendor_name','busy_name','types','business_type','aadhaar_no','contact_person','phone','email','pan','gstin','address','state','bank_name','bank_branch','bank_account','bank_ifsc','bank_holder','vendor_since','note'];
 VIEWS.vn_import = async m => {
   m.innerHTML = `<h1>Import vendors from Excel</h1>
   <p class="muted">One row per vendor. Required: vendor_name and types. PAN, mobile and bank can be missing for now: such vendors load as "incomplete" (no payment until completed) and show in Data Upload › Data gaps. vendor_code: keep your existing code (e.g. VD0123); blank = next VD number. Types = names or codes from the Types sheet, separated by commas (e.g. "Body builder, RTO agent"). A PAN already in the system is not duplicated: its new types are added and blank details filled; nothing is overwritten. Rows with a problem are listed and skipped.</p>
