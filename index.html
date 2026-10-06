@@ -1547,6 +1547,7 @@ const UP_SETS = [
   {k:'terms', g:'5 · Rake sidings', n:'Customer DC/WC bearer', t:'rk_siding_client_terms', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Customer','client_id','ref:client',1],['DC/WC borne by','dcwc_bearer','sel:ssl/customer',1],['Effective from','effective_from','date',0,'blank = 01-04-2026'],['Note','note','text']], fix:r => ({...r, effective_from:r.effective_from || '2026-04-01'})},
   {k:'aliases', g:'5 · Rake sidings', n:'Wagon sheet material names', t:'rk_material_aliases', perm:'rk_master_admin', cols:[['Customer','client_id','ref:client',1],['Name in wagon sheet','sheet_name','upper',1],['Our material type','material_id','ref:mat',1]]},
   {k:'vendors', g:'6 · Vendors & labour', n:'Vendors', link:'#vn/vn_import', perm:'vendor_admin', note:'Vendor master has its own upload (codes, types, PAN, bank). Missing PAN / mobile / bank load as "incomplete".'},
+  {k:'market_trucks', g:'6 · Vendors & labour', n:'Market trucks of vendors', rpcRows:'vn_truck_import', perm:'vn_trucks', cols:[['Truck no.','truck_no','upper',1],['Vendor code','vendor_code','upper',1,'e.g. VD0387'],['Assignment date','from_date','date',0,'blank = today'],['Remarks','remarks','text']], note:'Which vendor each market truck belongs to. A truck already with another vendor is reported: move it on Vendors › Market trucks with remarks.'},
   {k:'contractors', g:'6 · Vendors & labour', n:'Warehouse labour contractors', t:'wh_contractors', perm:'wh_master_admin', cols:[['Warehouse','location_id','ref:warehouse',1],['Vendor (code or name)','vendor_id','ref:vendor',1,'must be type Labour contractor'],['Billing cycle (days)','billing_cycle_days','num',0,'blank = 7']], fix:r => ({...r, billing_cycle_days:r.billing_cycle_days || 7})},
   {k:'sardars', g:'6 · Vendors & labour', n:'Labour Sardars', t:'rk_sardars', perm:'rk_master_admin', cols:[['Siding','siding_id','ref:siding',1],['Vendor (code or name)','vendor_id','ref:vendor',1,'must be type Labour Sardar']]},
   {k:'labour_rates', g:'6 · Vendors & labour', n:'Warehouse labour rates', t:'wh_labor_rates', perm:'wh_master_admin', cols:[['Location','location_id','ref:anyloc',1],['Activity','activity','sel:unloading/loading/paltai',1],['Customer','client_id','ref:client',0,'helps find the material'],['Material type','material_id','ref:mat',1],['Rate per MT','rate_per_mt','num',1],['Effective from','effective_from','date',1]], fix:r => { delete r.client_id; return r; }},
@@ -1562,7 +1563,7 @@ const UP_SETS = [
   {k:'truck_salary', g:'7 · Fleet', n:'Driver salary per truck', t:'dr_truck_salaries', perm:'dr_manage', cols:[['Truck no.','truck_id','ref:truck',1],['Salary per month','monthly_salary','num',1],['Effective from','effective_from','date',1]]},
   {k:'opening', g:'8 · Opening balances', n:'Warehouse opening stock', rpc:'opening', perm:'wh_operate', cols:[['Warehouse','location_id','ref:warehouse',1],['Material type','material_id','ref:mat',1],['Physical MT','physical_mt','num',1],['Customer SAP MT','sap_mt','num',1],['Reason if different','reason','text']], note:'Only for warehouses not yet live. A difference needs a reason and approval, as on the Opening stock screen.'},
 ];
-const upCan = d => can(d.perm) || can('wh_master_admin') && !['vendor_admin','ft_import','dr_manage'].includes(d.perm) || S.me.admin;
+const upCan = d => can(d.perm) || can('wh_master_admin') && !['vendor_admin','ft_import','dr_manage','vn_trucks'].includes(d.perm) || S.me.admin;
 
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'up', name:'Data Upload', icon:'upload', desc:'Go-live: load every master from Excel in the right order — companies, customers, materials, places, parties, vendors, labour, fleet, opening stock — and see what is still missing',
@@ -1626,7 +1627,7 @@ async function upRun(d, file){
       for(let i = 0; i < recs.length; i += 200){
         prog(`Saving ${Math.min(i + 200, recs.length)} of ${recs.length}…`);
         const r = await rpc(d.rpcRows, {p_rows:recs.slice(i, i + 200).map(x => ({...x.rec, _row:x.rn}))});
-        res.ok += (r.created || 0) + (r.updated || 0); res.skip += 0;
+        res.ok += (r.created || 0) + (r.updated || 0); res.skip += r.skipped || 0;
         (r.errors || []).forEach(e => /^driver saved/i.test(e.error) ? res.warn.push({row:e.row, problem:e.error}) : res.err.push({row:e.row, problem:e.error}));
         recs.slice(i, i + 200).forEach(x => x.warns.length && res.warn.push({row:x.rn, problem:x.warns.join('; ')}));
       }
@@ -1957,8 +1958,8 @@ const vtName = c => (S.vtypes.find(t => t.code===c)||{}).name || c;
 const PAN_RE = /^[A-Z]{5}[0-9]{4}[A-Z]$/, GST_RE = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 MODULES.splice(MODULES.findIndex(x => x.key==='md'), 0,
   { key:'vn', name:'Vendors', icon:'vendor', desc:'Vendor master: labour contractors, Sardars, transporters, dealers, body builders, insurance, RTO, GPS, FASTag and more — each vendor tagged by type, with PAN, GST and bank',
-    visible: () => can('vendor_admin') || can('wh_master_admin') || can('rk_master_admin') || can('ft_view'),
-    screens: () => { const t = [['#','Vendors'],['vn_list','Vendor list']]; if(can('vendor_admin')) t.push(['vn_import','Import from Excel'],['vn_types','Vendor types']); return t; } });
+    visible: () => can('vendor_admin') || can('wh_master_admin') || can('rk_master_admin') || can('ft_view') || can('vn_trucks'),
+    screens: () => { const t = [['#','Vendors'],['vn_list','Vendor list'],['vn_trucks','Market trucks']]; if(can('vendor_admin')) t.push(['vn_import','Import from Excel'],['vn_types','Vendor types']); return t; } });
 ICONS.vendor = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9h18v2a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0z"/><path d="M5 13v8h14v-8"/><path d="M10 21v-5h4v5"/></svg>';
 
 // vendor form in its own layer, so it can open on top of another form (e.g. "+ Add new vendor…" inside a truck slip)
@@ -2081,6 +2082,44 @@ VIEWS.vn_types = async m => {
     if(t.is_active && n(t.code) && !confirm(`${n(t.code)} active vendor(s) carry "${t.name}". Deactivate the type anyway? They keep it on old documents but it is hidden from new forms.`)) return;
     act(b, async () => { const {error} = await sb.from('sys_vendor_types').update({is_active:!t.is_active}).eq('code', t.code); if(error) throw new Error(error.message); await loadMasters(); go(); }, 'Saved'); });
 };
+
+/* ---- market trucks: which vendor a truck belongs to, from which date; moves keep remarks and history ---- */
+const vnTruckVendors = () => S.vendors.filter(v => v.is_active && (v.kinds||[]).includes('transporter'));
+const vnVendorPick = id => `<input id="${id}" list="${id}L" autocomplete="off" placeholder="vendor code or name"><datalist id="${id}L">${vnTruckVendors().map(v => `<option value="${esc(v.vendor_code + ' · ' + v.vendor_name)}">`).join('')}</datalist>`;
+const vnVendorOf = val => { const c = String(val || '').split(' · ')[0].trim().toUpperCase(); return vnTruckVendors().find(v => v.vendor_code === c) || vnTruckVendors().find(v => v.vendor_name.toUpperCase() === String(val || '').trim().toUpperCase()); };
+VIEWS.vn_trucks = async m => {
+  const rows = await qAll('vn_market_truck_list', b => b.order('truck_no').order('from_date', {ascending:false}).order('id'));
+  const cur = rows.filter(r => !r.to_date); const ed = can('vn_trucks');
+  S.mtF = S.mtF ?? '';
+  m.innerHTML = `<div class="row" style="justify-content:space-between"><h1>Market trucks</h1><div class="row"><input id="mtF" placeholder="Find truck or vendor" style="width:220px" value="${esc(S.mtF)}">${ed ? '<button class="primary sm" id="mtNew">+ Add truck to vendor</button>' : ''}</div></div>
+  <p class="muted">Each market truck belongs to one vendor from its assignment date. Moving it to another vendor closes the old link on that date and keeps the history with remarks. Our own trucks (Fleet) cannot be added here.</p>
+  <div class="kpi"><div><span>Market trucks</span><b>${cur.length}</b></div><div><span>Vendors with trucks</span><b>${new Set(cur.map(r => r.vendor_id)).size}</b></div><div><span>Moves recorded</span><b>${rows.filter(r => r.moved_from).length}</b></div></div>
+  <div class="card" id="mtT"></div>`;
+  const draw = () => { const f = S.mtF.toUpperCase().replace(/\s/g, ''); const list = cur.filter(r => !f || [r.truck_no, r.vendor_code, r.vendor_name].some(x => String(x || '').toUpperCase().replace(/\s/g, '').includes(f)));
+    $('mtT').innerHTML = table([{h:'Truck',f:r=>`<a href="#" data-h="${esc(r.truck_no)}"><b>${esc(r.truck_no)}</b></a>`},{h:'Vendor',f:r=>esc(r.vendor_code) + ' · ' + esc(r.vendor_name)},{h:'Since',f:r=>d8(r.from_date)},
+      {h:'Came from',f:r=>r.moved_from ? esc(r.moved_from) + (r.remarks ? `<div class="muted" style="font-size:12px">${esc(r.remarks)}</div>` : '') : '<span class="muted">—</span>'},
+      {h:'',f:r=>ed ? `<button class="ghost sm" data-mv="${r.id}">Move to vendor</button> <button class="ghost sm" data-rm="${r.id}">Remove</button>` : ''}], list.slice(0, 1000), 'No market trucks yet.');
+    $('mtT').querySelectorAll('[data-h]').forEach(a => a.onclick = e => { e.preventDefault(); const h = rows.filter(r => r.truck_no === a.dataset.h);
+      modal(`<h2>${esc(a.dataset.h)} · vendor history</h2>${table([{h:'Vendor',f:r=>esc(r.vendor_code + ' · ' + r.vendor_name)},{h:'From',f:r=>d8(r.from_date)},{h:'To',f:r=>r.to_date ? d8(r.to_date) : chip('now','ok')},{h:'Remarks',k:'remarks'}], h)}<button class="ghost" onclick="closeModal()">Close</button>`); });
+    $('mtT').querySelectorAll('[data-mv]').forEach(b => b.onclick = () => vnTruckForm(cur.find(r => r.id === b.dataset.mv)));
+    $('mtT').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { const r = cur.find(x => x.id === b.dataset.rm);
+      modal(`<h2>Remove ${esc(r.truck_no)} from ${esc(r.vendor_name)}</h2><p class="muted">The truck no longer works for us through this vendor. History is kept.</p><div class="grid"><div class="field"><label>From date *</label><input id="mrD" type="date" value="${today()}"></div><div class="field" style="grid-column:1/-1"><label>Remarks</label><input id="mrR"></div></div>
+        <div class="row"><button class="primary" id="mrOk">Remove</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+      $('mrOk').onclick = e => act(e.target, () => rpc('vn_truck_unlink', {p_link:r.id, p_to:$('mrD').value || null, p_remarks:$('mrR').value}), 'Removed').then(() => { closeModal(); go(); }).catch(() => {}); }); };
+  draw(); $('mtF').oninput = () => { S.mtF = $('mtF').value; draw(); };
+  if($('mtNew')) $('mtNew').onclick = () => vnTruckForm(null);
+};
+function vnTruckForm(r){
+  modal(`<h2>${r ? 'Move ' + esc(r.truck_no) + ' to another vendor' : 'Add market truck to vendor'}</h2>
+    ${r ? `<p class="muted">Now with <b>${esc(r.vendor_code + ' · ' + r.vendor_name)}</b> since ${d8(r.from_date)}. That link ends on the date below.</p>` : ''}<div class="grid">
+    ${r ? '' : '<div class="field"><label>Truck no. *</label><input id="mfT" style="text-transform:uppercase" autocomplete="off"></div>'}
+    <div class="field" style="grid-column:1/-1"><label>${r ? 'New vendor *' : 'Vendor *'}</label>${vnVendorPick('mfV')}</div>
+    <div class="field"><label>${r ? 'Moved on *' : 'Assignment date *'}</label><input id="mfD" type="date" value="${today()}"></div>
+    <div class="field" style="grid-column:1/-1"><label>Remarks${r ? ' (why it moved)' : ''}</label><input id="mfR"></div></div>
+  <div class="row"><button class="primary" id="mfOk">Save</button><button class="ghost" onclick="closeModal()">Cancel</button></div>`);
+  $('mfOk').onclick = e => { const v = vnVendorOf($('mfV').value); if(!v) return toast('Choose the vendor from the list', 'err');
+    act(e.target, () => rpc('vn_truck_link', {p_truck:r ? r.truck_no : $('mfT').value, p_vendor:v.id, p_from:$('mfD').value || null, p_remarks:$('mfR').value}), x => `${x.truck_no} now with ${v.vendor_code}`).then(() => { closeModal(); go(); }).catch(() => {}); };
+}
 
 /* ============ STOCK ============ */
 VIEWS.stock = async m => {
